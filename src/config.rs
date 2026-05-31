@@ -16,6 +16,20 @@ const DEFAULT_VECTOR_DIM: u64 = 384;
 const DEFAULT_BACKEND: &str = "qdrant";
 const DEFAULT_EMBEDDER: &str = "ort";
 const DEFAULT_CHUNKER: &str = "lines";
+
+/// Languages for which the AST chunker is preferred by default (when the binary
+/// was built with the `ast` feature and the user did not explicitly set a chunker
+/// via CLI or config). For all other languages we fall back to the reliable
+/// line-based chunker.
+const AST_PREFERRED_LANGUAGES: &[&str] = &["ts", "tsx", "rs"];
+
+/// Returns whether we should prefer the AST chunker for this language
+/// when no explicit chunker was provided.
+fn ast_preferred_for_language(language: &str) -> bool {
+    AST_PREFERRED_LANGUAGES
+        .iter()
+        .any(|&l| l.eq_ignore_ascii_case(language))
+}
 const DEFAULT_DUCKDB_PATH: &str = ".index/code.duckdb";
 const DEFAULT_MODEL_REPO: &str = "Xenova/multilingual-e5-small";
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
@@ -57,7 +71,10 @@ pub struct Config {
     pub backend: Option<String>,
     /// Embedder for the duckdb backend: "ort" (default) or "ollama". CLI `--embedder` overrides.
     pub embedder: Option<String>,
-    /// Chunker: "lines" (default) or "ast" (tree-sitter, needs the `ast` feature). CLI `--chunker` overrides.
+    /// Chunker: "lines" or "ast" (tree-sitter, needs the `ast` feature).
+    /// When not explicitly set, we auto-select "ast" for languages we have good
+    /// grammars for (currently ts/tsx) if the binary was built with --features ast.
+    /// CLI `--chunker` always takes precedence.
     pub chunker: Option<String>,
     /// Max chunk size in chars. When unset, defaulted by the embedder/model (E5≈1400, qwen/ollama≈32000).
     pub max_chunk_chars: Option<usize>,
@@ -131,7 +148,9 @@ pub struct Plan {
     /// Selected embedder (duckdb backend only): "ort" or "ollama".
     #[cfg_attr(not(feature = "duckdb"), allow(dead_code))]
     pub embedder: String,
-    /// Selected chunker: "lines" (default) or "ast".
+    /// Selected chunker. When not explicitly provided, this is auto-chosen based
+    /// on language + whether the `ast` feature is available at compile time.
+    /// See `build_plan` for the exact precedence and smart-default rules.
     pub chunker: String,
     /// Max chunk size in chars — the size bound honored by both chunkers.
     pub max_chunk_chars: usize,
@@ -265,11 +284,21 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
         language: args.language.clone(),
         backend,
         embedder,
-        chunker: args
-            .chunker
-            .clone()
-            .or(config.chunker)
-            .unwrap_or_else(|| DEFAULT_CHUNKER.to_string()),
+        // Chunker defaulting logic:
+        // - CLI `--chunker` always wins
+        // - Then config file `chunker:`
+        // - Otherwise: if we have AST support compiled in *and* this language
+        //   is one we have good tree-sitter grammars for → "ast"
+        // - Else the safe line-based chunker.
+        chunker: if let Some(c) = args.chunker.clone() {
+            c
+        } else if let Some(c) = config.chunker.clone() {
+            c
+        } else if cfg!(feature = "ast") && ast_preferred_for_language(&args.language) {
+            "ast".to_string()
+        } else {
+            DEFAULT_CHUNKER.to_string()
+        },
         max_chunk_chars,
         prefix_style,
         collection: args

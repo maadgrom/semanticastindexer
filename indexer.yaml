@@ -23,20 +23,23 @@ backend: duckdb
 embedder: ort
 
 # Chunker — how each file is split into embeddable chunks. CLI `--chunker <name>` overrides.
-#   lines  — line-window chunker (DEFAULT). ~MAX_LINES lines / `max_chunk_chars` chars
-#            per window with a small overlap. No symbols. Backend/grammar-free.
-#   ast    — tree-sitter, symbol-aware. Parses TS/TSX and emits ONE chunk per top-level
-#            function / arrow-or-function const / class / interface / type-alias (the
-#            identifier is stored as the chunk's `symbol`). An oversized class is split
-#            into one chunk per method (symbol `Class.method`); an oversized function is
-#            line-split (its symbol kept). Lines not under any captured node (imports,
-#            top-level statements) become "remainder" chunks (no symbol) — nothing is
-#            dropped. A file that fails to parse, or any non-TS extension (e.g. .go until
-#            its grammar lands), falls back to the line chunker.
-#   NOTE: `ast` is feature-gated — the binary must be built with `--features ast`
-#         (or `all`). Selecting `chunker: ast` without it is a clear, hard error.
-#   NOTE: comments are stripped BEFORE chunking, so the AST parses comment-stripped text.
-chunker: lines
+#
+# Smart default (new behavior):
+#   - For languages with AST support (currently "ts" / "tsx") **and** the binary was
+#     built with `--features ast` (or `all`): we default to the symbol-aware "ast" chunker.
+#   - For everything else we fall back to the reliable "lines" chunker.
+#
+#   lines  — line-window chunker. ~MAX_LINES lines / `max_chunk_chars` chars per window
+#            with a small overlap. No symbols. Always available.
+#   ast    — tree-sitter, symbol-aware (only for TS/TSX today). Emits ONE chunk per
+#            top-level function / const / class / interface / type-alias. Oversized
+#            items are split intelligently while keeping the symbol. Remainder code
+#            (imports, etc.) still becomes chunks. Requires `--features ast`.
+#
+#   NOTE: `ast` is feature-gated. If you select it (or it is auto-selected) on a binary
+#         built without the feature, you get a clear actionable error.
+#   NOTE: comments are stripped BEFORE chunking.
+chunker: ast  # may be overridden at runtime to "ast" for ts/tsx when ast feature is present
 
 # Max chunk size in CHARS — the size bound BOTH chunkers honor (a char approximation of
 # the model's token window, ~4 chars/token; no tokenizer needed). When unset, it is

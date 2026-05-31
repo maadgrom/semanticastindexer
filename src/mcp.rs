@@ -132,6 +132,30 @@ pub struct RefreshArgs {
     pub paths: Vec<String>,
 }
 
+/// `prepare_mcp_setup` input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrepareMcpSetupArgs {
+    /// Target directory to set up semantic code search for (defaults to current working directory).
+    #[serde(default)]
+    pub target_directory: Option<String>,
+    /// Vector backend to use. "duckdb" (recommended for agents) or "qdrant".
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Embedder when using duckdb backend. "ollama" (lighter) or "ort" (fully offline).
+    #[serde(default)]
+    pub embedder: Option<String>,
+    /// Whether to enable the tree-sitter AST chunker (requires the binary to have been built with --features ast).
+    #[serde(default)]
+    pub use_ast_chunker: bool,
+    /// Whether to install the binary globally into ~/.local/bin (creates a `code-search-mcp` wrapper).
+    #[serde(default)]
+    pub install_globally: bool,
+    /// If true and the server was started with `--allow-setup`, actually execute the setup script.
+    /// Otherwise only returns the exact commands the caller should run.
+    #[serde(default)]
+    pub execute: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Tool output rows (serialized into the structured result).
 // ---------------------------------------------------------------------------
@@ -180,6 +204,9 @@ struct ServerInner {
     /// Whether the server was started with `--allow-write` (the `refresh` tool requires it).
     /// When false, the backend was opened read-only and `refresh` returns a clear error.
     allow_write: bool,
+    /// Whether the server was started with `--allow-setup` (allows the `prepare_mcp_setup`
+    /// tool to actually execute the mcp-setup script when requested).
+    allow_setup: bool,
     /// Resolved similarity-threshold defaults (config value or built-in). MCP tool args
     /// override these per call: tool arg > config > built-in default.
     find_similar_min_score: f32,
@@ -193,7 +220,7 @@ impl CodeSearchServer {
     /// Build the server from a backend-worker handle + the resolved plan. `allow_write`
     /// enables the `refresh` write tool (the worker's backend must have been opened
     /// writable by the caller in that case).
-    pub fn new(backend: BackendHandle, plan: &Plan, allow_write: bool) -> Self {
+    pub fn new(backend: BackendHandle, plan: &Plan, allow_write: bool, allow_setup: bool) -> Self {
         let can_embed_locally = plan.backend == "duckdb";
         Self {
             inner: Arc::new(ServerInner {
@@ -205,6 +232,7 @@ impl CodeSearchServer {
                 chunker: plan.chunker.clone(),
                 can_embed_locally,
                 allow_write,
+                allow_setup,
                 find_similar_min_score: plan.find_similar_min_score(),
                 duplicate_min_score: plan.duplicate_min_score(),
                 duplicate_min_cluster_size: plan.duplicate_min_cluster_size(),
@@ -378,6 +406,109 @@ impl CodeSearchServer {
         })))
     }
 
+    /// Helps set up semantic code search as an MCP server for agentic tools.
+    /// Returns precise commands, configuration snippets, and next steps.
+    /// When `execute: true` and the server was started with `--allow-setup`, it will
+    /// actually run the setup script (can take a long time due to compilation).
+    #[tool(
+        description = "Prepare or execute setup of semantic code search (MCP) for a project. Returns ready-to-run commands and MCP server configuration. Supports --allow-setup for actual execution."
+    )]
+    async fn prepare_mcp_setup(
+        &self,
+        Parameters(args): Parameters<PrepareMcpSetupArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let target = args.target_directory
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string()));
+
+        let backend = args.backend.unwrap_or_else(|| "duckdb".to_string());
+        let embedder = args.embedder.unwrap_or_else(|| "ollama".to_string());
+
+        let mut features = vec!["mcp".to_string(), "duckdb".to_string()];
+        if backend == "duckdb" {
+            features.push(embedder.clone());
+        }
+        if args.use_ast_chunker {
+            features.push("ast".to_string());
+        }
+        let _features_str = features.join(","); // for future use / logging
+
+        let setup_script_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("../../mcp-setup/setup.sh").canonicalize().ok()))
+            .flatten()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or("./mcp-setup/setup.sh".to_string());
+
+        let mut cmd = format!(
+            "{} --non-interactive --backend {} --embedder {}",
+            setup_script_path, backend, embedder
+        );
+        if args.use_ast_chunker {
+            cmd.push_str(" --features \"mcp,duckdb,ollama,ast\""); // approximate
+        }
+        if args.install_globally {
+            cmd.push_str(" --install-global");
+        }
+
+        let mcp_config = json!({
+            "mcpServers": {
+                "semantic-code-search": {
+                    "command": "<path-to-semanticastindexer>",
+                    "args": ["mcp", "--backend", backend, "--embedder", embedder, "--collection", "source_code"],
+                    "cwd": target
+                }
+            }
+        });
+
+        let _should_execute = args.execute && self.inner.allow_setup;
+
+        let mut result = json!({
+            "target_directory": target,
+            "recommended_command": cmd,
+            "mcp_server_config_example": mcp_config,
+            "next_steps": [
+                "1. Run the recommended_command in a terminal (it can take 5-20 minutes the first time).",
+                "2. After it finishes, index your project: cd <your-project> && <binary> --dry-run",
+                "3. Then run without --dry-run to actually build the index.",
+                "4. Add the mcp_server_config_example to your agent's MCP settings.",
+                "5. Restart your agentic tool."
+            ],
+            "notes": "For fully offline use, prefer embedder=ort (much longer first build). The setup script lives next to the binary in mcp-setup/setup.sh."
+        });
+
+        if args.execute {
+            if self.inner.allow_setup {
+                // Attempt to execute (this can be very long-running)
+                let output = std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .current_dir(&target)
+                    .output();
+
+                match output {
+                    Ok(out) => {
+                        result["execution_attempted"] = json!(true);
+                        result["stdout"] = json!(String::from_utf8_lossy(&out.stdout).to_string());
+                        result["stderr"] = json!(String::from_utf8_lossy(&out.stderr).to_string());
+                        result["success"] = json!(out.status.success());
+                    }
+                    Err(e) => {
+                        result["execution_attempted"] = json!(true);
+                        result["error"] = json!(e.to_string());
+                    }
+                }
+            } else {
+                result["execution_blocked"] = json!(true);
+                result["execution_blocked_reason"] = json!("Server not started with --allow-setup");
+            }
+        }
+
+        Ok(CallToolResult::structured(result))
+    }
+
     /// Re-index specific files in place (write tool; requires `--allow-write`).
     #[tool(
         description = "Re-index specific files: delete each path's existing points, then re-chunk + re-embed + upsert files that still exist and pass the index filters (ext, globs, not generated). Gone/excluded paths are just removed. Requires the server to be started with --allow-write."
@@ -438,7 +569,8 @@ impl ServerHandler for CodeSearchServer {
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.instructions = Some(
             "Semantic code search over the indexed repository. Tools: search_code, \
-             find_similar, find_duplicates, index_status (read-only) plus refresh \
+             find_similar, find_duplicates, index_status (read-only), prepare_mcp_setup \
+             (setup helper; execution requires --allow-setup), and refresh \
              (re-index files; only usable when the server was started with --allow-write)."
                 .to_string(),
         );
@@ -447,10 +579,10 @@ impl ServerHandler for CodeSearchServer {
 }
 
 /// Serve the MCP server over stdio until EOF. The backend-worker handle + plan are supplied
-/// by `main`. `allow_write` gates the `refresh` write tool (the worker's backend must
-/// already be writable).
-pub async fn serve_inner(backend: BackendHandle, plan: &Plan, allow_write: bool) -> Result<()> {
-    let server = CodeSearchServer::new(backend, plan, allow_write);
+/// by `main`. `allow_write` gates the `refresh` write tool. `allow_setup` gates execution
+/// inside the `prepare_mcp_setup` tool.
+pub async fn serve_inner(backend: BackendHandle, plan: &Plan, allow_write: bool, allow_setup: bool) -> Result<()> {
+    let server = CodeSearchServer::new(backend, plan, allow_write, allow_setup);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

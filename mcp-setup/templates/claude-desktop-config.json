@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "semantic-code-search": {
+      "command": "/absolute/path/to/semanticastindexer",
+      "args": [
+        "mcp",
+        "--backend", "duckdb",
+        "--embedder", "ollama",
+        "--collection", "source_code"
+      ],
+      "cwd": "/Users/you/your-project"
+    }
+  }
+}

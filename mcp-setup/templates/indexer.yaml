@@ -1,0 +1,50 @@
+# Recommended indexer.yaml for agentic code search use cases.
+# Copy or symlink this into projects you want to give your agents deep understanding of.
+
+backend: duckdb
+embedder: ollama          # ort for fully offline
+chunker: lines
+collection: source_code
+model: intfloat/multilingual-e5-small
+vector_dim: 384
+
+duckdb:
+  path: .index/code.duckdb
+
+exclude_dirs:
+  - node_modules
+  - .git
+  - dist
+  - build
+  - target
+  - .next
+  - coverage
+  - .turbo
+  - __tests__
+  - .venv
+  - venv
+  - site-packages
+
+exclude:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/*.d.ts"
+  - "**/components/ui/**"
+  - "**/*.generated.*"
+  - "**/*.gen.*"
+  - "**/generated/**"
+  - "**/*.pb.go"
+  - "**/*_gen.go"
+  - "**/mock_*.go"
+  - "**/zz_generated*.go"
+  - "**/*.min.js"
+  - "**/*.min.css"
+
+skip_generated_marker: true
+strip_comments: true
+
+similarity:
+  find_similar_min_score: 0.82
+  duplicate_min_score: 0.91
+  duplicate_min_cluster_size: 2
+  top_k: 12

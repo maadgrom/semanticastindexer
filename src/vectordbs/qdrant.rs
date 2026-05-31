@@ -90,6 +90,7 @@ impl QdrantBackend {
                 self.collection, self.vector_dim
             );
         } else {
+            self.validate_existing_collection_dim().await?;
             println!("using existing collection '{}'", self.collection);
         }
         Ok(())
@@ -353,6 +354,44 @@ impl QdrantBackend {
             );
         }
         Ok(())
+    }
+
+    /// If the collection already exists (and we are not recreating), validate that its
+    /// configured vector dimension matches `self.vector_dim`. This catches the common
+    /// mistake of pointing the indexer at an old collection after changing the embedding
+    /// model / vector_dim in config. Qdrant will otherwise fail later with dimension
+    /// mismatch errors during upsert or query.
+    async fn validate_existing_collection_dim(&self) -> Result<()> {
+        let info = self.client.collection_info(&self.collection).await?;
+        let Some(result) = info.result else {
+            return Ok(()); // shouldn't happen on a successful response
+        };
+
+        let actual_dim = result
+            .config
+            .and_then(|cfg| cfg.params)
+            .and_then(|params| params.vectors_config)
+            .and_then(|vc| vc.config)
+            .and_then(|c| match c {
+                // Single unnamed vector (the case this indexer always uses).
+                qdrant_client::qdrant::vectors_config::Config::Params(p) => Some(p.size),
+                // Named vectors (ParamsMap) or other — not used by us.
+                _ => None,
+            });
+
+        match actual_dim {
+            Some(dim) if dim != self.vector_dim => {
+                anyhow::bail!(
+                    "Qdrant collection '{}' has vector dimension {} but this run uses vector_dim={}. \
+                     This usually means the embedding model was changed without recreating the collection. \
+                     Re-run with --recreate (or manually delete the collection in the Qdrant Cloud UI).",
+                    self.collection,
+                    dim,
+                    self.vector_dim
+                );
+            }
+            _ => Ok(()),
+        }
     }
 }
 

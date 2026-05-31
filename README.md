@@ -44,16 +44,22 @@ The DuckDB backend produces vectors locally via a pluggable embedder
 - **Offline ort:** set `duckdb.model_cache` to a pre-populated HF cache dir.
 - **Qdrant creds stay in the environment** (`QDRANT_URL` / `QDRANT_API_KEY`) — never in YAML.
 
-## Chunker (`chunker: lines | ast`)
+## Chunker (smart default + `lines | ast`)
 
-How each file is split into embeddable chunks. Set in `indexer.yaml` or `--chunker <name>`.
+How each file is split into embeddable chunks.
+
+**New defaulting rule** (when you do **not** explicitly set `--chunker` or `chunker:` in yaml):
+- Languages with good AST support (currently `ts` / `tsx`) **and** the binary was built with `--features ast` → we default to the symbol-aware `ast` chunker.
+- Everything else → the reliable `lines` chunker.
+
+You can always force a specific chunker with `--chunker lines` / `--chunker ast` or in `indexer.yaml`.
 
 | Chunker | How | Symbols | Build |
 | ------- | --- | ------- | ----- |
-| **lines** (default) | line windows (~`MAX_LINES` lines / `max_chunk_chars` chars, small overlap) | none | always available |
-| **ast** | tree-sitter parse → one chunk per top-level declaration | yes | `--features ast` (or `all`) |
+| **lines** (fallback) | line windows (~`MAX_LINES` lines / `max_chunk_chars` chars, small overlap) | none | always available |
+| **ast** (preferred for TS/TSX when available) | tree-sitter parse → one chunk per top-level declaration | yes | `--features ast` (or `all`) |
 
-The **ast** chunker (tree-sitter, **TypeScript/TSX** now; **Go is a follow-up** via
+The **ast** chunker (tree-sitter, **TypeScript/TSX + Rust** now; **Go is a follow-up** via
 `tree-sitter-go`):
 
 - One chunk per top-level **function** / arrow-or-function **const** / **class** /
@@ -65,8 +71,9 @@ The **ast** chunker (tree-sitter, **TypeScript/TSX** now; **Go is a follow-up** 
 - **Parse-failure fallback:** a file that fails to parse, or any **non-TS** extension,
   falls back to the line chunker. Comments are stripped *before* chunking (the AST parses
   comment-stripped text).
-- `chunker: ast` is **feature-gated** — selecting it on a binary built without
-  `--features ast` is a clear, hard error.
+- `chunker: ast` is **feature-gated** — if it is explicitly selected (or auto-selected
+  for TS/TSX) on a binary built without `--features ast`, you get a clear, actionable error
+  telling you to rebuild with the feature.
 
 ### Chunk-size cap (`max_chunk_chars`)
 
@@ -399,6 +406,22 @@ Build with `--features all` (or at least `mcp`, which pulls in `duckdb` + `ollam
 index the project once before starting the server. The default MCP backend is
 `duckdb` + `ollama`; pass `--embedder ort` (as above) to use the offline ONNX embedder.
 
+### One-Command MCP Setup (Recommended)
+
+For the easiest experience (especially when using this with agents), use the dedicated setup script:
+
+```bash
+./mcp-setup/setup.sh
+```
+
+The script will:
+- Build the binary with good defaults for agentic use
+- Create a tuned `indexer.yaml`
+- Generate ready-to-use MCP config snippets for Claude, Cursor, Windsurf, etc.
+- Support fully non-interactive mode (`--non-interactive`) so agents can drive setup
+
+See [mcp-setup/README.md](mcp-setup/README.md) and [mcp-setup/SKILL.md](mcp-setup/SKILL.md) for details.
+
 ## Security
 
 - Credentials are read only from `QDRANT_URL` / `QDRANT_API_KEY` — never commit them.
@@ -422,6 +445,13 @@ cargo test --release --features all
 
 The mocked happy-path tests run without network or a real backend. `--features all`
 pulls in native deps (bundled DuckDB + ONNX Runtime), so the first build is slower.
+
+### Logical Audits
+
+Key algorithmic invariants (chunking "nothing dropped", DuckDB HNSW bulk contract,
+cross-backend point IDs, prefix consistency, worker isolation, dimension guards, etc.)
+are documented in [docs/LOGICAL_AUDIT.md](docs/LOGICAL_AUDIT.md). Re-read this
+document before making changes to core indexing, clustering, or backend logic.
 
 ## License
 

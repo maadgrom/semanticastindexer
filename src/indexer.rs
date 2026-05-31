@@ -77,13 +77,14 @@ fn chunk_content(plan: &Plan, path: &Path, content: &str) -> Vec<Chunk> {
     }
 }
 
-/// AST chunker entry point. When the `ast` feature is compiled in, parse TS/TSX and
-/// emit symbol-aware chunks; for any other extension, or on a parse failure, fall back
-/// to the line chunker. When the feature is NOT compiled in, selecting `chunker: ast`
-/// is a hard error (mirrors the embedder/backend gating).
+/// AST chunker entry point. When the `ast` feature is compiled in, we try to use a
+/// language-specific tree-sitter grammar (TS/TSX + Rust today) to emit symbol-aware
+/// chunks. For unsupported extensions or parse failures, we fall back to the line
+/// chunker. When the feature is NOT compiled in, selecting `chunker: ast` is a hard
+/// error (mirrors the other feature gates).
 #[cfg(feature = "ast")]
 fn chunk_ast(path: &Path, content: &str, cap: usize) -> Vec<Chunk> {
-    ast::chunk_ast_ts(path, content, cap).unwrap_or_else(|| chunk_lines(content, cap))
+    ast::try_chunk_ast(path, content, cap).unwrap_or_else(|| chunk_lines(content, cap))
 }
 
 #[cfg(not(feature = "ast"))]
@@ -163,6 +164,12 @@ pub fn collect_chunks(plan: &Plan) -> (Vec<CodeChunk>, usize, usize) {
 }
 
 /// Walk + report inclusions/exclusions without touching any backend.
+///
+/// LOGICAL INVARIANT: The inclusion/exclusion decisions made here must be
+/// semantically identical to what `collect_chunks` will do for the same Plan.
+/// We deliberately call `passes_globs` (the single source of truth) for the
+/// actual pass/fail decision, and only use the separate checks to produce
+/// human-friendly exclusion *reasons* for the report. This prevents drift.
 pub fn dry_run(plan: &Plan) {
     let mut included: Vec<String> = Vec::new();
     let mut excluded: Vec<(String, &'static str)> = Vec::new();
@@ -181,14 +188,18 @@ pub fn dry_run(plan: &Plan) {
         }
         let rel = path.to_string_lossy().to_string();
         let key = rel.trim_start_matches("./");
-        if plan.include_active && !plan.include.is_match(key) {
-            excluded.push((rel, "not-included"));
+
+        // Use the shared decision function for the actual include/exclude gate.
+        // The manual checks below are only to produce a useful "why" for the report.
+        if !plan.passes_globs(key) {
+            if plan.include_active && !plan.include.is_match(key) {
+                excluded.push((rel, "not-included"));
+            } else {
+                excluded.push((rel, "glob"));
+            }
             continue;
         }
-        if plan.exclude.is_match(key) {
-            excluded.push((rel, "glob"));
-            continue;
-        }
+
         if plan.skip_generated {
             if let Ok(content) = std::fs::read_to_string(path) {
                 if is_generated(&content) {
@@ -197,6 +208,10 @@ pub fn dry_run(plan: &Plan) {
                 }
             }
         }
+
+        // Note: We do *not* simulate build_chunks here. Files that become empty
+        // after stripping will be included in the "would index" count but will
+        // produce zero chunks at runtime (same as collect_chunks behavior).
         included.push(rel);
     }
 
@@ -298,6 +313,11 @@ fn is_cstyle(path: &Path) -> bool {
 
 /// Remove C-family comments (`//` line, `/* */` block) while preserving string and
 /// template literals AND the exact newline count (so payload line numbers stay accurate).
+///
+/// LOGICAL INVARIANT: After stripping, the number of lines must be identical to the
+/// input, and every surviving line of code must have the same 1-based line number it
+/// had in the original source. This is critical so that `start_line`/`end_line` in
+/// the vector payload always point at the real file.
 ///
 /// Known limitation: regex literals are not tracked, so a `//` *inside* a regex literal
 /// would be treated as a line comment. This is vanishingly rare in real code.
@@ -409,7 +429,7 @@ pub fn has_wanted_ext(path: &Path, wanted: &[String]) -> bool {
         .is_some_and(|e| wanted.iter().any(|w| w == e))
 }
 
-/// AST chunker (tree-sitter, TypeScript/TSX). Backend-free, like the rest of this module.
+/// AST chunker (tree-sitter, TypeScript/TSX + Rust). Backend-free, like the rest of this module.
 ///
 /// Strategy:
 /// - Parse the file with the TS (or TSX for `.tsx`) grammar. A root parse error → `None`
@@ -430,10 +450,9 @@ mod ast {
     use std::path::Path;
     use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
-    /// Captures every chunkable declaration plus class methods. `@item` is the node to
-    /// chunk; `@name` is its identifier (the symbol). `@method` marks methods so an
-    /// oversized class can be split into per-method chunks.
-    const QUERY_SRC: &str = r#"
+    // --- TypeScript / TSX query (unchanged) ---
+    /// Captures every chunkable declaration plus class methods.
+    const TS_QUERY_SRC: &str = r#"
 (function_declaration name: (identifier) @name) @item
 (class_declaration name: (type_identifier) @name) @item
 (interface_declaration name: (type_identifier) @name) @item
@@ -443,6 +462,24 @@ mod ast {
     name: (identifier) @name
     value: [(arrow_function) (function_expression)])) @item
 (method_definition name: (property_identifier) @name) @method
+"#;
+
+    // --- Rust query ---
+    /// Reasonable set of top-level items worth treating as semantic chunks in Rust.
+    /// We capture the main name (or construct one for impls).
+    const RUST_QUERY_SRC: &str = r#"
+(function_item name: (identifier) @name) @item
+(struct_item name: (type_identifier) @name) @item
+(enum_item name: (type_identifier) @name) @item
+(trait_item name: (type_identifier) @name) @item
+(impl_item
+  trait: (type_identifier)? @trait
+  type: (type_identifier) @self
+  body: (declaration_list)?) @item
+(mod_item name: (identifier) @name) @item
+(const_item name: (identifier) @name) @item
+(static_item name: (identifier) @name) @item
+(type_item name: (type_identifier) @name) @item
 "#;
 
     /// One captured AST node: byte span, line span (1-based), kind, and symbol.
@@ -456,9 +493,43 @@ mod ast {
         is_method: bool,
     }
 
-    /// Returns `Some(chunks)` for parseable TS/TSX, or `None` to signal the caller should
-    /// fall back to the line chunker (unsupported extension or a root parse error).
+    /// Try to produce AST-based chunks. Dispatches to language-specific implementations.
+    /// Returns `None` to fall back to the line chunker.
+    pub fn try_chunk_ast(path: &Path, content: &str, cap: usize) -> Option<Vec<Chunk>> {
+        let ext = path.extension().and_then(|e| e.to_str())?;
+
+        match ext {
+            "rs" => chunk_ast_rust(content, cap),
+            "ts" | "tsx" => chunk_ast_typescript(path, content, cap, ext),
+            _ => None,
+        }
+    }
+
+    /// Backward compat wrapper (used by existing tests).
+    #[allow(dead_code)]
     pub fn chunk_ast_ts(path: &Path, content: &str, cap: usize) -> Option<Vec<Chunk>> {
+        try_chunk_ast(path, content, cap)
+    }
+
+    fn chunk_ast_typescript(path: &Path, content: &str, cap: usize, ext: &str) -> Option<Vec<Chunk>> {
+        let language: tree_sitter::Language = match ext {
+            "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            _ => return None,
+        };
+
+        let mut parser = Parser::new();
+        parser.set_language(&language).ok()?;
+        let tree = parser.parse(content, None)?;
+        let root = tree.root_node();
+        if root.is_error() || root.kind() == "ERROR" {
+            return None;
+        }
+
+        let query = Query::new(&language, TS_QUERY_SRC).ok()?;
+        let name_idx = query.capture_index_for_name("name")?;
+        let item_idx = query.capture_index_for_name("item")?;
+        let method_idx = query.capture_index_for_name("method")?;
         let ext = path.extension().and_then(|e| e.to_str())?;
         let language: tree_sitter::Language = match ext {
             "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
@@ -475,7 +546,7 @@ mod ast {
             return None;
         }
 
-        let query = Query::new(&language, QUERY_SRC).ok()?;
+        let query = Query::new(&language, TS_QUERY_SRC).ok()?;
         let name_idx = query.capture_index_for_name("name")?;
         let item_idx = query.capture_index_for_name("item")?;
         let method_idx = query.capture_index_for_name("method")?;
@@ -572,19 +643,23 @@ mod ast {
         }
 
         // Remainder: contiguous runs of uncovered lines → line chunks (symbol: None).
+        // Note: we convert the 1-based inclusive remainder span [start, end] into the
+        // 0-based half-open range expected by chunk_line_range using the shared
+        // numeric relationship (1-based line L ↔ 0-based index L-1).
         let mut i = 1usize;
         while i <= total_lines {
             if covered[i] {
                 i += 1;
                 continue;
             }
-            let start = i;
+            let start_1b = i;
             while i <= total_lines && !covered[i] {
                 i += 1;
             }
-            let end = i - 1; // inclusive 1-based
-            // `chunk_line_range` is 0-based half-open over the full `lines` slice.
-            chunks.extend(chunk_line_range(&lines, start - 1, end, cap));
+            let end_1b = i - 1; // inclusive 1-based
+            let from_0b = start_1b - 1;
+            let to_0b = end_1b; // works because 1b E → 0b exclusive to = E
+            chunks.extend(chunk_line_range(&lines, from_0b, to_0b, cap));
         }
 
         chunks.sort_by_key(|c| c.start_line);
@@ -639,6 +714,118 @@ mod ast {
             (None, None) => String::new(),
         }
     }
+
+    // ------------------------------------------------------------------
+    // Rust support + shared helpers
+    // ------------------------------------------------------------------
+
+    fn chunk_ast_rust(content: &str, cap: usize) -> Option<Vec<Chunk>> {
+        let language = tree_sitter_rust::LANGUAGE.into();
+
+        let mut parser = Parser::new();
+        parser.set_language(&language).ok()?;
+        let tree = parser.parse(content, None)?;
+        let root = tree.root_node();
+        if root.is_error() || root.kind() == "ERROR" {
+            return None;
+        }
+
+        let query = Query::new(&language, RUST_QUERY_SRC).ok()?;
+        let name_idx = query.capture_index_for_name("name")?;
+        let trait_idx = query.capture_index_for_name("trait")?;
+        let self_idx = query.capture_index_for_name("self")?;
+        let item_idx = query.capture_index_for_name("item")?;
+
+        let src = content.as_bytes();
+        let mut items: Vec<Item> = Vec::new();
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, root, src);
+
+        while let Some(m) = matches.next() {
+            let mut node: Option<Node> = None;
+            let mut symbol: Option<String> = None;
+
+            for cap in m.captures {
+                if cap.index == item_idx {
+                    node = Some(cap.node);
+                } else if cap.index == name_idx {
+                    symbol = cap.node.utf8_text(src).ok().map(str::to_string);
+                } else if cap.index == self_idx {
+                    let self_name = cap.node.utf8_text(src).ok().unwrap_or("");
+                    if let Some(trait_cap) = m.captures.iter().find(|c| c.index == trait_idx) {
+                        if let Ok(trait_name) = trait_cap.node.utf8_text(src) {
+                            symbol = Some(format!("{trait_name} for {self_name}"));
+                        } else {
+                            symbol = Some(self_name.to_string());
+                        }
+                    } else {
+                        symbol = Some(self_name.to_string());
+                    }
+                }
+            }
+
+            if let Some(n) = node {
+                items.push(Item {
+                    kind: n.kind().to_string(),
+                    symbol,
+                    start_byte: n.start_byte(),
+                    end_byte: n.end_byte(),
+                    start_line: n.start_position().row + 1,
+                    end_line: n.end_position().row + 1,
+                    is_method: false,
+                });
+            }
+        }
+
+        build_chunks_from_items(items, content, cap)
+    }
+
+    /// Common chunk building logic used by TS and Rust.
+    fn build_chunks_from_items(items: Vec<Item>, content: &str, cap: usize) -> Option<Vec<Chunk>> {
+        let lines: Vec<&str> = content.lines().collect();
+        let total_lines = lines.len();
+        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut covered = vec![false; total_lines + 2];
+
+        let mut top: Vec<&Item> = items.iter().filter(|it| !it.is_method).collect();
+        top.sort_by_key(|it| it.start_byte);
+
+        for it in &top {
+            mark_covered(&mut covered, it.start_line, it.end_line);
+            let len = it.end_byte.saturating_sub(it.start_byte);
+            if len <= cap {
+                let text = node_text(&lines, it.start_line, it.end_line);
+                if !text.trim().is_empty() {
+                    chunks.push(Chunk {
+                        start_line: it.start_line,
+                        end_line: it.end_line,
+                        text,
+                        symbol: it.symbol.clone(),
+                    });
+                }
+                continue;
+            }
+            chunks.extend(line_split_node(&lines, it, cap, it.symbol.clone()));
+        }
+
+        // Remainder
+        let mut i = 1usize;
+        while i <= total_lines {
+            if covered[i] {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i <= total_lines && !covered[i] {
+                i += 1;
+            }
+            let end = i - 1;
+            chunks.extend(chunk_line_range(&lines, start - 1, end, cap));
+        }
+
+        chunks.sort_by_key(|c| c.start_line);
+        Some(chunks)
+    }
 }
 
 #[cfg(test)]
@@ -690,6 +877,23 @@ mod tests {
         let out = strip_c_comments(src);
         assert!(out.contains("\"he said \\\"hi\\\" // x\""));
         assert!(!out.contains("real comment"));
+    }
+
+    /// Documents the known limitation of the comment stripper: regex literals are not
+    /// tracked. A `//` or `/*` inside a regex literal will be (incorrectly) treated as
+    /// the start of a comment. This is explicitly accepted and documented because it is
+    /// extremely rare in real code and would require a full JS/TS lexer to handle
+    /// correctly.
+    #[test]
+    fn stripper_known_limitation_regex_literals() {
+        // The `//` inside the regex will be treated as a line comment start.
+        let src = "const re = /http:\\/\\//; // real comment\n";
+        let out = strip_c_comments(src);
+
+        // Current (accepted) behavior: everything after the first // in the regex is dropped.
+        assert!(!out.contains("real comment"));
+        // The regex itself is mangled (this is the known limitation).
+        assert!(out.contains("const re = /http:"));
     }
 
     /// The line chunker honors the char cap: a tiny cap forces many small windows;
@@ -867,5 +1071,48 @@ export function huge(): number {
     fn ast_returns_none_for_non_ts_extension() {
         use std::path::Path;
         assert!(super::ast::chunk_ast_ts(Path::new("x.go"), "package main\n", 1400).is_none());
+    }
+
+    /// AST chunker on a file that has *no* captured declarations after stripping
+    /// (only imports + plain statements). Everything must land in remainder chunks
+    /// (symbol: None) and nothing may be dropped.
+    #[cfg(feature = "ast")]
+    #[test]
+    fn ast_all_remainder_when_no_declarations() {
+        use std::path::Path;
+
+        let src = "\
+import { foo } from './foo';
+import bar from './bar';
+
+const x = 1;
+let y = 2;
+foo();
+bar();
+";
+
+        let chunks = super::ast::chunk_ast_ts(Path::new("no-decls.ts"), src, 1400)
+            .expect("should parse");
+
+        // All chunks must have no symbol.
+        assert!(
+            chunks.iter().all(|c| c.symbol.is_none()),
+            "no symbols expected in pure-remainder file"
+        );
+
+        // Everything non-blank must be covered.
+        let total = src.lines().count();
+        let mut covered = vec![false; total + 1];
+        for c in &chunks {
+            for l in c.start_line..=c.end_line.min(total) {
+                covered[l] = true;
+            }
+        }
+        let lines: Vec<&str> = src.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if !line.trim().is_empty() {
+                assert!(covered[idx + 1], "line {} should be covered in remainder", idx + 1);
+            }
+        }
     }
 }

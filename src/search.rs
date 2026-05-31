@@ -112,12 +112,9 @@ pub fn cluster_duplicates(
         .map(|members| build_cluster(chunks, &members, &edges))
         .collect();
     // Largest clusters first; tie-break by max_sim desc for determinism.
+    // Use total_cmp for a total order (handles NaN / -0.0 safely; MSRV 1.85 supports it).
     clusters.sort_by(|a, b| {
-        b.size.cmp(&a.size).then(
-            b.max_sim
-                .partial_cmp(&a.max_sim)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        )
+        b.size.cmp(&a.size).then(b.max_sim.total_cmp(&a.max_sim))
     });
     clusters.truncate(max_clusters);
     clusters

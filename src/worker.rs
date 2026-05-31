@@ -271,6 +271,9 @@ async fn worker_loop(
 /// begin_bulk (drop HNSW) → per-path delete + re-chunk + re-embed + upsert → end_bulk
 /// (rebuild HNSW), rebuilding the index even when a path fails. Runs entirely on the
 /// worker thread (owns the backend), so no `!Send` value crosses a thread boundary.
+///
+/// LOGICAL INVARIANT: end_bulk is *always* called (even on error) so the HNSW index
+/// is never left dropped after a refresh operation.
 async fn handle_refresh(backend: &Backend, plan: &Plan, paths: &[String]) -> Result<RefreshReport> {
     backend.begin_bulk().await?;
     let mut refreshed: Vec<(String, usize)> = Vec::new();

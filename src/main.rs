@@ -79,7 +79,9 @@ pub struct Args {
     #[arg(long, global = true)]
     pub embedder: Option<String>,
 
-    /// Chunker: "lines" (default) or "ast" (tree-sitter; needs the `ast` feature).
+    /// Chunker: "lines" or "ast" (tree-sitter). When omitted, we auto-select "ast" for
+    /// languages that have AST support (ts/tsx) *if* the binary was built with --features ast.
+    /// Explicit --chunker always wins.
     #[arg(long)]
     pub chunker: Option<String>,
 
@@ -192,6 +194,11 @@ struct McpArgs {
     /// server is read-only and `refresh` returns a clear "restart with --allow-write" error.
     #[arg(long, default_value_t = false)]
     allow_write: bool,
+
+    /// Allow the `prepare_mcp_setup` tool to actually execute the mcp-setup script
+    /// (can trigger long builds and file modifications). Use with caution.
+    #[arg(long, default_value_t = false)]
+    allow_setup: bool,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -230,7 +237,7 @@ async fn main() -> Result<()> {
             sync(&backend, &plan, sync_args).await
         }
         #[cfg(feature = "mcp")]
-        Some(Cmd::Mcp(mcp_args)) => run_mcp(&args, mcp_args.allow_write).await,
+        Some(Cmd::Mcp(mcp_args)) => run_mcp(&args, mcp_args.allow_write, mcp_args.allow_setup).await,
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
         Some(Cmd::Duplicates(dup_args)) => run_duplicates(&plan, dup_args).await,
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
@@ -402,7 +409,7 @@ fn changed_files(sync_args: &SyncArgs) -> Result<Vec<String>> {
 /// them in the config). Builds the backend + embedder ONCE, opens DuckDB read-only, then
 /// serves rmcp until EOF.
 #[cfg(feature = "mcp")]
-async fn run_mcp(args: &Args, allow_write: bool) -> Result<()> {
+async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()> {
     // Apply the MCP-specific defaults: when the user did not pass `--backend`/`--embedder`,
     // prefer duckdb + ollama (the indexer's global defaults are qdrant + ort). Explicit
     // CLI flags still win; config values are honored via the normal merge in `build_plan`.
@@ -430,7 +437,7 @@ async fn run_mcp(args: &Args, allow_write: bool) -> Result<()> {
     // only a `Send`+`Sync` channel handle. See `worker.rs` for the full rationale.
     let can_embed_locally = plan.backend == "duckdb";
     let handle = worker::spawn(backend, plan.clone(), can_embed_locally)?;
-    mcp::serve_inner(handle, &plan, allow_write).await
+    mcp::serve_inner(handle, &plan, allow_write, allow_setup).await
 }
 
 /// Run a semantic query and print the hits exactly as before.
