@@ -1,0 +1,439 @@
+//! Shared similarity-search core used by BOTH the CLI (`similar` / `duplicates`
+//! subcommands in `main.rs`) AND the MCP server (`mcp.rs`).
+//!
+//! This module is **not** gated behind the `mcp` feature: the `duplicates` / `similar`
+//! CLI subcommands must work with just a vector backend + embedder (e.g.
+//! `--features "ollama,ast"` or `--features ort`). It is compiled whenever a vector
+//! backend (`duckdb` or `qdrant`) is available.
+//!
+//! What lives here (single source of truth — never duplicated):
+//! - [`UnionFind`] — disjoint-set used to cluster near-duplicate chunks.
+//! - [`DupMember`] / [`DupCluster`] — the cluster result shape.
+//! - [`cluster_duplicates`] — the PURE clustering algorithm (union-find over
+//!   per-chunk neighbour lists + edge bookkeeping + sort/truncate). Both callers
+//!   fetch the chunks + neighbours their own way (the MCP server through its `!Send`
+//!   backend worker handle, the CLI directly off the `Backend` enum) and then hand
+//!   the gathered data to this one function.
+//! - [`SimilarTarget`] / [`find_similar`] — the `find_similar` input resolution
+//!   (a `code` snippet embedded as a PASSAGE vs an existing `path`+`line` whose stored
+//!   vector is reused, self-excluded) for the CLI, off the `Backend` enum directly.
+//!
+//! The MCP server cannot call the `Backend` enum directly (its DuckDB backend is
+//! `!Send` and rmcp tool futures must be `Send`), so it routes reads through its worker
+//! thread — but it shares the PURE clustering core ([`cluster_duplicates`]) and the
+//! result types here, so the union-find logic exists in exactly one place.
+
+#![cfg_attr(not(any(feature = "duckdb", feature = "qdrant")), allow(dead_code))]
+
+use std::collections::{HashMap, HashSet};
+
+use anyhow::Result;
+use serde::Serialize;
+
+use crate::vectordbs::{Backend, Hit};
+
+/// One member of a near-duplicate cluster.
+#[derive(Debug, Clone, Serialize)]
+pub struct DupMember {
+    pub path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub symbol: Option<String>,
+}
+
+/// A near-duplicate cluster: its members plus the min/max edge similarity within it.
+#[derive(Debug, Clone, Serialize)]
+pub struct DupCluster {
+    pub size: usize,
+    pub members: Vec<DupMember>,
+    pub min_sim: f32,
+    pub max_sim: f32,
+}
+
+/// Cluster near-duplicate chunks from per-chunk nearest-neighbour lists (PURE — no I/O).
+///
+/// `chunks` is every stored chunk (paired with its vector — the vector is unused here
+/// but kept so callers can pass the exact `all_chunks_with_vectors` shape). `neighbours`
+/// is parallel to `chunks`: `neighbours[i]` is the nearest-neighbour hits of `chunks[i]`
+/// (self already excluded by the backend). An edge is kept when its similarity
+/// `>= min_score`; kept edges union the two chunks. Clusters with `>= min_cluster_size`
+/// members are returned, largest first (tie-break: higher `max_sim`), truncated to
+/// `max_clusters`.
+///
+/// Both the CLI handlers and the MCP `find_duplicates` tool call this with the chunks +
+/// neighbours they each gathered, so the union-find lives in exactly one place.
+pub fn cluster_duplicates(
+    chunks: &[(Hit, Vec<f32>)],
+    neighbours: &[Vec<Hit>],
+    min_score: f32,
+    min_cluster_size: usize,
+    max_clusters: usize,
+) -> Vec<DupCluster> {
+    let n = chunks.len();
+    // Stable index per chunk id for union-find.
+    let mut id_to_idx = HashMap::with_capacity(n);
+    for (i, (hit, _)) in chunks.iter().enumerate() {
+        id_to_idx.insert(hit.id, i);
+    }
+
+    let mut uf = UnionFind::new(n);
+    // edges keyed by ordered (a,b) idx pair → best similarity, deduped.
+    let mut edges: HashMap<(usize, usize), f32> = HashMap::new();
+
+    for (i, nbrs) in neighbours.iter().enumerate() {
+        for nb in nbrs {
+            if nb.score < min_score {
+                continue;
+            }
+            let Some(&j) = id_to_idx.get(&nb.id) else {
+                continue;
+            };
+            if i == j {
+                continue;
+            }
+            let key = if i < j { (i, j) } else { (j, i) };
+            let e = edges.entry(key).or_insert(nb.score);
+            if nb.score > *e {
+                *e = nb.score;
+            }
+            uf.union(i, j);
+        }
+    }
+
+    // Group chunk indices by union-find root.
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        groups.entry(uf.find(i)).or_default().push(i);
+    }
+
+    let mut clusters: Vec<DupCluster> = groups
+        .into_values()
+        .filter(|members| members.len() >= min_cluster_size)
+        .map(|members| build_cluster(chunks, &members, &edges))
+        .collect();
+    // Largest clusters first; tie-break by max_sim desc for determinism.
+    clusters.sort_by(|a, b| {
+        b.size.cmp(&a.size).then(
+            b.max_sim
+                .partial_cmp(&a.max_sim)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+    clusters.truncate(max_clusters);
+    clusters
+}
+
+/// Build a cluster summary from member indices and the deduped edge map.
+fn build_cluster(
+    chunks: &[(Hit, Vec<f32>)],
+    members: &[usize],
+    edges: &HashMap<(usize, usize), f32>,
+) -> DupCluster {
+    let member_set: HashSet<usize> = members.iter().copied().collect();
+    let mut min_sim = f32::MAX;
+    let mut max_sim = f32::MIN;
+    for (&(a, b), &s) in edges {
+        if member_set.contains(&a) && member_set.contains(&b) {
+            min_sim = min_sim.min(s);
+            max_sim = max_sim.max(s);
+        }
+    }
+    // A lone-edge cluster has at least one edge; guard the degenerate case anyway.
+    if min_sim == f32::MAX {
+        min_sim = 0.0;
+    }
+    if max_sim == f32::MIN {
+        max_sim = 0.0;
+    }
+    let mut member_rows: Vec<DupMember> = members
+        .iter()
+        .map(|&i| {
+            let h = &chunks[i].0;
+            DupMember {
+                path: h.path.clone(),
+                start_line: h.start_line,
+                end_line: h.end_line,
+                symbol: h.symbol.clone(),
+            }
+        })
+        .collect();
+    // Deterministic member order.
+    member_rows.sort_by(|a, b| a.path.cmp(&b.path).then(a.start_line.cmp(&b.start_line)));
+    DupCluster {
+        size: members.len(),
+        members: member_rows,
+        min_sim,
+        max_sim,
+    }
+}
+
+/// Run the full codebase-wide near-duplicate scan directly off the [`Backend`] enum
+/// (the CLI `duplicates` path). Fetches every stored chunk (optionally path-glob
+/// filtered), gathers each chunk's `top_k` nearest neighbours (self-excluded, stored
+/// vectors — no re-embed), then defers to the shared [`cluster_duplicates`].
+///
+/// The MCP server does NOT call this (it must route the same reads through its `!Send`
+/// backend worker) — but it calls the same [`cluster_duplicates`] core, so the
+/// clustering algorithm is shared, not duplicated.
+pub async fn find_duplicates(
+    backend: &Backend,
+    min_score: f32,
+    min_cluster_size: usize,
+    top_k: u64,
+    max_clusters: usize,
+    path_glob: Option<&str>,
+) -> Result<Vec<DupCluster>> {
+    let chunks = backend.all_chunks_with_vectors(path_glob).await?;
+    let mut neighbours: Vec<Vec<Hit>> = Vec::with_capacity(chunks.len());
+    for (hit, vec) in &chunks {
+        let nbrs = backend.query_by_vector(vec, top_k, Some(hit.id)).await?;
+        neighbours.push(nbrs);
+    }
+    Ok(cluster_duplicates(
+        &chunks,
+        &neighbours,
+        min_score,
+        min_cluster_size.max(1),
+        max_clusters,
+    ))
+}
+
+/// What `find_similar` searches for: a code snippet (embedded as a PASSAGE) or an
+/// existing indexed chunk located by `path` + 1-based `line` (its stored vector is
+/// reused — no re-embed — and the chunk itself is excluded from its own results).
+pub enum SimilarTarget<'a> {
+    /// A code snippet to embed as a passage (code-vs-code space).
+    Code(&'a str),
+    /// An existing indexed chunk's location.
+    Location { path: &'a str, line: usize },
+}
+
+/// Resolve a `find_similar` request directly off the [`Backend`] enum (the CLI `similar`
+/// path) into ranked neighbours, applying `min_score`.
+///
+/// - [`SimilarTarget::Code`] embeds the snippet as a PASSAGE then NN-searches by it.
+/// - [`SimilarTarget::Location`] looks up the stored chunk + its exact vector and
+///   NN-searches by that vector, excluding the chunk itself.
+///
+/// `min_score` drops neighbours below the cosine cut (pass `0.0` to see the raw
+/// distribution). Returns the ranked, filtered hits.
+pub async fn find_similar(
+    backend: &Backend,
+    target: SimilarTarget<'_>,
+    limit: u64,
+    min_score: f32,
+) -> Result<Vec<Hit>> {
+    let hits = match target {
+        SimilarTarget::Code(code) => {
+            let vec = backend.embed_passage(code).await?;
+            backend.query_by_vector(&vec, limit, None).await?
+        }
+        SimilarTarget::Location { path, line } => {
+            let located = backend.get_by_location(path, line).await?;
+            let (hit, vec) =
+                located.ok_or_else(|| anyhow::anyhow!("no indexed chunk at {path}:{line}"))?;
+            backend.query_by_vector(&vec, limit, Some(hit.id)).await?
+        }
+    };
+    Ok(hits.into_iter().filter(|h| h.score >= min_score).collect())
+}
+
+/// Classic union-find (disjoint set) with path compression + union by size. Used to
+/// cluster near-duplicate chunks from the pairwise NN edges. Single source of truth
+/// shared by the CLI and MCP find_duplicates paths.
+pub struct UnionFind {
+    parent: Vec<usize>,
+    size: Vec<usize>,
+}
+
+impl UnionFind {
+    pub fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+            size: vec![1; n],
+        }
+    }
+
+    pub fn find(&mut self, x: usize) -> usize {
+        let mut root = x;
+        while self.parent[root] != root {
+            root = self.parent[root];
+        }
+        // Path compression.
+        let mut cur = x;
+        while self.parent[cur] != root {
+            let next = self.parent[cur];
+            self.parent[cur] = root;
+            cur = next;
+        }
+        root
+    }
+
+    pub fn union(&mut self, a: usize, b: usize) {
+        let (ra, rb) = (self.find(a), self.find(b));
+        if ra == rb {
+            return;
+        }
+        let (big, small) = if self.size[ra] >= self.size[rb] {
+            (ra, rb)
+        } else {
+            (rb, ra)
+        };
+        self.parent[small] = big;
+        self.size[big] += self.size[small];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests against `Backend::Mock` (seeded rows-with-vectors) for the shared core that
+    //! BOTH the CLI subcommands and the MCP tools depend on: union-find clustering, the
+    //! duplicates scan, and find_similar resolution (code + location, self-exclusion).
+
+    use super::*;
+    use crate::vectordbs::Backend;
+    use crate::vectordbs::mock::{MockBackend, MockRow};
+
+    fn seeded(rows: Vec<MockRow>) -> Backend {
+        Backend::Mock(MockBackend::with_rows(rows))
+    }
+
+    /// find_duplicates: a tight cluster of near-identical vectors collapses into ONE
+    /// component; a distinct vector stays separate; min_cluster_size filters it.
+    #[tokio::test]
+    async fn find_duplicates_clusters_near_identical_and_separates_distinct() {
+        let b = seeded(vec![
+            MockRow::new(1, "src/dup1.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
+            MockRow::new(2, "src/dup2.ts", 1, vec![0.999, 0.01, 0.0, 0.0]),
+            MockRow::new(3, "src/dup3.ts", 1, vec![0.998, 0.0, 0.02, 0.0]),
+            MockRow::new(4, "src/other.ts", 1, vec![0.0, 0.0, 0.0, 1.0]),
+        ]);
+        let clusters = find_duplicates(&b, 0.95, 2, 10, 50, None).await.unwrap();
+        assert_eq!(clusters.len(), 1, "exactly one near-duplicate cluster");
+        assert_eq!(clusters[0].size, 3, "the three near-identical chunks");
+        let paths: Vec<&str> = clusters[0]
+            .members
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+        assert!(paths.contains(&"src/dup1.ts"));
+        assert!(paths.contains(&"src/dup2.ts"));
+        assert!(paths.contains(&"src/dup3.ts"));
+        assert!(!paths.contains(&"src/other.ts"), "outlier excluded");
+        assert!(clusters[0].min_sim >= 0.95, "edge sims above threshold");
+    }
+
+    /// min_score filtering: raising the threshold above all edge similarities yields no
+    /// clusters even though the vectors are somewhat close.
+    #[tokio::test]
+    async fn find_duplicates_min_score_filters_out_weak_edges() {
+        let b = seeded(vec![
+            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
+            MockRow::new(2, "src/b.ts", 1, vec![0.7, 0.7, 0.0, 0.0]),
+        ]);
+        // cosine ~0.707 < 0.99 → no edges kept.
+        let clusters = find_duplicates(&b, 0.99, 2, 10, 50, None).await.unwrap();
+        assert!(clusters.is_empty(), "no edges survive a high threshold");
+    }
+
+    /// find_similar by code: embeds the snippet (mock canned vector) and ranks neighbours.
+    #[tokio::test]
+    async fn find_similar_by_code_ranks_neighbours() {
+        let b = seeded(vec![
+            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
+            MockRow::new(2, "src/b.ts", 1, vec![0.0, 1.0, 0.0, 0.0]),
+        ]);
+        // min_score 0.0 → no filtering; just assert it resolves + ranks.
+        let hits = find_similar(&b, SimilarTarget::Code("anything"), 8, 0.0)
+            .await
+            .unwrap();
+        assert!(!hits.is_empty(), "code path returns neighbours");
+        assert!(
+            hits.windows(2).all(|w| w[0].score >= w[1].score),
+            "ranked by score desc"
+        );
+    }
+
+    /// find_similar by location: reuses the stored vector and EXCLUDES the chunk itself.
+    #[tokio::test]
+    async fn find_similar_by_location_excludes_self() {
+        let b = seeded(vec![
+            MockRow::new(1, "src/a.ts", 10, vec![1.0, 0.0, 0.0, 0.0]),
+            MockRow::new(2, "src/b.ts", 1, vec![0.99, 0.01, 0.0, 0.0]),
+        ]);
+        let hits = find_similar(
+            &b,
+            SimilarTarget::Location {
+                path: "src/a.ts",
+                line: 10,
+            },
+            8,
+            0.0,
+        )
+        .await
+        .unwrap();
+        assert!(hits.iter().all(|h| h.id != 1), "self id excluded");
+        assert_eq!(hits.len(), 1, "only the other chunk");
+        assert_eq!(hits[0].id, 2);
+    }
+
+    /// find_similar by location: a missing chunk is a clear error.
+    #[tokio::test]
+    async fn find_similar_missing_location_errors() {
+        let b = seeded(vec![MockRow::new(
+            1,
+            "src/a.ts",
+            10,
+            vec![1.0, 0.0, 0.0, 0.0],
+        )]);
+        // `Hit` is not `Debug`, so avoid `unwrap_err()` — match the Result directly.
+        let res = find_similar(
+            &b,
+            SimilarTarget::Location {
+                path: "src/a.ts",
+                line: 999,
+            },
+            8,
+            0.0,
+        )
+        .await;
+        match res {
+            Err(e) => assert!(e.to_string().contains("no indexed chunk"), "clear error"),
+            Ok(_) => panic!("missing location must error"),
+        }
+    }
+
+    /// min_score filters low-scoring neighbours out of find_similar results.
+    #[tokio::test]
+    async fn find_similar_applies_min_score() {
+        let b = seeded(vec![
+            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
+            MockRow::new(2, "src/b.ts", 1, vec![0.0, 1.0, 0.0, 0.0]),
+        ]);
+        let hits = find_similar(
+            &b,
+            SimilarTarget::Location {
+                path: "src/a.ts",
+                line: 1,
+            },
+            8,
+            0.5,
+        )
+        .await
+        .unwrap();
+        // The only other vector is orthogonal (cosine 0 < 0.5) → filtered out.
+        assert!(hits.is_empty(), "orthogonal neighbour dropped by min_score");
+    }
+
+    /// Union-find groups transitively connected indices and keeps disjoint sets apart.
+    #[test]
+    fn union_find_groups_transitively() {
+        let mut uf = UnionFind::new(5);
+        uf.union(0, 1);
+        uf.union(1, 2);
+        uf.union(3, 4);
+        assert_eq!(uf.find(0), uf.find(2), "0-1-2 are one set");
+        assert_eq!(uf.find(3), uf.find(4), "3-4 are one set");
+        assert_ne!(uf.find(0), uf.find(3), "the two sets are disjoint");
+    }
+}

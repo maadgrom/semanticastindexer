@@ -1,0 +1,7 @@
+/target
+.env
+# fastembed downloads the ONNX model here by default (duckdb backend / tests).
+/.fastembed_cache
+# DuckDB index files created by the duckdb backend / e2e.
+/.index
+*.duckdb

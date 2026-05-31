@@ -1,0 +1,81 @@
+[package]
+name = "semanticastindexer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Semantic AST code indexer with pluggable vector backends (Qdrant/DuckDB), local/remote embedders (ort/Ollama), tree-sitter chunking, and an MCP server."
+license = "MIT"
+repository = "https://github.com/common/semanticastindexer"
+readme = "README.md"
+keywords = ["semantic-search", "code-search", "embeddings", "vector-search", "mcp"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "semanticastindexer"
+path = "src/main.rs"
+
+[features]
+default = ["qdrant"]
+qdrant = ["dep:qdrant-client"]
+# DuckDB storage backend (VSS/HNSW). Needs an embedder feature (ort or ollama) to
+# actually produce vectors.
+duckdb = ["dep:duckdb"]
+# Local ONNX embedder via raw ort (ONNX Runtime) — implies the duckdb storage backend.
+ort = ["dep:ort", "dep:tokenizers", "dep:ndarray", "dep:hf-hub", "duckdb"]
+# Remote Ollama HTTP embedder — implies the duckdb storage backend.
+ollama = ["dep:reqwest", "duckdb"]
+# AST chunker (tree-sitter). TypeScript/TSX now; Go is a small follow-on (tree-sitter-go).
+# Backend-free — gated only so the heavy tree-sitter grammars stay out of the default build.
+ast = ["dep:tree-sitter", "dep:tree-sitter-typescript"]
+# MCP server (`semanticastindexer mcp`): exposes semantic code search to Claude over stdio
+# via the official Rust MCP SDK (rmcp). READ-ONLY. Defaults to backend=duckdb +
+# embedder=ollama, so it pulls in those features to be usable out of the box. schemars
+# generates the JSON tool-input schemas the protocol requires.
+mcp = ["dep:rmcp", "dep:schemars", "duckdb", "ollama"]
+all = ["qdrant", "ort", "ollama", "ast", "mcp"]
+
+[dependencies]
+qdrant-client = { version = "1.15", optional = true }
+# DuckDB backend (feature = "duckdb"): VSS/HNSW vector persistence.
+duckdb = { version = "1", features = ["bundled"], optional = true }
+# Local ONNX embedder (feature = "ort"): raw ONNX Runtime + tokenizer + HF model download.
+# ort is a 2.x prerelease; pin to the rc proven in this tree (download-binaries default).
+ort = { version = "=2.0.0-rc.9", optional = true }
+tokenizers = { version = "0.21", optional = true }
+ndarray = { version = "0.16", optional = true }
+hf-hub = { version = "0.3", optional = true }
+# Remote Ollama HTTP embedder (feature = "ollama").
+reqwest = { version = "0.12", features = ["json"], optional = true }
+# AST chunker (feature = "ast"): tree-sitter 0.25 + the TypeScript/TSX grammars 0.23.
+# These versions build together (grammar 0.23 targets the tree-sitter 0.24/0.25 ABI).
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+# MCP server (feature = "mcp"): official Rust MCP SDK + JSON-schema generation for tools.
+# Pinned to 1.7 (verified to build with cargo 1.96 / rustc 1.96 in this tree). Features:
+# server (handler), macros (#[tool]/#[tool_router]/#[tool_handler]), transport-io (stdio),
+# schemars (tool input schemas).
+rmcp = { version = "1.7", optional = true, default-features = false, features = [
+    "server",
+    "macros",
+    "transport-io",
+    "schemars",
+] }
+schemars = { version = "1", optional = true }
+# twox-hash is NON-optional: point_id uses XxHash64 (seed 0) unconditionally so
+# Qdrant and DuckDB produce identical stable point IDs.
+twox-hash = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+anyhow = "1"
+walkdir = "2"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+globset = "0.4"
+
+[dev-dependencies]
+# Temp source trees for the mocked happy-path flow tests (no network, no real backend).
+tempfile = "3"
+
+[profile.release]
+opt-level = 2

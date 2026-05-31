@@ -1,0 +1,414 @@
+//! Qdrant Cloud backend using E5-small via **server-side inference**.
+//!
+//! Embeddings are produced inside the Qdrant Cloud cluster (Inference enabled) by
+//! passing `Document::new(text, model)` — no client-side model is loaded here.
+//! Stored chunks are embedded as `passage: <code>` and queries as `query: <text>`.
+
+use anyhow::{Context, Result};
+use serde_json::json;
+use std::collections::HashMap;
+
+use qdrant_client::Payload;
+use qdrant_client::Qdrant;
+use qdrant_client::qdrant::value::Kind;
+use qdrant_client::qdrant::{
+    Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
+    Distance, Document, FieldType, Filter, GetPointsBuilder, PointStruct, Query,
+    QueryPointsBuilder, ScrollPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
+    VectorsOutput,
+};
+
+use crate::config::Plan;
+use crate::vectordbs::{CodeChunk, Hit, PrefixStyle, format_passage, format_query};
+
+/// Upsert batch size — server-side inference runs per request, so keep it modest.
+const UPSERT_BATCH: usize = 32;
+/// Over-fetch factor for vector search: HNSW can surface the same id more than once,
+/// so fetch extra candidates, dedup by id, then truncate. Mirrors the DuckDB path.
+const QUERY_OVERFETCH: u64 = 8;
+/// Page size when scrolling all points for `find_duplicates`.
+const SCROLL_PAGE: u32 = 256;
+
+/// Qdrant backend: wraps the client plus the collection/model/dim from the plan.
+pub struct QdrantBackend {
+    client: Qdrant,
+    collection: String,
+    model: String,
+    vector_dim: u64,
+    /// Embedding prefix policy (Qdrant's model is e5, but route through the shared
+    /// helper so it stays consistent with the local embedders).
+    prefix_style: PrefixStyle,
+}
+
+impl QdrantBackend {
+    /// Build a Qdrant client from QDRANT_URL / QDRANT_API_KEY.
+    pub fn connect(plan: &Plan) -> Result<Self> {
+        let url = std::env::var("QDRANT_URL")
+            .context("set QDRANT_URL to your cluster gRPC endpoint, e.g. https://<id>.<region>.aws.cloud.qdrant.io:6334")?;
+        let mut builder = Qdrant::from_url(&url);
+        match std::env::var("QDRANT_API_KEY") {
+            Ok(key) if !key.is_empty() => builder = builder.api_key(key),
+            _ => {
+                eprintln!("warning: QDRANT_API_KEY not set — Qdrant Cloud will reject the request")
+            }
+        }
+        Ok(Self {
+            client: builder.build()?,
+            collection: plan.collection.clone(),
+            model: plan.model.clone(),
+            vector_dim: plan.vector_dim,
+            prefix_style: plan.prefix_style,
+        })
+    }
+
+    /// Create the collection if missing (recreate on demand). Vector size/distance from the plan.
+    /// Also creates a keyword payload index on `path` so sync's delete-by-path filter is fast.
+    pub async fn ensure_ready(&self, recreate: bool) -> Result<()> {
+        let exists = self.client.collection_exists(&self.collection).await?;
+        if exists && recreate {
+            self.client.delete_collection(&self.collection).await?;
+            println!("dropped existing collection '{}'", self.collection);
+        }
+        if !self.client.collection_exists(&self.collection).await? {
+            self.client
+                .create_collection(
+                    CreateCollectionBuilder::new(&self.collection).vectors_config(
+                        VectorParamsBuilder::new(self.vector_dim, Distance::Cosine),
+                    ),
+                )
+                .await?;
+            // Keyword index on `path` enables efficient delete-by-path during sync.
+            self.client
+                .create_field_index(CreateFieldIndexCollectionBuilder::new(
+                    &self.collection,
+                    "path",
+                    FieldType::Keyword,
+                ))
+                .await?;
+            println!(
+                "created collection '{}' ({} dims, cosine, path index)",
+                self.collection, self.vector_dim
+            );
+        } else {
+            println!("using existing collection '{}'", self.collection);
+        }
+        Ok(())
+    }
+
+    /// No-op for Qdrant (server-side inference, no local index maintenance).
+    pub async fn begin_bulk(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// No-op for Qdrant.
+    pub async fn end_bulk(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Upsert a batch of chunks as `passage:`-prefixed Documents (server-side inference).
+    pub async fn upsert(&self, chunks: &[CodeChunk]) -> Result<()> {
+        let points = self.build_points(chunks);
+        for batch in points.chunks(UPSERT_BATCH) {
+            let n = batch.len();
+            self.client
+                .upsert_points(
+                    UpsertPointsBuilder::new(&self.collection, batch.to_vec()).wait(true),
+                )
+                .await
+                .with_context(|| {
+                    format!("upsert of {n} points failed (is Inference enabled on the cluster?)")
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Build Document points from chunks. Passage prefix is the shared model-aware
+    /// helper (e5 for Qdrant); raw code stays in the payload. The optional `symbol`
+    /// (AST chunker) is added only when present, keeping the line path's payload
+    /// byte-identical.
+    fn build_points(&self, chunks: &[CodeChunk]) -> Vec<PointStruct> {
+        chunks
+            .iter()
+            .filter_map(|c| {
+                let mut payload_json = json!({
+                    "path": c.path,
+                    "language": c.language,
+                    "start_line": c.start_line as i64,
+                    "end_line": c.end_line as i64,
+                    "text": c.text,
+                });
+                if let Some(symbol) = &c.symbol {
+                    payload_json["symbol"] = json!(symbol);
+                }
+                let payload = Payload::try_from(payload_json).ok()?;
+                let document =
+                    Document::new(format_passage(self.prefix_style, &c.text), &self.model);
+                Some(PointStruct::new(c.id, document, payload))
+            })
+            .collect()
+    }
+
+    /// Delete every point whose `path` payload equals `path`.
+    pub async fn delete_by_path(&self, path: &str) -> Result<()> {
+        self.client
+            .delete_points(
+                DeletePointsBuilder::new(&self.collection)
+                    .points(Filter::must([Condition::matches("path", path.to_string())]))
+                    .wait(true),
+            )
+            .await
+            .with_context(|| format!("delete of points for {path} failed"))?;
+        Ok(())
+    }
+
+    /// Nearest-neighbour search using a `query:`-prefixed Document (server-side inference).
+    pub async fn query(&self, q: &str, limit: u64) -> Result<Vec<Hit>> {
+        let response = self
+            .client
+            .query(
+                QueryPointsBuilder::new(&self.collection)
+                    .query(Query::new_nearest(Document::new(
+                        format_query(self.prefix_style, q),
+                        &self.model,
+                    )))
+                    .limit(limit)
+                    .with_payload(true),
+            )
+            .await?;
+
+        Ok(response
+            .result
+            .into_iter()
+            .map(|p| {
+                let payload = &p.payload;
+                Hit {
+                    id: 0,
+                    path: payload_str(payload, "path"),
+                    language: payload_str(payload, "language"),
+                    start_line: payload_int(payload, "start_line"),
+                    end_line: payload_int(payload, "end_line"),
+                    text: payload_str(payload, "text"),
+                    score: p.score,
+                    symbol: payload_str_opt(payload, "symbol"),
+                }
+            })
+            .collect())
+    }
+
+    /// Nearest-neighbour search by a RAW vector (no embedding). Over-fetches + dedups by
+    /// the stored point id, optionally excluding `exclude_id` (self-exclusion). Scores are
+    /// Qdrant cosine similarities (already `1 - distance` semantics).
+    pub async fn query_by_vector(
+        &self,
+        vec: &[f32],
+        limit: u64,
+        exclude_id: Option<u64>,
+    ) -> Result<Vec<Hit>> {
+        let fetch = limit.saturating_mul(QUERY_OVERFETCH).max(limit);
+        let response = self
+            .client
+            .query(
+                QueryPointsBuilder::new(&self.collection)
+                    .query(Query::new_nearest(vec.to_vec()))
+                    .limit(fetch)
+                    .with_payload(true),
+            )
+            .await?;
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<Hit> = Vec::new();
+        for p in response.result {
+            let id = point_id_u64(&p.id);
+            if Some(id) == exclude_id {
+                continue;
+            }
+            if !seen.insert(id) {
+                continue;
+            }
+            let payload = &p.payload;
+            out.push(Hit {
+                id,
+                path: payload_str(payload, "path"),
+                language: payload_str(payload, "language"),
+                start_line: payload_int(payload, "start_line"),
+                end_line: payload_int(payload, "end_line"),
+                text: payload_str(payload, "text"),
+                score: p.score,
+                symbol: payload_str_opt(payload, "symbol"),
+            });
+            if out.len() >= limit as usize {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch one stored point (plus its vector) by `path` + `line`, keyed by the same
+    /// `XxHash64(path, line)` point id the indexer assigns.
+    pub async fn get_by_location(
+        &self,
+        path: &str,
+        line: usize,
+    ) -> Result<Option<(Hit, Vec<f32>)>> {
+        let id = crate::indexer::point_id(path, line);
+        let response = self
+            .client
+            .get_points(
+                GetPointsBuilder::new(&self.collection, vec![id.into()])
+                    .with_payload(true)
+                    .with_vectors(true),
+            )
+            .await?;
+        match response.result.into_iter().next() {
+            None => Ok(None),
+            Some(p) => {
+                let payload = &p.payload;
+                let hit = Hit {
+                    id,
+                    path: payload_str(payload, "path"),
+                    language: payload_str(payload, "language"),
+                    start_line: payload_int(payload, "start_line"),
+                    end_line: payload_int(payload, "end_line"),
+                    text: payload_str(payload, "text"),
+                    score: 1.0,
+                    symbol: payload_str_opt(payload, "symbol"),
+                };
+                let vec = extract_vector(p.vectors)?;
+                Ok(Some((hit, vec)))
+            }
+        }
+    }
+
+    /// Scroll every stored point with its vector (for `find_duplicates`). The optional
+    /// `path_glob` is applied in Rust to mirror the DuckDB path.
+    pub async fn all_chunks_with_vectors(
+        &self,
+        path_glob: Option<&str>,
+    ) -> Result<Vec<(Hit, Vec<f32>)>> {
+        let matcher = match path_glob {
+            None => None,
+            Some(p) => Some(
+                globset::Glob::new(p)
+                    .with_context(|| format!("invalid path_glob: {p}"))?
+                    .compile_matcher(),
+            ),
+        };
+        let mut out: Vec<(Hit, Vec<f32>)> = Vec::new();
+        let mut offset: Option<qdrant_client::qdrant::PointId> = None;
+        loop {
+            let mut builder = ScrollPointsBuilder::new(&self.collection)
+                .limit(SCROLL_PAGE)
+                .with_payload(true)
+                .with_vectors(true);
+            if let Some(o) = offset.clone() {
+                builder = builder.offset(o);
+            }
+            let response = self.client.scroll(builder).await?;
+            if response.result.is_empty() {
+                break;
+            }
+            for p in &response.result {
+                let payload = &p.payload;
+                let hit = Hit {
+                    id: point_id_u64(&p.id),
+                    path: payload_str(payload, "path"),
+                    language: payload_str(payload, "language"),
+                    start_line: payload_int(payload, "start_line"),
+                    end_line: payload_int(payload, "end_line"),
+                    text: payload_str(payload, "text"),
+                    score: 1.0,
+                    symbol: payload_str_opt(payload, "symbol"),
+                };
+                if let Some(m) = &matcher {
+                    if !m.is_match(&hit.path) {
+                        continue;
+                    }
+                }
+                let vec = extract_vector(p.vectors.clone())?;
+                out.push((hit, vec));
+            }
+            offset = response.next_page_offset;
+            if offset.is_none() {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Total stored point count for `index_status`.
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+    pub async fn chunk_count(&self) -> Result<u64> {
+        let info = self.client.collection_info(&self.collection).await?;
+        Ok(info.result.and_then(|r| r.points_count).unwrap_or(0))
+    }
+
+    /// Delete the whole collection (flush all vectors).
+    pub async fn flush(&self) -> Result<()> {
+        if self.client.collection_exists(&self.collection).await? {
+            self.client.delete_collection(&self.collection).await?;
+            println!("flushed: deleted collection '{}'", self.collection);
+        } else {
+            println!(
+                "nothing to flush: collection '{}' does not exist",
+                self.collection
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Render a string payload field. Only the kinds we actually store are handled.
+fn payload_str(payload: &HashMap<String, Value>, key: &str) -> String {
+    match payload.get(key).and_then(|v| v.kind.as_ref()) {
+        Some(Kind::StringValue(s)) => s.clone(),
+        Some(Kind::IntegerValue(i)) => i.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Render an integer payload field.
+fn payload_int(payload: &HashMap<String, Value>, key: &str) -> usize {
+    match payload.get(key).and_then(|v| v.kind.as_ref()) {
+        Some(Kind::IntegerValue(i)) => (*i).max(0) as usize,
+        _ => 0,
+    }
+}
+
+/// Render an optional string payload field (e.g. `symbol`, set only by the AST chunker).
+fn payload_str_opt(payload: &HashMap<String, Value>, key: &str) -> Option<String> {
+    match payload.get(key).and_then(|v| v.kind.as_ref()) {
+        Some(Kind::StringValue(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Extract the numeric (u64) id from a Qdrant `PointId`. The indexer always stores
+/// numeric ids, so a non-numeric id falls back to 0.
+fn point_id_u64(id: &Option<qdrant_client::qdrant::PointId>) -> u64 {
+    use qdrant_client::qdrant::point_id::PointIdOptions;
+    match id.as_ref().and_then(|p| p.point_id_options.as_ref()) {
+        Some(PointIdOptions::Num(n)) => *n,
+        _ => 0,
+    }
+}
+
+/// Extract a dense `Vec<f32>` from a retrieved point's `VectorsOutput` (single unnamed
+/// vector). Retrieved points carry the `*Output` proto types, not the input `Vectors`.
+fn extract_vector(vectors: Option<VectorsOutput>) -> Result<Vec<f32>> {
+    use qdrant_client::qdrant::vectors_output::VectorsOptions;
+    let v = vectors
+        .and_then(|vs| vs.vectors_options)
+        .context("point has no vector (was with_vectors(true) set?)")?;
+    match v {
+        // `data` is the flat dense payload. It is `#[deprecated]` in newer qdrant protos in
+        // favour of a nested `dense` field, but it is still populated for single dense
+        // vectors and is the simplest portable accessor here.
+        VectorsOptions::Vector(vec) =>
+        {
+            #[allow(deprecated)]
+            Ok(vec.data)
+        }
+        VectorsOptions::Vectors(_) => {
+            anyhow::bail!("named vectors are not supported; expected a single dense vector")
+        }
+    }
+}

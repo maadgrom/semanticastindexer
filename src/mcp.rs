@@ -1,0 +1,646 @@
+//! MCP server (`semanticastindexer mcp`, feature = "mcp").
+//!
+//! Exposes the indexer's semantic search to Claude over **stdio** via the official Rust
+//! MCP SDK (`rmcp`). READ-ONLY: no index/upsert/flush tools. Backend + Embedder are built
+//! ONCE at startup (defaults backend=duckdb, embedder=ollama) and shared across tool calls
+//! behind an `Arc<Mutex>` (DuckDB's connection is single-threaded).
+//!
+//! Tools (structured JSON output):
+//! - `search_code`     — embed query → nearest hits (+language/path_glob post-filter).
+//! - `find_similar`    — neighbours of a snippet (`code`) or an existing chunk (`path`+`line`).
+//! - `find_duplicates` — codebase-wide near-duplicate clusters via NN + union-find.
+//! - `index_status`    — backend/collection/model/dim/chunk_count/chunker.
+//!
+//! Embedding semantics (correctness-critical):
+//! - `search_code`            → embed as QUERY.
+//! - `find_similar { code }`  → embed as PASSAGE (code-vs-code space).
+//! - `find_similar {path,line}` / `find_duplicates` → STORED vectors, no re-embed.
+//!
+//! Concurrency: the DuckDB backend is `!Send`/`!Sync`, but rmcp's tool-handler futures
+//! must be `Send`. The backend therefore lives on a dedicated worker thread ([`crate::worker`])
+//! and this server holds only a `Send`+`Sync` [`BackendHandle`] (an mpsc channel). Each
+//! handler builds a request, sends it, and awaits a `oneshot` reply — so the handler future
+//! captures only `Send` types and compiles.
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use rmcp::{
+    ErrorData as McpError, ServerHandler, ServiceExt,
+    handler::server::router::tool::ToolRouter,
+    handler::server::wrapper::Parameters,
+    model::{CallToolResult, ServerCapabilities, ServerInfo},
+    tool, tool_handler, tool_router,
+    transport::stdio,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::config::Plan;
+use crate::search::{DupCluster, cluster_duplicates};
+use crate::vectordbs::Hit;
+use crate::worker::BackendHandle;
+
+/// Hard cap on any caller-supplied `limit`/`top_k` so a tool call can't ask for the world.
+const MAX_LIMIT: u64 = 50;
+/// Default result count for `search_code` / `find_similar`.
+const DEFAULT_LIMIT: u64 = 8;
+/// Snippet line cap (lines) when `include_text` is false.
+const SNIPPET_LINES: usize = 8;
+/// Snippet byte cap (chars) when `include_text` is false.
+const SNIPPET_CHARS: usize = 800;
+/// `find_duplicates` default cap on returned clusters (the cluster-size / top-k / min-score
+/// defaults now come from the config-resolved `similarity:` block, stored on `ServerInner`).
+const DEFAULT_DUP_MAX_CLUSTERS: usize = 50;
+/// Hard cap on the number of paths a single `refresh` call may touch (bounds the batch).
+const MAX_REFRESH_PATHS: usize = 200;
+
+// ---------------------------------------------------------------------------
+// Tool input schemas (serde + schemars → JSON Schema for the protocol).
+// ---------------------------------------------------------------------------
+
+/// `search_code` input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchCodeArgs {
+    /// Natural-language or code search query.
+    pub query: String,
+    /// Max results (clamped to 50). Default 8.
+    #[serde(default)]
+    pub limit: Option<u64>,
+    /// Filter by stored language label (e.g. "ts").
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Filter results to paths matching this glob (e.g. "src/**").
+    #[serde(default)]
+    pub path_glob: Option<String>,
+    /// Return the full chunk text instead of a capped snippet. Default false.
+    #[serde(default)]
+    pub include_text: bool,
+}
+
+/// `find_similar` input. Provide EITHER `code` OR (`path` AND `line`).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FindSimilarArgs {
+    /// A code snippet to find neighbours of (embedded as a passage).
+    #[serde(default)]
+    pub code: Option<String>,
+    /// Path of an existing indexed chunk (use with `line`).
+    #[serde(default)]
+    pub path: Option<String>,
+    /// 1-based start line of an existing indexed chunk (use with `path`).
+    #[serde(default)]
+    pub line: Option<usize>,
+    /// Max results (clamped to 50). Default 8.
+    #[serde(default)]
+    pub limit: Option<u64>,
+    /// Drop results scoring below this cosine similarity (omit to see raw scores).
+    #[serde(default)]
+    pub min_score: Option<f32>,
+}
+
+/// `find_duplicates` input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FindDuplicatesArgs {
+    /// Minimum cosine similarity for an edge to count as a near-duplicate. When omitted,
+    /// falls back to the configured `similarity.duplicate_min_score` (tune per model).
+    #[serde(default)]
+    pub min_score: Option<f32>,
+    /// Minimum cluster size to report. When omitted, the configured default.
+    #[serde(default)]
+    pub min_cluster_size: Option<usize>,
+    /// Restrict the scan to paths matching this glob.
+    #[serde(default)]
+    pub path_glob: Option<String>,
+    /// Max clusters to return (largest first). Default 50.
+    #[serde(default)]
+    pub max_clusters: Option<usize>,
+    /// Nearest-neighbour fan-out per chunk (clamped to 50). When omitted, the configured default.
+    #[serde(default)]
+    pub top_k: Option<u64>,
+}
+
+/// `index_status` takes no arguments.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct IndexStatusArgs {}
+
+/// `refresh` input (write tool; requires `--allow-write`).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RefreshArgs {
+    /// File path(s) to re-index. Existing points for each path are deleted first; paths
+    /// that still exist and pass the index filters are chunked, embedded, and re-upserted.
+    pub paths: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Tool output rows (serialized into the structured result).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct SearchHit {
+    path: String,
+    start_line: usize,
+    end_line: usize,
+    symbol: Option<String>,
+    score: f32,
+    snippet: String,
+}
+
+// `DupCluster` / `DupMember` (the near-duplicate cluster result shape) and the union-find
+// clustering live in the shared `crate::search` module — used by BOTH this MCP tool and the
+// CLI `duplicates` subcommand, so the algorithm exists in exactly one place.
+
+// ---------------------------------------------------------------------------
+// Server.
+// ---------------------------------------------------------------------------
+
+/// The MCP code-search server. Holds the shared (read-only) backend + plan metadata.
+#[derive(Clone)]
+pub struct CodeSearchServer {
+    inner: Arc<ServerInner>,
+    // Consumed by the `#[tool_handler]` macro's generated dispatch; the dead-code lint
+    // doesn't see that use (it reads the field via a trait method), so allow it here.
+    #[allow(dead_code)]
+    tool_router: ToolRouter<CodeSearchServer>,
+}
+
+/// Shared state behind the `Arc`. The `!Send` DuckDB backend lives on a worker thread;
+/// this holds only the `Send`+`Sync` [`BackendHandle`] (channel) plus cached metadata, so
+/// every tool-handler future is `Send` as rmcp requires.
+struct ServerInner {
+    backend: BackendHandle,
+    backend_name: String,
+    collection: String,
+    model: String,
+    vector_dim: u64,
+    chunker: String,
+    /// Whether the backend can embed locally (DuckDB) — Qdrant embeds server-side, so
+    /// `search_code` falls back to its text `query()` path there. The worker honors this.
+    can_embed_locally: bool,
+    /// Whether the server was started with `--allow-write` (the `refresh` tool requires it).
+    /// When false, the backend was opened read-only and `refresh` returns a clear error.
+    allow_write: bool,
+    /// Resolved similarity-threshold defaults (config value or built-in). MCP tool args
+    /// override these per call: tool arg > config > built-in default.
+    find_similar_min_score: f32,
+    duplicate_min_score: f32,
+    duplicate_min_cluster_size: usize,
+    duplicate_top_k: u64,
+}
+
+#[tool_router]
+impl CodeSearchServer {
+    /// Build the server from a backend-worker handle + the resolved plan. `allow_write`
+    /// enables the `refresh` write tool (the worker's backend must have been opened
+    /// writable by the caller in that case).
+    pub fn new(backend: BackendHandle, plan: &Plan, allow_write: bool) -> Self {
+        let can_embed_locally = plan.backend == "duckdb";
+        Self {
+            inner: Arc::new(ServerInner {
+                backend,
+                backend_name: plan.backend.clone(),
+                collection: plan.collection.clone(),
+                model: model_label(plan),
+                vector_dim: plan.vector_dim,
+                chunker: plan.chunker.clone(),
+                can_embed_locally,
+                allow_write,
+                find_similar_min_score: plan.find_similar_min_score(),
+                duplicate_min_score: plan.duplicate_min_score(),
+                duplicate_min_cluster_size: plan.duplicate_min_cluster_size(),
+                duplicate_top_k: plan.top_k() as u64,
+            }),
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    /// General semantic search over the indexed code.
+    #[tool(
+        description = "Semantic code search. Embeds the query and returns the nearest indexed code chunks. Optional language/path_glob filters; snippet is capped unless include_text."
+    )]
+    async fn search_code(
+        &self,
+        Parameters(args): Parameters<SearchCodeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = clamp_limit(args.limit.unwrap_or(DEFAULT_LIMIT));
+        let glob = compile_glob_opt(args.path_glob.as_deref())?;
+
+        // Over-fetch a little so post-filters (language/path_glob) still return `limit`.
+        let fetch = clamp_limit(limit.saturating_mul(4).max(limit));
+        // The worker embeds the query (or falls back to the server-side text query for
+        // Qdrant) and runs the NN search; we only see Send types here.
+        let hits = self
+            .inner
+            .backend
+            .search_by_query(args.query.clone(), fetch)
+            .await
+            .map_err(internal)?;
+
+        let rows: Vec<SearchHit> = hits
+            .into_iter()
+            .filter(|h| language_ok(h, args.language.as_deref()))
+            .filter(|h| glob.as_ref().is_none_or(|g| g.is_match(&h.path)))
+            .take(limit as usize)
+            .map(|h| to_search_hit(h, args.include_text))
+            .collect();
+
+        Ok(CallToolResult::structured(json!({ "hits": rows })))
+    }
+
+    /// Neighbours of one function/snippet, with an optional threshold.
+    #[tool(
+        description = "Find code similar to a snippet (code) or to an existing indexed chunk (path+line, exact stored vector, self-excluded). Provide either code OR path+line. Optional min_score threshold."
+    )]
+    async fn find_similar(
+        &self,
+        Parameters(args): Parameters<FindSimilarArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = clamp_limit(args.limit.unwrap_or(DEFAULT_LIMIT));
+
+        let hits = match (args.code.as_deref(), args.path.as_deref(), args.line) {
+            (Some(code), _, _) => {
+                if !self.inner.can_embed_locally {
+                    return Err(McpError::invalid_params(
+                        "find_similar { code } requires a local embedder (duckdb backend)",
+                        None,
+                    ));
+                }
+                self.inner
+                    .backend
+                    .search_by_passage(code.to_string(), limit)
+                    .await
+                    .map_err(internal)?
+            }
+            (None, Some(path), Some(line)) => {
+                let located = self
+                    .inner
+                    .backend
+                    .get_by_location(path.to_string(), line)
+                    .await
+                    .map_err(internal)?;
+                let (hit, vec) = located.ok_or_else(|| {
+                    McpError::invalid_params(format!("no indexed chunk at {path}:{line}"), None)
+                })?;
+                self.inner
+                    .backend
+                    .query_by_vector(vec, limit, Some(hit.id))
+                    .await
+                    .map_err(internal)?
+            }
+            _ => {
+                return Err(McpError::invalid_params(
+                    "find_similar requires either `code` or both `path` and `line`",
+                    None,
+                ));
+            }
+        };
+
+        // Threshold resolution: tool arg > config default (stored at startup). find_similar
+        // intentionally falls back to the configured min_score so omitting the arg still
+        // applies the model-tuned cut; pass an explicit 0.0 to see the raw distribution.
+        let min_score = args.min_score.unwrap_or(self.inner.find_similar_min_score);
+        let rows: Vec<SearchHit> = hits
+            .into_iter()
+            .filter(|h| h.score >= min_score)
+            .map(|h| to_search_hit(h, false))
+            .collect();
+
+        Ok(CallToolResult::structured(json!({ "hits": rows })))
+    }
+
+    /// Codebase-wide near-duplicate clusters via NN edges + union-find.
+    #[tool(
+        description = "Find near-duplicate code clusters across the index. For each chunk, takes its top_k neighbours, keeps edges with similarity >= min_score, and unions them into clusters. Returns clusters with size >= min_cluster_size, largest first."
+    )]
+    async fn find_duplicates(
+        &self,
+        Parameters(args): Parameters<FindDuplicatesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        // Resolution per knob: tool arg > config value (stored at startup) > built-in default.
+        let top_k = clamp_limit(args.top_k.unwrap_or(self.inner.duplicate_top_k));
+        let min_cluster_size = args
+            .min_cluster_size
+            .unwrap_or(self.inner.duplicate_min_cluster_size)
+            .max(1);
+        let min_score = args.min_score.unwrap_or(self.inner.duplicate_min_score);
+        let max_clusters = args.max_clusters.unwrap_or(DEFAULT_DUP_MAX_CLUSTERS);
+        compile_glob_opt(args.path_glob.as_deref())?; // validate early
+
+        // Gather every chunk + its top_k neighbours through the !Send backend worker
+        // handle (the MCP server can't touch the backend directly), then defer to the
+        // SHARED clustering core (`crate::search::cluster_duplicates`) — the same
+        // union-find the CLI `duplicates` subcommand uses.
+        let chunks = self
+            .inner
+            .backend
+            .all_chunks(args.path_glob.clone())
+            .await
+            .map_err(internal)?;
+
+        let mut neighbours: Vec<Vec<Hit>> = Vec::with_capacity(chunks.len());
+        for (hit, vec) in &chunks {
+            let nbrs = self
+                .inner
+                .backend
+                .query_by_vector(vec.clone(), top_k, Some(hit.id))
+                .await
+                .map_err(internal)?;
+            neighbours.push(nbrs);
+        }
+
+        let clusters: Vec<DupCluster> = cluster_duplicates(
+            &chunks,
+            &neighbours,
+            min_score,
+            min_cluster_size,
+            max_clusters,
+        );
+
+        Ok(CallToolResult::structured(json!({ "clusters": clusters })))
+    }
+
+    /// Index metadata for freshness/sanity checks.
+    #[tool(
+        description = "Report index status: backend, collection, embedding model, vector dimension, total chunk count, and chunker."
+    )]
+    async fn index_status(
+        &self,
+        Parameters(_args): Parameters<IndexStatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let chunk_count = self.inner.backend.chunk_count().await.map_err(internal)?;
+        Ok(CallToolResult::structured(json!({
+            "backend": self.inner.backend_name,
+            "collection": self.inner.collection,
+            "model": self.inner.model,
+            "vector_dim": self.inner.vector_dim,
+            "chunk_count": chunk_count,
+            "chunker": self.inner.chunker,
+        })))
+    }
+
+    /// Re-index specific files in place (write tool; requires `--allow-write`).
+    #[tool(
+        description = "Re-index specific files: delete each path's existing points, then re-chunk + re-embed + upsert files that still exist and pass the index filters (ext, globs, not generated). Gone/excluded paths are just removed. Requires the server to be started with --allow-write."
+    )]
+    async fn refresh(
+        &self,
+        Parameters(args): Parameters<RefreshArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if !self.inner.allow_write {
+            return Err(McpError::invalid_params(
+                "server is read-only; restart with --allow-write to enable refresh",
+                None,
+            ));
+        }
+        if args.paths.is_empty() {
+            return Err(McpError::invalid_params(
+                "refresh requires at least one path",
+                None,
+            ));
+        }
+        if args.paths.len() > MAX_REFRESH_PATHS {
+            return Err(McpError::invalid_params(
+                format!("too many paths (max {MAX_REFRESH_PATHS})"),
+                None,
+            ));
+        }
+
+        // The worker owns the backend + plan and runs the whole batch in one bulk window
+        // (HNSW drop → per-path delete + re-chunk + re-embed + upsert → rebuild), matching
+        // the `sync` command's correctness requirement after per-path deletes.
+        let report = self
+            .inner
+            .backend
+            .refresh(args.paths.clone())
+            .await
+            .map_err(internal)?;
+
+        let refreshed: Vec<serde_json::Value> = report
+            .refreshed
+            .into_iter()
+            .map(|(path, chunks)| json!({ "path": path, "chunks": chunks }))
+            .collect();
+
+        Ok(CallToolResult::structured(json!({
+            "refreshed": refreshed,
+            "removed": report.removed,
+        })))
+    }
+}
+
+#[tool_handler]
+impl ServerHandler for CodeSearchServer {
+    fn get_info(&self) -> ServerInfo {
+        // ServerInfo (= InitializeResult) is #[non_exhaustive], so a cross-crate struct
+        // literal is impossible — build via Default + field assignment.
+        #[allow(clippy::field_reassign_with_default)]
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.instructions = Some(
+            "Semantic code search over the indexed repository. Tools: search_code, \
+             find_similar, find_duplicates, index_status (read-only) plus refresh \
+             (re-index files; only usable when the server was started with --allow-write)."
+                .to_string(),
+        );
+        info
+    }
+}
+
+/// Serve the MCP server over stdio until EOF. The backend-worker handle + plan are supplied
+/// by `main`. `allow_write` gates the `refresh` write tool (the worker's backend must
+/// already be writable).
+pub async fn serve_inner(backend: BackendHandle, plan: &Plan, allow_write: bool) -> Result<()> {
+    let server = CodeSearchServer::new(backend, plan, allow_write);
+    let service = server.serve(stdio()).await?;
+    service.waiting().await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers.
+// ---------------------------------------------------------------------------
+
+/// Clamp a caller-supplied limit to `[1, MAX_LIMIT]`.
+fn clamp_limit(n: u64) -> u64 {
+    n.clamp(1, MAX_LIMIT)
+}
+
+/// Map an `anyhow::Error` to an MCP internal error.
+fn internal(e: anyhow::Error) -> McpError {
+    McpError::internal_error(e.to_string(), None)
+}
+
+/// Compile an optional path glob, surfacing a clear `invalid_params` on a bad pattern.
+fn compile_glob_opt(pattern: Option<&str>) -> Result<Option<globset::GlobMatcher>, McpError> {
+    match pattern {
+        None => Ok(None),
+        Some(p) => globset::Glob::new(p)
+            .map(|g| Some(g.compile_matcher()))
+            .map_err(|e| McpError::invalid_params(format!("invalid path_glob '{p}': {e}"), None)),
+    }
+}
+
+/// Language filter: keep when no filter is set or the hit's language matches.
+fn language_ok(hit: &Hit, want: Option<&str>) -> bool {
+    match want {
+        None => true,
+        Some(l) => hit.language == l,
+    }
+}
+
+/// Build a `SearchHit` row, capping the snippet unless `include_text`.
+fn to_search_hit(hit: Hit, include_text: bool) -> SearchHit {
+    let snippet = if include_text {
+        hit.text.clone()
+    } else {
+        snippet_of(&hit.text)
+    };
+    SearchHit {
+        path: hit.path,
+        start_line: hit.start_line,
+        end_line: hit.end_line,
+        symbol: hit.symbol,
+        score: hit.score,
+        snippet,
+    }
+}
+
+/// First ~8 lines of `text`, capped to ~800 chars (with a trailing ellipsis when cut).
+fn snippet_of(text: &str) -> String {
+    let head: String = text
+        .lines()
+        .take(SNIPPET_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if head.len() <= SNIPPET_CHARS {
+        return head;
+    }
+    // Cap at a char boundary at or before SNIPPET_CHARS.
+    let mut end = SNIPPET_CHARS;
+    while end > 0 && !head.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &head[..end])
+}
+
+/// The human-readable model label for `index_status`: the Ollama model when that
+/// embedder is selected (duckdb backend), else the configured `model`.
+fn model_label(plan: &Plan) -> String {
+    if plan.backend == "duckdb" && plan.embedder == "ollama" {
+        plan.ollama_model
+            .clone()
+            .unwrap_or_else(|| plan.model.clone())
+    } else {
+        plan.model.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tool-logic tests against `Backend::Mock` (seeded rows-with-vectors). No real
+    //! backend, no network: these prove the search/dedup/self-exclusion/union-find logic
+    //! the MCP tools depend on. The macro-generated rmcp glue is exercised by the live
+    //! `initialize`/`tools/list` smoke (see README); here we test the pure logic.
+
+    use super::*;
+    use crate::vectordbs::Backend;
+    use crate::vectordbs::mock::{MockBackend, MockRow};
+
+    /// Build a Mock backend seeded with the given rows.
+    fn seeded(rows: Vec<MockRow>) -> Backend {
+        Backend::Mock(MockBackend::with_rows(rows))
+    }
+
+    /// query_by_vector ranks by cosine similarity (best first), dedups by id, truncates.
+    #[tokio::test]
+    async fn query_by_vector_orders_by_similarity_and_truncates() {
+        let b = seeded(vec![
+            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
+            MockRow::new(2, "src/b.ts", 1, vec![0.9, 0.1, 0.0, 0.0]),
+            MockRow::new(3, "src/c.ts", 1, vec![0.0, 1.0, 0.0, 0.0]),
+        ]);
+        let hits = b
+            .query_by_vector(&[1.0, 0.0, 0.0, 0.0], 2, None)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 2, "truncated to limit");
+        assert_eq!(hits[0].id, 1, "exact match ranks first");
+        assert_eq!(hits[1].id, 2, "near match second");
+        assert!(hits[0].score >= hits[1].score, "scores descending");
+    }
+
+    /// query_by_vector excludes the self id (find_similar by location / find_duplicates).
+    #[tokio::test]
+    async fn query_by_vector_excludes_self_id() {
+        let b = seeded(vec![
+            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
+            MockRow::new(2, "src/b.ts", 1, vec![0.99, 0.01, 0.0, 0.0]),
+        ]);
+        let hits = b
+            .query_by_vector(&[1.0, 0.0, 0.0, 0.0], 8, Some(1))
+            .await
+            .unwrap();
+        assert!(hits.iter().all(|h| h.id != 1), "self id excluded");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, 2);
+    }
+
+    /// query_by_vector dedups by id (HNSW can surface a duplicate candidate). The mock's
+    /// rows are unique, but the dedup contract is still asserted via repeated-id seeding
+    /// being impossible — instead we assert no id appears twice in a larger result set.
+    #[tokio::test]
+    async fn query_by_vector_results_have_unique_ids() {
+        let rows: Vec<MockRow> = (1..=10)
+            .map(|i| MockRow::new(i, &format!("src/f{i}.ts"), 1, vec![i as f32, 0.0, 0.0, 0.0]))
+            .collect();
+        let b = seeded(rows);
+        let hits = b
+            .query_by_vector(&[5.0, 0.0, 0.0, 0.0], 50, None)
+            .await
+            .unwrap();
+        let mut ids: Vec<u64> = hits.iter().map(|h| h.id).collect();
+        let before = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "no duplicate ids in results");
+    }
+
+    /// get_by_location returns the row + its exact stored vector, or None.
+    #[tokio::test]
+    async fn get_by_location_returns_row_and_vector() {
+        let b = seeded(vec![
+            MockRow::new(1, "src/a.ts", 10, vec![0.1, 0.2, 0.3, 0.4]),
+            MockRow::new(2, "src/b.ts", 20, vec![0.5, 0.6, 0.7, 0.8]),
+        ]);
+        let got = b.get_by_location("src/b.ts", 20).await.unwrap();
+        let (hit, vec) = got.expect("row present");
+        assert_eq!(hit.id, 2);
+        assert_eq!(vec, vec![0.5, 0.6, 0.7, 0.8], "exact stored vector");
+
+        let missing = b.get_by_location("src/b.ts", 999).await.unwrap();
+        assert!(missing.is_none(), "no chunk at that line");
+    }
+
+    // The find_duplicates clustering + union-find tests now live in `crate::search`
+    // (the shared core that BOTH this tool and the CLI `duplicates` subcommand use), so
+    // they are not duplicated here.
+
+    /// snippet_of caps at ~8 lines / ~800 chars.
+    #[test]
+    fn snippet_caps_lines() {
+        let text = (0..20)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snip = snippet_of(&text);
+        assert_eq!(snip.lines().count(), SNIPPET_LINES, "capped to 8 lines");
+    }
+
+    /// clamp_limit pins to [1, 50].
+    #[test]
+    fn clamp_limit_bounds() {
+        assert_eq!(clamp_limit(0), 1);
+        assert_eq!(clamp_limit(8), 8);
+        assert_eq!(clamp_limit(9999), MAX_LIMIT);
+    }
+}

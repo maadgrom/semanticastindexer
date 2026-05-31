@@ -1,0 +1,6 @@
+# Pin this crate to the latest stable Rust toolchain.
+# `rustup` auto-installs/activates this when you build inside this repo.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
