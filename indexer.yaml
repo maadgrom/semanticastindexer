@@ -60,21 +60,27 @@ chunker: ast  # may be overridden at runtime to "ast" for ts/tsx when ast featur
 # Target collection (Qdrant) / table (DuckDB) + the embedding model label. For Qdrant
 # this must match the cluster's Inference tab. `vector_dim` MUST equal the embedder
 # model's output dimensionality and is validated at runtime — a mismatch is a clear
-# error. e5-small = 384; Ollama models differ (nomic-embed-text = 768,
-# mxbai-embed-large = 1024).
+# error.
+#
+# Default when using embedder: ort (the common local DuckDB path):
+#   jinaai/jina-embeddings-v2-base-code (768d, code-trained, symmetric → prefix_style: none)
+# Default for Qdrant / other paths:
+#   intfloat/multilingual-e5-small (384d)
 collection: source_code
-model: intfloat/multilingual-e5-small
-# 384 matches the ort default repo Xenova/multilingual-e5-small.
-vector_dim: 384
+model: jinaai/jina-embeddings-v2-base-code
+# When using the default ort embedder the resolved default is now the Jina code model
+# (768d) and duckdb.model_repo will point at the matching HF repo.
+vector_dim: 768
 
 # DuckDB backend settings (only used when backend: duckdb). Ignored by Qdrant.
 duckdb:
   # DuckDB database file. Created on first index; holds the table + HNSW index.
   path: .index/code.duckdb
   # ort embedder: HuggingFace repo to download `onnx/model.onnx` + `tokenizer.json`
-  # from. Must be an E5 model for the passage:/query: prefixes to be correct.
-  # Default: Xenova/multilingual-e5-small (384d).
-  # model_repo: Xenova/multilingual-e5-small
+  # from. Defaults to match the resolved `model`. For the recommended code model
+  # (jinaai/jina-embeddings-v2-base-code) this is the same repo.
+  # model_repo: jinaai/jina-embeddings-v2-base-code   # when using the Jina default for ort
+  # model_repo: Xenova/multilingual-e5-small          # classic e5-small for ort
   # Optional ONNX/HF model cache dir for offline reuse. When set, the model is
   # downloaded/loaded from here instead of the default HF cache. (ort embedder only.)
   # model_cache: .model_cache

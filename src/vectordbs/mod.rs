@@ -412,6 +412,10 @@ fn build_embedder(plan: &Plan) -> Result<embedder::Embedder> {
         "ort" => {
             #[cfg(feature = "ort")]
             {
+                eprintln!(
+                    "embedder=ort: downloading model via ONNX Runtime (ORT) from Hugging Face if not cached: {}",
+                    plan.model_repo
+                );
                 Ok(embedder::Embedder::Ort(embedder::ort_embedder(plan)?))
             }
             #[cfg(not(feature = "ort"))]

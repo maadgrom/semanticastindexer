@@ -12,7 +12,12 @@ use crate::vectordbs::PrefixStyle;
 pub const DEFAULT_CONFIG: &str = "indexer.yaml";
 const DEFAULT_COLLECTION: &str = "source_code";
 const DEFAULT_MODEL: &str = "intfloat/multilingual-e5-small";
+/// Recommended default for the `ort` embedder (local ONNX + DuckDB). A code-trained
+/// model that produces much better separation for near-duplicate detection than
+/// general text models like e5-small.
+const DEFAULT_ORT_MODEL: &str = "jinaai/jina-embeddings-v2-base-code";
 const DEFAULT_VECTOR_DIM: u64 = 384;
+const DEFAULT_ORT_VECTOR_DIM: u64 = 768;
 const DEFAULT_BACKEND: &str = "qdrant";
 const DEFAULT_EMBEDDER: &str = "ort";
 const DEFAULT_CHUNKER: &str = "lines";
@@ -21,7 +26,7 @@ const DEFAULT_CHUNKER: &str = "lines";
 /// was built with the `ast` feature and the user did not explicitly set a chunker
 /// via CLI or config). For all other languages we fall back to the reliable
 /// line-based chunker.
-const AST_PREFERRED_LANGUAGES: &[&str] = &["ts", "tsx", "rs"];
+const AST_PREFERRED_LANGUAGES: &[&str] = &["ts", "tsx", "rs", "go"];
 
 /// Returns whether we should prefer the AST chunker for this language
 /// when no explicit chunker was provided.
@@ -32,6 +37,8 @@ fn ast_preferred_for_language(language: &str) -> bool {
 }
 const DEFAULT_DUCKDB_PATH: &str = ".index/code.duckdb";
 const DEFAULT_MODEL_REPO: &str = "Xenova/multilingual-e5-small";
+/// Matches `DEFAULT_ORT_MODEL`. The ort embedder downloads from this HF repo.
+const DEFAULT_ORT_MODEL_REPO: &str = "jinaai/jina-embeddings-v2-base-code";
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 // Default Ollama embedding model. mxbai-embed-large is 1024-d → use vector_dim: 1024.
 const DEFAULT_OLLAMA_MODEL: &str = "mxbai-embed-large";
@@ -73,7 +80,7 @@ pub struct Config {
     pub embedder: Option<String>,
     /// Chunker: "lines" or "ast" (tree-sitter, needs the `ast` feature).
     /// When not explicitly set, we auto-select "ast" for languages we have good
-    /// grammars for (currently ts/tsx) if the binary was built with --features ast.
+    /// grammars for (currently ts/tsx/rs/go) if the binary was built with --features ast.
     /// CLI `--chunker` always takes precedence.
     pub chunker: Option<String>,
     /// Max chunk size in chars. When unset, defaulted by the embedder/model (E5≈1400, qwen/ollama≈32000).
@@ -122,7 +129,8 @@ pub struct DuckDbConfig {
     /// Optional ONNX model cache dir (HF cache) for offline reuse.
     pub model_cache: Option<String>,
     /// HuggingFace repo the ort embedder downloads `onnx/model.onnx` + `tokenizer.json`
-    /// from. Default `Xenova/multilingual-e5-small`.
+    /// from. When using the default `ort` embedder this is now the Jina code model
+    /// (see DEFAULT_ORT_MODEL_REPO).
     pub model_repo: Option<String>,
 }
 
@@ -241,11 +249,21 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
         .clone()
         .or(config.embedder)
         .unwrap_or_else(|| DEFAULT_EMBEDDER.to_string());
+
+    // ort (local ONNX via DuckDB) now defaults to the code-specialized Jina model.
+    // All other paths (Qdrant server inference, Ollama) keep the lightweight E5 default.
+    let is_ort = embedder == "ort";
     let model = args
         .model
         .clone()
-        .or(config.model)
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        .or(config.model.clone())
+        .unwrap_or_else(|| {
+            if is_ort {
+                DEFAULT_ORT_MODEL.to_string()
+            } else {
+                DEFAULT_MODEL.to_string()
+            }
+        });
 
     // Prefix policy: explicit config wins; else auto-detect from the model name.
     let prefix_style = match config.prefix_style {
@@ -307,7 +325,11 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
             .or(config.collection)
             .unwrap_or_else(|| DEFAULT_COLLECTION.to_string()),
         model,
-        vector_dim: config.vector_dim.unwrap_or(DEFAULT_VECTOR_DIM),
+        vector_dim: config.vector_dim.unwrap_or(if is_ort {
+            DEFAULT_ORT_VECTOR_DIM
+        } else {
+            DEFAULT_VECTOR_DIM
+        }),
         duckdb_path: config
             .duckdb
             .path
@@ -316,7 +338,13 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
         model_repo: config
             .duckdb
             .model_repo
-            .unwrap_or_else(|| DEFAULT_MODEL_REPO.to_string()),
+            .unwrap_or_else(|| {
+                if is_ort {
+                    DEFAULT_ORT_MODEL_REPO.to_string()
+                } else {
+                    DEFAULT_MODEL_REPO.to_string()
+                }
+            }),
         ollama_url: config
             .ollama
             .url
@@ -340,19 +368,24 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
 }
 
 /// Model-aware default chunk-size cap (chars). The Qdrant/E5 path keeps the historical
-/// 1400-char bound; large-context embedders (qwen / generic Ollama models) get the much
-/// larger cap so a whole function fits. Detection is by backend + embedder + model name.
+/// 1400-char bound; large-context / code models get a much larger cap so a whole function
+/// fits. Detection is by backend + embedder + model name.
 fn default_cap(backend: &str, embedder: &str, model: &str) -> usize {
     let m = model.to_ascii_lowercase();
     // Qwen-style instruct embedders have an ~8K-token window → big cap.
     if m.contains("qwen") {
         return CAP_LARGE;
     }
-    // E5 (the Qdrant default and the ort default) → small 512-token window.
+    // E5 (the classic Qdrant / light ort default) → small 512-token window.
     if m.contains("e5") {
         return CAP_E5;
     }
-    // Otherwise: Ollama models are typically large-context; Qdrant/ort default to E5.
+    // Jina code models and other modern code embedders: treat as large-context so
+    // whole functions are captured when using the ort + duckdb path.
+    if m.contains("jina") {
+        return CAP_LARGE;
+    }
+    // Otherwise: Ollama models (and future large models) are typically large-context.
     if backend == "duckdb" && embedder == "ollama" {
         CAP_LARGE
     } else {
@@ -406,14 +439,14 @@ pub mod test_support {
             backend: "mock".to_string(),
             embedder: "ort".to_string(),
             chunker: "lines".to_string(),
-            max_chunk_chars: CAP_E5,
-            prefix_style: PrefixStyle::E5,
+            max_chunk_chars: CAP_LARGE, // Jina code model default for ort
+            prefix_style: PrefixStyle::None, // Jina is symmetric
             collection: DEFAULT_COLLECTION.to_string(),
-            model: DEFAULT_MODEL.to_string(),
-            vector_dim: DEFAULT_VECTOR_DIM,
+            model: DEFAULT_ORT_MODEL.to_string(),
+            vector_dim: DEFAULT_ORT_VECTOR_DIM,
             duckdb_path: DEFAULT_DUCKDB_PATH.to_string(),
             duckdb_model_cache: None,
-            model_repo: DEFAULT_MODEL_REPO.to_string(),
+            model_repo: DEFAULT_ORT_MODEL_REPO.to_string(),
             ollama_url: DEFAULT_OLLAMA_URL.to_string(),
             ollama_model: None,
             exclude_dirs: HashSet::new(),

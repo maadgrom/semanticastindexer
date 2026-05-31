@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "semantic-code-search": {
+      "command": "/semanticastindexer",
+      "args": ["mcp", "--backend", "duckdb", "--embedder", "ort", "--collection", "source_code"],
+      "cwd": "semanticastindexer"
+    }
+  }
+}

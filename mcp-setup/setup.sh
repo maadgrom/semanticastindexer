@@ -18,9 +18,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BINARY_NAME="semanticastindexer"
-DEFAULT_FEATURES="mcp,duckdb,ollama"
-RECOMMENDED_FEATURES_ORT="mcp,duckdb,ort,ast"
-RECOMMENDED_FEATURES_OLLAMA="mcp,duckdb,ollama,ast"
+# We recommend building with the full "all" feature set so every capability
+# (both backends, both embedders, MCP server, AST chunker) is present.
+DEFAULT_FEATURES="all"
+RECOMMENDED_FEATURES_ORT="all"
+RECOMMENDED_FEATURES_OLLAMA="all"
 
 # Colors
 RED='\033[0;31m'
@@ -51,10 +53,10 @@ Options:
   --help                     Show this help
 
 Examples:
-  # Fully offline, high quality (recommended for most users)
+  # Fully offline, high quality (recommended — uses --features all)
   ./setup.sh --backend duckdb --embedder ort --features "$RECOMMENDED_FEATURES_ORT"
 
-  # Lightweight with Ollama (fast build)
+  # Also excellent (uses --features all under the hood)
   ./setup.sh --backend duckdb --embedder ollama
 
   # Non-interactive for agent use
@@ -156,11 +158,11 @@ create_indexer_config() {
 # Good balance of recall, speed, and noise reduction.
 
 backend: duckdb
-embedder: ollama          # Change to "ort" for fully offline (bigger binary)
+embedder: ollama          # Change to "ort" for fully offline (bigger binary; then Jina code model becomes the default)
 chunker: lines            # Use "ast" (with --features ast) for symbol-aware chunks
 collection: source_code
 model: intfloat/multilingual-e5-small
-vector_dim: 384
+vector_dim: 384           # When using embedder=ort the runtime default is now jinaai/jina-embeddings-v2-base-code (768d)
 
 duckdb:
   path: .index/code.duckdb
@@ -197,7 +199,7 @@ exclude:
 skip_generated_marker: true
 strip_comments: true
 
-# Similarity thresholds tuned for e5-small (adjust per model)
+# Similarity thresholds tuned for e5-small (lower them if you switch to a code model like Jina)
 similarity:
   find_similar_min_score: 0.82
   duplicate_min_score: 0.91
@@ -319,8 +321,8 @@ main() {
     echo "Recommended first command in a new project:"
     echo "  $bin_path --root src --ext ts,tsx,js,jsx --dry-run"
     echo ""
-    echo "For fully offline use, rebuild with ort:"
-    echo "  cargo build --release --features mcp,duckdb,ort,ast"
+    echo "We build with --features all by default (includes ort, ollama, ast, mcp, etc.)."
+    echo "If you ever want a smaller binary you can build with a subset of features."
     echo ""
 }
 

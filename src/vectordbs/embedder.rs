@@ -1,11 +1,9 @@
 //! Local embedding for the DuckDB backend.
 //!
-//! E5 (`intfloat/multilingual-e5-small` / `Xenova/multilingual-e5-small`) is trained
-//! with asymmetric prefixes: stored passages are embedded as `passage: <text>` and
-//! queries as `query: <text>`. The prefixes ([`PASSAGE_PREFIX`]/[`QUERY_PREFIX`],
-//! shared with the Qdrant `Document` formatting in `mod.rs`) are applied INSIDE the
-//! embedder so callers pass raw text. Qdrant keeps server-side inference; this module
-//! is the local path used by DuckDB.
+//! The ort embedder now defaults to the code-trained `jinaai/jina-embeddings-v2-base-code`
+//! (symmetric, prefix_style: none, 768d). The classic E5 model (`intfloat/multilingual-e5-small`
+//! / Xenova variant) remains available and is still the default for Qdrant server inference.
+//! E5 uses asymmetric prefixes (`passage:` / `query:`) which are applied inside the embedder.
 //!
 //! The embedder is an ENUM (mirrors the `Backend` enum): `Ort` (raw ONNX Runtime) or
 //! `Ollama` (HTTP). Methods are async: Ollama is HTTP; Ort runs sync CPU inference

@@ -1,16 +1,111 @@
-# Recommended indexer.yaml for agentic code search use cases.
-# Copy or symlink this into projects you want to give your agents deep understanding of.
+# semanticastindexer configuration.
+#
+# Controls what gets embedded and pushed to the selected vector backend (Qdrant or
+# DuckDB). Loaded by default from `indexer.yaml` in the current directory; override
+# with `--config <path>`. CLI flags (--backend, --collection, --model, ...) take
+# precedence over values here.
+#
+# These are sane GENERIC defaults. We recommend building the binary with
+# `--features all` so every backend (qdrant/duckdb) and embedder (ort/ollama) plus
+# the MCP server and AST chunker are available.
 
+# Vector backend: "qdrant" or "duckdb". The CLI flag `--backend <name>`
+# overrides this value. Qdrant uses Cloud server-side inference (creds via env
+# QDRANT_URL / QDRANT_API_KEY — never put them here). DuckDB embeds locally (via the
+# `ort` or `ollama` embedder) and stores vectors in a DuckDB file with a VSS/HNSW
+# index.
 backend: duckdb
-embedder: ollama          # ort for fully offline
-chunker: lines
+
+# Embedder for the DuckDB backend (IGNORED by Qdrant, which embeds server-side):
+#   ort     — local ONNX Runtime; downloads the model from `duckdb.model_repo` (default)
+#   ollama  — remote Ollama HTTP server (see the `ollama:` block; `ollama.model` REQUIRED)
+# CLI `--embedder <name>` overrides this. Default: ort.
+embedder: ort
+
+# Chunker — how each file is split into embeddable chunks. CLI `--chunker <name>` overrides.
+#
+# Smart default (new behavior):
+#   - For languages with AST support (currently "ts" / "tsx" / "rs" / "go") **and** the
+#     binary was built with `--features ast` (or `all`): we default to the symbol-aware "ast" chunker.
+#   - For everything else we fall back to the reliable "lines" chunker.
+#
+#   lines  — line-window chunker. ~MAX_LINES lines / `max_chunk_chars` chars per window
+#            with a small overlap. No symbols. Always available.
+#   ast    — tree-sitter, FUNCTION-ONLY (TS/TSX + Rust + Go). Emits ONE chunk per named
+#            function at any depth (free functions, methods, arrow/function-expression
+#            consts; Rust impl/trait/nested functions; Go func decls + receiver methods).
+#            Non-function code — classes,
+#            interfaces, type aliases, const/static/mod/struct/enum/trait, imports, and
+#            bare closures — is NOT chunked (this is a function near-duplicate index;
+#            embedding non-functions floods `duplicates`). Oversized functions are
+#            line-split, keeping the symbol. A file with no functions yields no chunks.
+#            Requires `--features ast`.
+#
+#   NOTE: `ast` is feature-gated. If you select it (or it is auto-selected) on a binary
+#         built without the feature, you get a clear actionable error.
+#   NOTE: comments are stripped BEFORE chunking.
+chunker: ast  # auto-selected for ts/tsx/rs/go when the ast feature is present
+
+# Max chunk size in CHARS — the size bound BOTH chunkers honor (a char approximation of
+# the model's token window, ~4 chars/token; no tokenizer needed). When unset, it is
+# defaulted by the embedder/model:
+#   e5 / qdrant (512-token window)      → ~1400 chars  (keeps the historical behavior)
+#   qwen / generic ollama (8K tokens)   → ~32000 chars (so whole functions fit)
+# Set explicitly to override the model-aware default.
+# max_chunk_chars: 1400
+
+# Embedding prefix policy. When unset, AUTO-DETECTED from `model`:
+#   model contains "e5"   → e5    (passage: <t> / query: <t>)
+#   model contains "qwen" → qwen  (bare passage; query wrapped: "Instruct: …\nQuery: <q>")
+#   otherwise             → none  (bare on both sides)
+# Explicit values: e5 | qwen | none. Applied by BOTH local embedders AND the Qdrant
+# Document path via one shared helper. The jina code model below is SYMMETRIC → none.
+prefix_style: none
+
+# Target collection (Qdrant) / table (DuckDB) + the embedding model label. For Qdrant
+# this must match the cluster's Inference tab. `vector_dim` MUST equal the embedder
+# model's output dimensionality and is validated at runtime — a mismatch is a clear error.
+#
+# DEFAULT BELOW = jina-embeddings-v2-base-code (768d), a CODE-TRAINED embedder recommended
+# for near-duplicate detection: a general text model (e5-small, 384d) rates all functions
+# in one language ~0.91 similar, collapsing `duplicates` into one giant cluster, whereas a
+# code model spreads them apart. To use e5 instead: set model: intfloat/multilingual-e5-small,
+# vector_dim: 384, prefix_style: e5, and duckdb.model_repo: Xenova/multilingual-e5-small.
+# Ollama models differ again (nomic-embed-text = 768, mxbai-embed-large = 1024).
 collection: source_code
-model: intfloat/multilingual-e5-small
-vector_dim: 384
+model: jinaai/jina-embeddings-v2-base-code
+vector_dim: 768
 
+# DuckDB backend settings (only used when backend: duckdb). Ignored by Qdrant.
 duckdb:
+  # DuckDB database file. Created on first index; holds the table + HNSW index.
   path: .index/code.duckdb
+  # ort embedder: HuggingFace repo to download `onnx/model.onnx` + `tokenizer.json` from.
+  # Default below matches `model`. NOTE: with the pinned hf-hub (0.3), this repo's
+  # tokenizer.json fails to download from HuggingFace Xet storage ("relative URL without a
+  # base"); stage it once into the HF cache (see README "Recommended model for code
+  # de-duplication") until hf-hub is upgraded.
+  model_repo: jinaai/jina-embeddings-v2-base-code
+  # Optional ONNX/HF model cache dir for offline reuse. When set, the model is
+  # downloaded/loaded from here instead of the default HF cache. (ort embedder only.)
+  # model_cache: .model_cache
 
+# Ollama embedder settings (only used when embedder: ollama). Apply E5-style
+# passage:/query: prefixes — NON-E5 Ollama models may want different (or no) prefixes;
+# adjust expectations accordingly.
+ollama:
+  # Ollama server URL. Default http://localhost:11434.
+  # url: http://localhost:11434
+  # Embedding model name. Defaults to mxbai-embed-large when unset. Must be an
+  # embed-capable model you have pulled (`ollama pull mxbai-embed-large`).
+  # IMPORTANT: set vector_dim to match the model — mxbai-embed-large = 1024
+  # (nomic-embed-text = 768). So with the default model, set `vector_dim: 1024` above.
+  # model: mxbai-embed-large
+
+# Directory names pruned entirely during the walk (fast — never descended into).
+# NOTE: the original SKIP_DIRS (node_modules, .git, dist, build, target, .next,
+# coverage, .turbo) are ALWAYS pruned in code regardless of this list — listing
+# them here too is harmless and explicit. Add project-specific dirs below.
 exclude_dirs:
   - node_modules
   - .git
@@ -20,31 +115,62 @@ exclude_dirs:
   - .next
   - coverage
   - .turbo
-  - __tests__
-  - .venv
-  - venv
-  - site-packages
+  - __tests__ # every test directory
+  # Project-specific examples — uncomment/edit for your repo:
+  # - src/shared
+  # - shared
 
+# Allow-list. When non-empty, ONLY files matching one of these globs are considered
+# (exclude still applies on top). Empty/omitted = consider everything. Same glob syntax
+# as `exclude`. Example: index only services + hooks:
+#   include:
+#     - "src/services/**"
+#     - "src/hooks/**"
+include: []
+
+# Glob patterns matched against each file's path (relative to where you run).
+# '**' spans directories; '*' stays within one path segment.
 exclude:
-  - "**/*.test.*"
-  - "**/*.spec.*"
+  # tests
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  # type declarations (no implementation logic)
   - "**/*.d.ts"
-  - "**/components/ui/**"
-  - "**/*.generated.*"
-  - "**/*.gen.*"
+  # Project-specific example (shadcn/ui generated primitives) — uncomment for your repo:
+  # - "**/components/ui/**"
+  # autogenerated — TypeScript
+  - "**/*.gen.ts"
+  - "**/*.generated.ts"
   - "**/generated/**"
+  # autogenerated — Go (for the later Go pass)
   - "**/*.pb.go"
   - "**/*_gen.go"
+  - "**/*_generated.go"
   - "**/mock_*.go"
   - "**/zz_generated*.go"
-  - "**/*.min.js"
-  - "**/*.min.css"
 
+# Skip files whose first lines carry an autogenerated marker, regardless of name
+# (e.g. Go's `// Code generated ... DO NOT EDIT.`, or `@generated`). Catches
+# autogenerated files that don't follow a naming convention.
 skip_generated_marker: true
+
+# Strip comments (// and /* */) from C-family source before embedding/pushing, so
+# only code reaches Qdrant. String/template literals are preserved and line numbers
+# stay accurate. Applies to TS now and Go later.
 strip_comments: true
 
+# Similarity-search thresholds for the `find_similar` / `find_duplicates` MCP tools AND
+# the `similar` / `duplicates` CLI subcommands. Resolution per knob:
+#   CLI flag / MCP tool arg  >  this config value  >  built-in default.
+# These cutoffs are MODEL-SPECIFIC (a Qwen3 cosine of 0.85 is looser than e5's 0.85), so
+# tune them for your embedder. Run `semanticastindexer similar --code "..." --min-score 0` to
+# eyeball the raw score distribution, then set the cuts here. All fields optional.
+# Values below are tuned for the default jina code model (a code model runs LOWER than e5 —
+# for e5 use ~0.91 duplicate / ~0.82 similar).
 similarity:
-  find_similar_min_score: 0.82
-  duplicate_min_score: 0.91
-  duplicate_min_cluster_size: 2
-  top_k: 12
+  find_similar_min_score: 0.80       # `similar`: drop neighbours below this cosine
+  duplicate_min_score: 0.88          # `duplicates`: edge cutoff between two chunks
+  duplicate_min_cluster_size: 2      # `duplicates`: smallest cluster to report
+  top_k: 12                          # `duplicates`: nearest-neighbour fan-out per chunk

@@ -1,4 +1,8 @@
-# semanticastindexer — build & run the source indexer (Qdrant default, DuckDB optional).
+# semanticastindexer — build & run the source indexer.
+#
+# IMPORTANT: We **always build with --features all** so the binary contains every
+# backend (qdrant + duckdb), every embedder (ort + ollama), the MCP server, and
+# the AST chunker. This is the recommended and supported configuration.
 #
 # Run `make` targets from this repo root. The indexer operates on a TARGET project
 # directory (default: the current dir `.`); set TARGET=/path/to/project to index
@@ -8,10 +12,7 @@
 # A local `.env` next to this Makefile is auto-loaded if present (keep it gitignored).
 # Use plain `KEY=value` lines in .env (no `export`, no quotes).
 #
-#   make build                          # optimized release binary (qdrant only)
-#   make build-ort                      # compile with the ort embedder (--features ort)
-#   make build-ollama                   # compile with the ollama embedder (--features ollama)
-#   make build-ast                      # compile with the tree-sitter AST chunker (--features ast)
+#   make build                          # optimized release binary (ALL features)
 #   make run                            # dev run — defaults to a SAFE --dry-run over TARGET/src
 #   make prod TARGET=/path/to/project   # production index of TARGET against the selected backend
 #   make prod TARGET=. BACKEND=duckdb   # index into the local DuckDB backend (ort embedder)
@@ -23,10 +24,10 @@
 #   make duplicates DUP_ARGS="--min-score 0.85 --path-glob 'src/utils/**'"
 #   make similar SIM_ARGS="--code 'function f(){}'"            # neighbours of a snippet
 #   make similar SIM_ARGS="--path src/utils/x.ts --line 12"    # neighbours of a chunk
-#   make test-all / check-all           # test / clippy with --features all
+#   make test / check-all               # test / clippy with --features all (already the default)
 #
-# duplicates/similar need a vector backend + embedder feature (build with
-# `make build-ort`, `make build-ollama`, or `--features all`).
+# All capabilities (MCP server, duplicates/similar, AST chunking, both backends)
+# are available out of the box with the default full-featured build.
 
 THIS_DIR  := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 MANIFEST  := $(THIS_DIR)/Cargo.toml
@@ -55,17 +56,13 @@ SIM_ARGS   ?= --code "function example() { return 1 }"
 
 .PHONY: build build-ort build-ollama build-ast run prod dry-run sync flush query duplicates similar test test-all fmt clippy check-all clean help
 
-build: ## Compile the optimized release binary (qdrant only)
-	cargo build --release --manifest-path $(MANIFEST)
+build: ## Compile the optimized release binary with ALL features (recommended)
+	cargo build --release --manifest-path $(MANIFEST) --features all
 
-build-ort: ## Compile with the local ort ONNX embedder (--features ort)
-	cargo build --release --manifest-path $(MANIFEST) --features ort
-
-build-ollama: ## Compile with the Ollama HTTP embedder (--features ollama)
-	cargo build --release --manifest-path $(MANIFEST) --features ollama
-
-build-ast: ## Compile with the tree-sitter AST chunker (--features ast)
-	cargo build --release --manifest-path $(MANIFEST) --features ast
+# Legacy / convenience aliases — all now produce the full-featured binary.
+build-ort: build ## (alias) Full build (we always use --features all)
+build-ollama: build ## (alias) Full build (we always use --features all)
+build-ast: build ## (alias) Full build (we always use --features all)
 
 run: build ## Dev run (default: safe --dry-run over TARGET/src). Override with ARGS="..."
 	cd $(TARGET) && $(BIN) $(ARGS)
@@ -85,16 +82,16 @@ flush: build ## Delete the collection/table (flush all vectors)
 query: build ## Search: make query Q="how do we create the collection"
 	cd $(TARGET) && $(BIN) --query-only --collection $(COLLECTION) --backend $(BACKEND) --embedder $(EMBEDDER) --query "$(Q)"
 
-duplicates: build ## Near-duplicate clusters: make duplicates DUP_ARGS="--min-score 0.85"
+duplicates: build ## Near-duplicate clusters (full build has all backends/embedders)
 	cd $(TARGET) && $(BIN) --collection $(COLLECTION) --backend $(BACKEND) --embedder $(EMBEDDER) duplicates $(DUP_ARGS)
 
-similar: build ## Nearest neighbours: make similar SIM_ARGS="--path src/x.ts --line 12"
+similar: build ## Nearest neighbours (full build has all backends/embedders)
 	cd $(TARGET) && $(BIN) --collection $(COLLECTION) --backend $(BACKEND) --embedder $(EMBEDDER) similar $(SIM_ARGS)
 
-test: ## Run unit tests (--features all)
+test: ## Run unit tests (uses --features all)
 	cargo test --release --manifest-path $(MANIFEST) --features all
 
-test-all: ## Run unit tests with all backends (--features all)
+test-all: ## Run unit tests (uses --features all)
 	cargo test --release --manifest-path $(MANIFEST) --features all
 
 fmt: ## Format the crate

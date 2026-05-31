@@ -55,11 +55,15 @@ The script creates (in the target project):
 
 ## Recommended Feature Sets
 
-| Use Case                    | Command                                                                 |
-|----------------------------|-------------------------------------------------------------------------|
-| Best balance (fast)        | `--backend duckdb --embedder ollama --features "mcp,duckdb,ollama,ast"` |
-| Fully offline + best quality | `--backend duckdb --embedder ort --features "mcp,duckdb,ort,ast"`       |
-| Minimal                    | `--backend duckdb --embedder ollama --features "mcp,duckdb,ollama"`     |
+We strongly recommend `--features all` (the default used by the setup script). This
+gives you every backend, every embedder, the MCP server, and the AST chunker in one
+binary.
+
+| Use Case                    | Command                                      |
+|----------------------------|----------------------------------------------|
+| Recommended (everything)   | `--features all` (default)                   |
+| Fully offline + AST        | `--backend duckdb --embedder ort` (uses all) |
+| Lightweight (still full)   | `--backend duckdb --embedder ollama` (uses all) |
 
 ## After Setup – Typical Agent Workflow
 

@@ -280,11 +280,11 @@ async fn handle_refresh(backend: &Backend, plan: &Plan, paths: &[String]) -> Res
     let mut removed: Vec<String> = Vec::new();
     let mut first_err = None;
     for rel in paths {
-        match crate::reindex_file(backend, plan, rel).await {
-            Ok(crate::ReindexOutcome::Reindexed { chunks }) => {
+        match crate::indexer::reindex_file(backend, plan, rel).await {
+            Ok(crate::indexer::ReindexOutcome::Reindexed { chunks }) => {
                 refreshed.push((rel.trim_start_matches("./").to_string(), chunks));
             }
-            Ok(crate::ReindexOutcome::Removed { .. }) => {
+            Ok(crate::indexer::ReindexOutcome::Removed { .. }) => {
                 removed.push(rel.trim_start_matches("./").to_string());
             }
             Err(e) => {
