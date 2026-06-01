@@ -58,16 +58,19 @@ pub fn build_chunks(plan: &Plan, path: &Path, rel: &str, raw: &str) -> Vec<CodeC
     } else {
         raw.to_string()
     };
+    let language = language_for_path(path);
     chunk_content(plan, path, &content)
         .into_iter()
         .map(|c| CodeChunk {
             id: point_id(rel, c.start_line),
             path: rel.to_string(),
-            language: plan.language.clone(),
+            language: language.clone(),
             start_line: c.start_line,
             end_line: c.end_line,
             text: c.text,
             symbol: c.symbol,
+            commit_sha: None,
+            dirty: false,
         })
         .collect()
 }
@@ -423,6 +426,16 @@ pub fn has_wanted_ext(path: &Path, wanted: &[String]) -> bool {
         .is_some_and(|e| wanted.iter().any(|w| w == e))
 }
 
+/// The `language` payload label for a file, derived from its extension (lowercased):
+/// `foo.ts` → "ts", `Bar.TSX` → "tsx". Files reaching here always passed
+/// `has_wanted_ext`, so an extension is expected; a missing one falls back to "".
+pub(crate) fn language_for_path(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
 /// Load and filter a file for indexing.
 ///
 /// Returns `Some(raw_content)` only if the file passes:
@@ -732,7 +745,12 @@ pub enum ReindexOutcome {
 /// This lives in the indexer module (rather than main) because the decision logic
 /// ("should this rel produce chunks right now?") must stay in sync with `collect_chunks`
 /// and `dry_run`.
-pub async fn reindex_file(backend: &Backend, plan: &Plan, rel: &str) -> Result<ReindexOutcome> {
+pub async fn reindex_file(
+    backend: &Backend,
+    plan: &Plan,
+    rel: &str,
+    ctx: &crate::git::GitContext,
+) -> Result<ReindexOutcome> {
     let key = rel.trim_start_matches("./");
     // Always remove the file's existing points first ("remove completely").
     backend.delete_by_path(key).await?;
@@ -745,11 +763,15 @@ pub async fn reindex_file(backend: &Backend, plan: &Plan, rel: &str) -> Result<R
     // Single source of truth for ext + globs + generated marker.
     match load_file_for_indexing(plan, path, key, None) {
         Some(raw) => {
-            let file_chunks = build_chunks(plan, path, key, &raw);
+            let mut file_chunks = build_chunks(plan, path, key, &raw);
             if file_chunks.is_empty() {
                 return Ok(ReindexOutcome::Removed {
                     reason: "removed: no indexable content",
                 });
+            }
+            for c in &mut file_chunks {
+                c.commit_sha = ctx.sha.clone();
+                c.dirty = ctx.dirty;
             }
             let n = file_chunks.len();
             backend.upsert(&file_chunks).await?;
@@ -1097,6 +1119,31 @@ bar();
             chunks.is_empty(),
             "a file with no functions must produce no chunks (got {})",
             chunks.len()
+        );
+    }
+
+    /// The per-chunk `language` label is derived from the file extension (lowercased),
+    /// so a mixed `--ext ts,tsx` walk stamps each file with its own label.
+    #[test]
+    fn language_for_path_lowercases_extension() {
+        use std::path::Path;
+        assert_eq!(super::language_for_path(Path::new("a/b/Foo.ts")), "ts");
+        assert_eq!(super::language_for_path(Path::new("a/b/Bar.TSX")), "tsx");
+        assert_eq!(super::language_for_path(Path::new("Makefile")), "");
+    }
+
+    /// `build_chunks` stamps each chunk with the file's own derived language — a `.tsx`
+    /// file gets "tsx" even though the same plan also indexes `.ts`.
+    #[test]
+    fn build_chunks_stamps_per_file_language() {
+        use std::path::Path;
+        let plan = crate::config::test_support::minimal_plan();
+        let src = "export function widget() { return 1 }\n";
+        let chunks = super::build_chunks(&plan, Path::new("ui/Widget.tsx"), "ui/Widget.tsx", src);
+        assert!(!chunks.is_empty(), "fixture must produce chunks");
+        assert!(
+            chunks.iter().all(|c| c.language == "tsx"),
+            "every chunk from a .tsx file is labelled \"tsx\""
         );
     }
 }

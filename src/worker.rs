@@ -280,7 +280,9 @@ async fn handle_refresh(backend: &Backend, plan: &Plan, paths: &[String]) -> Res
     let mut removed: Vec<String> = Vec::new();
     let mut first_err = None;
     for rel in paths {
-        match crate::indexer::reindex_file(backend, plan, rel).await {
+        // MCP refresh: capture fresh git ctx for accurate dirty/commit stamp (long-lived server).
+        let ctx = crate::git::capture();
+        match crate::indexer::reindex_file(backend, plan, rel, &ctx).await {
             Ok(crate::indexer::ReindexOutcome::Reindexed { chunks }) => {
                 refreshed.push((rel.trim_start_matches("./").to_string(), chunks));
             }

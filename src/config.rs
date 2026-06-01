@@ -22,18 +22,19 @@ const DEFAULT_BACKEND: &str = "qdrant";
 const DEFAULT_EMBEDDER: &str = "ort";
 const DEFAULT_CHUNKER: &str = "lines";
 
-/// Languages for which the AST chunker is preferred by default (when the binary
+/// File extensions for which the AST chunker is preferred by default (when the binary
 /// was built with the `ast` feature and the user did not explicitly set a chunker
-/// via CLI or config). For all other languages we fall back to the reliable
+/// via CLI or config). For all other extensions we fall back to the reliable
 /// line-based chunker.
-const AST_PREFERRED_LANGUAGES: &[&str] = &["ts", "tsx", "rs", "go"];
+const AST_PREFERRED_EXTS: &[&str] = &["ts", "tsx", "rs", "go"];
 
-/// Returns whether we should prefer the AST chunker for this language
-/// when no explicit chunker was provided.
-fn ast_preferred_for_language(language: &str) -> bool {
-    AST_PREFERRED_LANGUAGES
-        .iter()
-        .any(|&l| l.eq_ignore_ascii_case(language))
+/// Returns whether we should prefer the AST chunker when no explicit chunker was
+/// provided: true if ANY requested extension has a tree-sitter grammar. The chunker
+/// itself still dispatches per-file, so a mixed `--ext ts,go` walk AST-parses both
+/// and line-chunks anything without a grammar.
+fn ast_preferred_for_exts(exts: &[String]) -> bool {
+    exts.iter()
+        .any(|e| AST_PREFERRED_EXTS.iter().any(|&p| p.eq_ignore_ascii_case(e)))
 }
 const DEFAULT_DUCKDB_PATH: &str = ".index/code.duckdb";
 const DEFAULT_MODEL_REPO: &str = "Xenova/multilingual-e5-small";
@@ -149,8 +150,9 @@ pub struct OllamaConfig {
 #[derive(Clone)]
 pub struct Plan {
     pub root: String,
+    /// File extensions to walk (no dots). Each chunk's `language` payload label is
+    /// derived per-file from its extension (see `indexer::language_for_path`).
     pub ext: Vec<String>,
-    pub language: String,
     /// Selected vector backend: "qdrant" or "duckdb".
     pub backend: String,
     /// Selected embedder (duckdb backend only): "ort" or "ollama".
@@ -292,31 +294,34 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
         .unwrap_or(DEFAULT_DUPLICATE_MIN_CLUSTER_SIZE);
     let top_k = sim.top_k.unwrap_or(DEFAULT_TOP_K);
 
+    // Normalize extensions once (strip any leading dot) so both the walk filter and the
+    // chunker auto-selection see the same clean list.
+    let ext: Vec<String> = args
+        .ext
+        .iter()
+        .map(|e| e.trim_start_matches('.').to_string())
+        .collect();
+
     Ok(Plan {
         root: args.root.clone(),
-        ext: args
-            .ext
-            .iter()
-            .map(|e| e.trim_start_matches('.').to_string())
-            .collect(),
-        language: args.language.clone(),
-        backend,
-        embedder,
         // Chunker defaulting logic:
         // - CLI `--chunker` always wins
         // - Then config file `chunker:`
-        // - Otherwise: if we have AST support compiled in *and* this language
-        //   is one we have good tree-sitter grammars for → "ast"
+        // - Otherwise: if we have AST support compiled in *and* any requested extension
+        //   has a tree-sitter grammar → "ast" (the chunker dispatches per-file)
         // - Else the safe line-based chunker.
         chunker: if let Some(c) = args.chunker.clone() {
             c
         } else if let Some(c) = config.chunker.clone() {
             c
-        } else if cfg!(feature = "ast") && ast_preferred_for_language(&args.language) {
+        } else if cfg!(feature = "ast") && ast_preferred_for_exts(&ext) {
             "ast".to_string()
         } else {
             DEFAULT_CHUNKER.to_string()
         },
+        ext,
+        backend,
+        embedder,
         max_chunk_chars,
         prefix_style,
         collection: args
@@ -435,7 +440,6 @@ pub mod test_support {
         Plan {
             root: "src".to_string(),
             ext: vec!["ts".to_string()],
-            language: "ts".to_string(),
             backend: "mock".to_string(),
             embedder: "ort".to_string(),
             chunker: "lines".to_string(),

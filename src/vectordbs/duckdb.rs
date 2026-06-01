@@ -23,6 +23,25 @@ use crate::vectordbs::{CodeChunk, Hit};
 /// id more than once, so fetch 8x candidates, dedup by id, then truncate to the limit.
 const OVERFETCH: u64 = 8;
 
+/// An existing DuckDB index whose stored embedding dimension no longer matches the
+/// configured model (the classic "switched models without --recreate" mistake). Carried
+/// as a typed error so the CLI can recognize it and offer an interactive delete-and-rebuild
+/// instead of string-matching the message. `Display` keeps the original guidance intact.
+#[derive(Debug)]
+pub struct DimMismatch {
+    /// Path of the DuckDB file that must be deleted to recover.
+    pub duckdb_path: String,
+    message: String,
+}
+
+impl std::fmt::Display for DimMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DimMismatch {}
+
 /// DuckDB-backed vector store. Owns its connection, local embedder, and the
 /// resolved collection/dim/path. Single-threaded (the connection is not `Sync`).
 pub struct DuckDbBackend {
@@ -149,15 +168,16 @@ impl DuckDbBackend {
             Some(t) => {
                 let expected = format!("FLOAT[{}]", self.vector_dim);
                 if t != expected {
-                    anyhow::bail!(
+                    let message = format!(
                         "DuckDB table '{}' has embedding column of type {} but config/vector_dim={} \
                          (expected {}). This usually means the embedding model was changed without \
                          --recreate. Delete the DuckDB file or re-index with --recreate.",
-                        self.collection,
-                        t,
-                        self.vector_dim,
-                        expected
+                        self.collection, t, self.vector_dim, expected
                     );
+                    return Err(anyhow::Error::new(DimMismatch {
+                        duckdb_path: self.path.to_string_lossy().into_owned(),
+                        message,
+                    }));
                 }
                 Ok(())
             }
@@ -205,7 +225,9 @@ impl DuckDbBackend {
                    end_line INTEGER,
                    text VARCHAR,
                    symbol VARCHAR,
-                   embedding FLOAT[{dim}]);
+                   embedding FLOAT[{dim}],
+                   commit_sha VARCHAR,
+                   dirty BOOLEAN DEFAULT false);
                  {index_sql}",
                 coll = self.collection,
                 index_sql = self.create_index_sql(),
@@ -223,8 +245,15 @@ impl DuckDbBackend {
         }
         let existed = self.table_exists()?;
         self.create_table_and_index()?;
-        if existed && !recreate {
-            println!("using existing collection '{}'", self.collection);
+        if existed {
+            // Best-effort additive migration for commit/dirty stamping.
+            let _ = self.conn.execute_batch(&format!(
+                "ALTER TABLE {} ADD COLUMN commit_sha VARCHAR; ALTER TABLE {} ADD COLUMN dirty BOOLEAN DEFAULT false;",
+                self.collection, self.collection
+            ));
+            if !recreate {
+                println!("using existing collection '{}'", self.collection);
+            }
         } else {
             println!(
                 "created collection '{}' ({} dims, cosine HNSW) at {}",
@@ -281,8 +310,8 @@ impl DuckDbBackend {
             self.conn
                 .execute(
                     &format!(
-                        "INSERT INTO {coll} (id, path, language, start_line, end_line, text, symbol, embedding)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, {lit}::FLOAT[{dim}])
+                        "INSERT INTO {coll} (id, path, language, start_line, end_line, text, symbol, embedding, commit_sha, dirty)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, {lit}::FLOAT[{dim}], ?, ?)
                          ON CONFLICT (id) DO UPDATE SET
                            path = excluded.path,
                            language = excluded.language,
@@ -290,7 +319,9 @@ impl DuckDbBackend {
                            end_line = excluded.end_line,
                            text = excluded.text,
                            symbol = excluded.symbol,
-                           embedding = excluded.embedding;",
+                           embedding = excluded.embedding,
+                           commit_sha = excluded.commit_sha,
+                           dirty = excluded.dirty;",
                         coll = self.collection,
                         lit = literal,
                         dim = self.vector_dim,
@@ -303,6 +334,8 @@ impl DuckDbBackend {
                         c.end_line as i64,
                         c.text,
                         c.symbol,
+                        c.commit_sha,
+                        c.dirty,
                     ],
                 )
                 .with_context(|| format!("failed to upsert chunk id {}", c.id))?;
@@ -330,7 +363,8 @@ impl DuckDbBackend {
         let literal = float_array_literal(&qvec);
         let sql = format!(
             "SELECT id, path, language, start_line, end_line, text,
-                    array_cosine_distance(embedding, {lit}::FLOAT[{dim}]) AS d
+                    array_cosine_distance(embedding, {lit}::FLOAT[{dim}]) AS d,
+                    commit_sha, dirty
              FROM {coll}
              ORDER BY d
              LIMIT ?",
@@ -348,6 +382,8 @@ impl DuckDbBackend {
                 let end_line: i32 = row.get(4)?;
                 let text: String = row.get(5)?;
                 let distance: f32 = row.get(6)?;
+                let commit_sha: Option<String> = row.get(7).ok();
+                let dirty: Option<bool> = row.get(8).ok();
                 Ok(Hit {
                     id,
                     path,
@@ -357,6 +393,8 @@ impl DuckDbBackend {
                     text,
                     score: 1.0 - distance,
                     symbol: None,
+                    commit_sha,
+                    dirty: dirty.unwrap_or(false),
                 })
             })
             .context("failed to run query")?;
@@ -384,7 +422,8 @@ impl DuckDbBackend {
         };
         let sql = format!(
             "SELECT id, path, language, start_line, end_line, text, symbol,
-                    array_cosine_distance(embedding, {lit}::FLOAT[{dim}]) AS d
+                    array_cosine_distance(embedding, {lit}::FLOAT[{dim}]) AS d,
+                    commit_sha, dirty
              FROM {coll}
              {where_clause}
              ORDER BY d
@@ -406,6 +445,8 @@ impl DuckDbBackend {
             let text: String = row.get(5)?;
             let symbol: Option<String> = row.get(6)?;
             let distance: f32 = row.get(7)?;
+            let commit_sha: Option<String> = row.get(8).ok();
+            let dirty: Option<bool> = row.get(9).ok();
             Ok(Hit {
                 id,
                 path,
@@ -415,6 +456,8 @@ impl DuckDbBackend {
                 text,
                 score: 1.0 - distance,
                 symbol,
+                commit_sha,
+                dirty: dirty.unwrap_or(false),
             })
         };
         let rows: Vec<Hit> = match exclude_id {
@@ -469,6 +512,8 @@ impl DuckDbBackend {
                         text,
                         score: 1.0,
                         symbol,
+                        commit_sha: row.get(8).ok(),
+                        dirty: row.get(9).ok().unwrap_or(false),
                     },
                     embedding,
                 ))
@@ -515,6 +560,8 @@ impl DuckDbBackend {
                         text,
                         score: 1.0,
                         symbol,
+                        commit_sha: row.get(8).ok(),
+                        dirty: row.get(9).ok().unwrap_or(false),
                     },
                     embedding,
                 ))
@@ -545,6 +592,19 @@ impl DuckDbBackend {
             )
             .context("failed to count chunks")?;
         Ok(n.max(0) as u64)
+    }
+
+    /// Cheap EXISTS for dirty rows (for duplicates warning).
+    pub async fn has_dirty(&self) -> Result<bool> {
+        // Column may not exist on old indexes; treat as no dirty.
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM {} WHERE dirty LIMIT 1)",
+            self.collection
+        );
+        match self.conn.query_row(&sql, [], |r| r.get::<_, bool>(0)) {
+            Ok(v) => Ok(v),
+            Err(_) => Ok(false),
+        }
     }
 
     /// Embed a query through the owned local embedder (asymmetric `query:` side).
@@ -708,7 +768,6 @@ mod validation_tests {
         Plan {
             root: "src".to_string(),
             ext: vec!["ts".to_string()],
-            language: "ts".to_string(),
             backend: "duckdb".to_string(),
             embedder: "ollama".to_string(),
             chunker: "lines".to_string(),

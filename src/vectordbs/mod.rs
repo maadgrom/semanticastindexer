@@ -100,6 +100,11 @@ pub struct CodeChunk {
     pub text: String,
     /// Captured symbol name (AST chunker). `None` for line-window chunks.
     pub symbol: Option<String>,
+    /// Git commit this version was indexed at (for "changes per commit" picture).
+    /// None for back-compat / pre-stamping runs.
+    pub commit_sha: Option<String>,
+    /// True if the source tree had uncommitted changes at index time.
+    pub dirty: bool,
 }
 
 /// A search result row.
@@ -120,6 +125,11 @@ pub struct Hit {
     /// `find_duplicates`).
     #[cfg_attr(not(any(feature = "duckdb", feature = "qdrant")), allow(dead_code))]
     pub symbol: Option<String>,
+    /// Commit at which this chunk was last indexed (if stamped).
+    #[allow(dead_code)]
+    pub commit_sha: Option<String>,
+    #[allow(dead_code)]
+    pub dirty: bool,
 }
 
 /// The vector backend. Match-dispatched.
@@ -292,6 +302,20 @@ impl Backend {
         }
     }
 
+    /// Quick check for any dirty-stamped chunks (used for pre-`duplicates` warning).
+    /// Best-effort; false on backends without the column or on error.
+    #[cfg_attr(not(any(feature = "duckdb", feature = "qdrant")), allow(dead_code))]
+    pub async fn has_dirty(&self) -> Result<bool> {
+        match self {
+            #[cfg(feature = "qdrant")]
+            Backend::Qdrant(b) => b.has_dirty().await,
+            #[cfg(feature = "duckdb")]
+            Backend::DuckDb(b) => b.has_dirty().await,
+            #[cfg(test)]
+            Backend::Mock(b) => b.has_dirty().await,
+        }
+    }
+
     /// Embed a search query (asymmetric `query:` side) using the backend's embedder.
     /// DuckDB delegates to its owned local embedder; Qdrant has no local embedder
     /// (server-side inference), so the MCP server uses `query()` for it instead.
@@ -378,6 +402,21 @@ pub fn factory(plan: &Plan, access: Access) -> Result<Backend> {
         }
         other => anyhow::bail!("unknown backend '{other}' (expected 'qdrant' or 'duckdb')"),
     }
+}
+
+/// If `err` is a DuckDB embedding-dimension mismatch, return the path of the DuckDB file
+/// that must be deleted to recover. Returns `None` for any other error — and always when
+/// the `duckdb` feature is not compiled in. Lets the CLI offer an interactive
+/// "delete & re-index?" without string-matching the error message.
+pub fn dim_mismatch_duckdb_path(err: &anyhow::Error) -> Option<String> {
+    #[cfg(feature = "duckdb")]
+    {
+        if let Some(m) = err.downcast_ref::<duckdb::DimMismatch>() {
+            return Some(m.duckdb_path.clone());
+        }
+    }
+    let _ = err;
+    None
 }
 
 /// Build the embedder selected by `plan.embedder` for the DuckDB backend. Arms are

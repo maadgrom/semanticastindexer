@@ -20,15 +20,17 @@
 //! Usage (after `cargo build --release`):
 //!   # See exactly what would be indexed/skipped — no network, no upload:
 //!   ./target/release/semanticastindexer --root src --dry-run
-//!   # TS index:
-//!   ./target/release/semanticastindexer --root src --ext ts,tsx --language ts
+//!   # TS index (the language label on each chunk is derived per-file from its
+//!   # extension — `.ts` → "ts", `.tsx` → "tsx"):
+//!   ./target/release/semanticastindexer --root src --ext ts,tsx
 //!   # Go index later (same collection):
-//!   ./target/release/semanticastindexer --root path/to/go --ext go --language go
+//!   ./target/release/semanticastindexer --root path/to/go --ext go
 //!   # Search only:
 //!   ./target/release/semanticastindexer \
 //!       --query-only --query "where do we create the qdrant collection"
 
 mod config;
+mod git;
 mod indexer;
 #[cfg(feature = "mcp")]
 mod mcp;
@@ -43,6 +45,7 @@ mod worker;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 use std::process::Command;
 
 use config::{DEFAULT_CONFIG, Plan, build_plan};
@@ -61,13 +64,12 @@ pub struct Args {
     #[arg(long, default_value = "src")]
     pub root: String,
 
-    /// File extensions to index (comma-separated, no dots).
+    /// File extensions to index (comma-separated, no dots). Each indexed chunk's
+    /// `language` payload label is derived from its file's extension (e.g. `.ts` → "ts",
+    /// `.tsx` → "tsx"), so `--ext ts,tsx` indexes both with the correct per-file label
+    /// and AST grammar.
     #[arg(long, value_delimiter = ',', default_value = "ts,tsx")]
     pub ext: Vec<String>,
-
-    /// Language label stored in each point's payload.
-    #[arg(long, default_value = "ts")]
-    pub language: String,
 
     /// Vector backend: "qdrant" or "duckdb" (overrides config). Global: accepted before
     /// or after a subcommand.
@@ -79,8 +81,8 @@ pub struct Args {
     #[arg(long, global = true)]
     pub embedder: Option<String>,
 
-    /// Chunker: "lines" or "ast" (tree-sitter). When omitted, we auto-select "ast" for
-    /// languages that have AST support (ts/tsx/rs/go) *if* the binary was built with --features ast.
+    /// Chunker: "lines" or "ast" (tree-sitter). When omitted, we auto-select "ast" when any
+    /// requested --ext has AST support (ts/tsx/rs/go) *if* the binary was built with --features ast.
     /// Explicit --chunker always wins.
     #[arg(long)]
     pub chunker: Option<String>,
@@ -117,6 +119,10 @@ pub struct Args {
     /// Number of nearest results to print for a query.
     #[arg(long, default_value_t = 5)]
     pub limit: u64,
+
+    /// Suppress timing, progress, dirty warnings, and non-essential notes (ideal for hooks/CI).
+    #[arg(long, global = true, default_value_t = false)]
+    pub silent: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -220,6 +226,8 @@ struct SyncArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let t0 = std::time::Instant::now();
+    let git_ctx = git::capture();
     let plan = build_plan(&args)?;
     // Reject `chunker: ast` when the binary lacks the `ast` feature (clear, actionable
     // error). dry_run is chunker-agnostic, but validating early keeps the message at the
@@ -228,37 +236,164 @@ async fn main() -> Result<()> {
 
     match &args.command {
         Some(Cmd::Flush) => {
-            let backend = factory(&plan, Access::ReadWrite)?;
-            backend.flush().await
+            run_timed(t0, &args, &git_ctx, "", async {
+                let backend = factory(&plan, Access::ReadWrite)?;
+                backend.flush().await
+            })
+            .await
         }
         Some(Cmd::Sync(sync_args)) => {
-            let backend = factory(&plan, Access::ReadWrite)?;
-            backend.ensure_ready(false).await?;
-            sync(&backend, &plan, sync_args).await
+            run_timed(t0, &args, &git_ctx, "", async {
+                let backend = factory(&plan, Access::ReadWrite)?;
+                backend.ensure_ready(false).await?;
+                sync(&backend, &plan, sync_args, &git_ctx).await
+            })
+            .await
         }
         #[cfg(feature = "mcp")]
-        Some(Cmd::Mcp(mcp_args)) => run_mcp(&args, mcp_args.allow_write, mcp_args.allow_setup).await,
+        Some(Cmd::Mcp(mcp_args)) => {
+            run_timed(t0, &args, &git_ctx, "", async {
+                run_mcp(&args, mcp_args.allow_write, mcp_args.allow_setup).await
+            })
+            .await
+        }
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
-        Some(Cmd::Duplicates(dup_args)) => run_duplicates(&plan, dup_args).await,
+        Some(Cmd::Duplicates(dup_args)) => {
+            run_timed(t0, &args, &git_ctx, "", async {
+                run_duplicates(&plan, dup_args, args.silent).await
+            })
+            .await
+        }
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
-        Some(Cmd::Similar(sim_args)) => run_similar(&plan, sim_args).await,
+        Some(Cmd::Similar(sim_args)) => {
+            run_timed(t0, &args, &git_ctx, "", async {
+                run_similar(&plan, sim_args).await
+            })
+            .await
+        }
         None => {
             // Default action: full index of --root.
             if args.dry_run {
                 indexer::dry_run(&plan);
+                finish(t0, &args, &git_ctx, " (dry-run)");
                 return Ok(());
             }
-            let backend = factory(&plan, Access::ReadWrite)?;
-            backend.ensure_ready(args.recreate).await?;
-            if !args.query_only {
-                index_sources(&backend, &plan).await?;
-            }
-            if let Some(q) = args.query.as_deref() {
-                run_query(&backend, &plan, q).await?;
-            }
-            Ok(())
+            // The indexing path can offer to wipe a dimension-mismatched DuckDB file and
+            // rebuild it. A query-only run never re-indexes, so it just surfaces the error
+            // (deleting the index would only leave an empty DB to query).
+            run_timed(t0, &args, &git_ctx, "", async {
+                let backend = if args.query_only {
+                    factory(&plan, Access::ReadWrite)?
+                } else {
+                    open_index_backend(&plan)?
+                };
+                backend.ensure_ready(args.recreate).await?;
+                if !args.query_only {
+                    index_sources(&backend, &plan, &git_ctx).await?;
+                }
+                if let Some(q) = args.query.as_deref() {
+                    run_query(&backend, &plan, q).await?;
+                }
+                Ok(())
+            })
+            .await
         }
     }
+}
+
+fn finish(t0: std::time::Instant, args: &Args, ctx: &git::GitContext, extra: &str) {
+    if args.silent {
+        return;
+    }
+    let (sha, d) = match &ctx.sha {
+        Some(s) => (s.as_str(), if ctx.dirty { ", dirty" } else { "" }),
+        None => ("unknown", if ctx.dirty { ", dirty" } else { "" }),
+    };
+    eprintln!("done{} at {}{} in {:.2}s", extra, sha, d, t0.elapsed().as_secs_f32());
+}
+
+/// Internal: run a top-level command future, then always report its wall time (unless --silent).
+/// Used so every CLI entrypoint (index, sync, duplicates, flush, mcp, ...) gets consistent timing
+/// without repeating the "let r = ...; finish(...); r" pattern in every match arm.
+async fn run_timed<F, T>(t0: std::time::Instant, args: &Args, ctx: &git::GitContext, extra: &str, f: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let r = f.await;
+    finish(t0, args, ctx, extra);
+    r
+}
+
+/// Open the backend for the indexing path. If opening fails because an existing DuckDB
+/// index was built with a different embedding model (dimension mismatch), offer — on an
+/// interactive terminal, defaulting to NO — to delete the file and re-index from scratch.
+/// Any other error (or a declined prompt) propagates unchanged.
+fn open_index_backend(plan: &Plan) -> Result<Backend> {
+    match factory(plan, Access::ReadWrite) {
+        Ok(backend) => Ok(backend),
+        Err(e) => {
+            let Some(path) = vectordbs::dim_mismatch_duckdb_path(&e) else {
+                return Err(e);
+            };
+            let question = format!(
+                "The index at '{path}' was built with a different embedding model \
+                 (dimension mismatch). Delete it and re-index from scratch?"
+            );
+            if !confirm_default_no(&question)? {
+                return Err(e);
+            }
+            delete_duckdb_file(&path)?;
+            eprintln!("deleted '{path}' — re-indexing from scratch");
+            factory(plan, Access::ReadWrite)
+        }
+    }
+}
+
+/// Ask a yes/no question on the terminal, defaulting to NO. Returns `Ok(false)` immediately
+/// when stdin is not an interactive terminal, so automation, CI, git hooks, and the MCP
+/// stdio server never block on input or trigger a destructive action by default.
+fn confirm_default_no(question: &str) -> Result<bool> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    print!("{question} [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+}
+
+/// For `duplicates` (and similar truth-sensitive read commands): if the index has any
+/// dirty-stamped chunks, emit a warning. On interactive tty, ask for confirmation (default NO)
+/// so the user appreciates they may be looking at uncommitted work. Returns `true` if the
+/// caller should abort.
+async fn warn_on_dirty(backend: &Backend, silent: bool) -> Result<bool> {
+    if silent {
+        return Ok(false);
+    }
+    // Best-effort (column may be absent on indexes created before the stamping feature).
+    if !backend.has_dirty().await.unwrap_or(false) {
+        return Ok(false);
+    }
+    let msg = "warning: index contains dirty chunks (uncommitted changes). duplicates may reflect a dirty working tree.";
+    if std::io::stdin().is_terminal() {
+        // Reuse the existing non-destructive "default NO" pattern used by dimension-mismatch prompts.
+        if !confirm_default_no(&format!("{} Proceed?", msg))? {
+            return Ok(true);
+        }
+    } else {
+        eprintln!("{}", msg);
+    }
+    Ok(false)
+}
+
+/// Delete a DuckDB file plus its `.wal` write-ahead sidecar (ignored if absent) so a fresh
+/// re-index does not replay stale data from the old, mismatched index.
+fn delete_duckdb_file(path: &str) -> Result<()> {
+    std::fs::remove_file(path).with_context(|| format!("failed to delete DuckDB file: {path}"))?;
+    let _ = std::fs::remove_file(format!("{path}.wal"));
+    Ok(())
 }
 
 /// Batch size for embed+upsert. Bounds the embedder POST size (Ollama) and lets us emit
@@ -267,8 +402,12 @@ const UPSERT_BATCH: usize = 64;
 
 /// Walk the root, collect chunks, and upsert them in batches (wrapped in begin/end_bulk),
 /// printing a single updating progress line to stderr while embedding.
-async fn index_sources(backend: &Backend, plan: &Plan) -> Result<()> {
-    let (chunks, files, skipped) = indexer::collect_chunks(plan);
+async fn index_sources(backend: &Backend, plan: &Plan, ctx: &git::GitContext) -> Result<()> {
+    let (mut chunks, files, skipped) = indexer::collect_chunks(plan);
+    for c in &mut chunks {
+        c.commit_sha = ctx.sha.clone();
+        c.dirty = ctx.dirty;
+    }
     let chunks_total = chunks.len();
 
     backend.begin_bulk().await?;
@@ -309,7 +448,7 @@ async fn index_sources(backend: &Backend, plan: &Plan) -> Result<()> {
 
 /// Re-index only changed files: delete each file's existing points, then upload the current
 /// content fresh. Deleted/now-excluded files are removed from the collection.
-async fn sync(backend: &Backend, plan: &Plan, sync_args: &SyncArgs) -> Result<()> {
+async fn sync(backend: &Backend, plan: &Plan, sync_args: &SyncArgs, ctx: &git::GitContext) -> Result<()> {
     let changed = changed_files(sync_args)?;
     if changed.is_empty() {
         println!("sync: no changed files");
@@ -326,7 +465,7 @@ async fn sync(backend: &Backend, plan: &Plan, sync_args: &SyncArgs) -> Result<()
     let (mut reindexed, mut deleted, mut chunks) = (0usize, 0usize, 0usize);
     for rel in &changed {
         let key = rel.trim_start_matches("./");
-        match indexer::reindex_file(backend, plan, rel).await? {
+        match indexer::reindex_file(backend, plan, rel, ctx).await? {
             indexer::ReindexOutcome::Removed { reason } => {
                 deleted += 1;
                 println!("  - {key} ({reason})");
@@ -435,7 +574,7 @@ const DEFAULT_DUP_MAX_CLUSTERS: usize = 50;
 /// index read-only, run the shared codebase-wide near-duplicate scan, and print the clusters
 /// human-readably.
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
-async fn run_duplicates(plan: &Plan, args: &DuplicatesArgs) -> Result<()> {
+async fn run_duplicates(plan: &Plan, args: &DuplicatesArgs, silent: bool) -> Result<()> {
     // Knob resolution: CLI flag > config (similarity.*) > built-in default.
     let min_score = args.min_score.unwrap_or_else(|| plan.duplicate_min_score());
     let min_cluster_size = args
@@ -446,6 +585,9 @@ async fn run_duplicates(plan: &Plan, args: &DuplicatesArgs) -> Result<()> {
     let max_clusters = args.max_clusters.unwrap_or(DEFAULT_DUP_MAX_CLUSTERS);
 
     let backend = vectordbs::factory(plan, Access::ReadOnly)?;
+    if warn_on_dirty(&backend, silent).await? {
+        return Ok(());
+    }
     let clusters = search::find_duplicates(
         &backend,
         min_score,
@@ -551,7 +693,6 @@ mod tests {
         Plan {
             root: root.to_string(),
             ext: vec!["ts".to_string()],
-            language: "ts".to_string(),
             backend: "mock".to_string(),
             embedder: "ort".to_string(),
             chunker: "lines".to_string(),
@@ -611,7 +752,7 @@ mod tests {
         assert!(expected > 0, "fixture must produce chunks");
 
         let backend = Backend::Mock(MockBackend::new());
-        index_sources(&backend, &plan).await.unwrap();
+        index_sources(&backend, &plan, &git::GitContext::default()).await.unwrap();
 
         let calls = mock_calls(&backend);
         assert_eq!(calls.begin_bulk, 1, "exactly one begin_bulk");
@@ -650,7 +791,7 @@ mod tests {
         };
 
         let backend = Backend::Mock(MockBackend::new());
-        sync(&backend, &plan, &sync_args).await.unwrap();
+        sync(&backend, &plan, &sync_args, &git::GitContext::default()).await.unwrap();
 
         let calls = mock_calls(&backend);
         // delete_by_path called once per changed path (3).
@@ -687,12 +828,12 @@ mod tests {
         let backend = Backend::Mock(MockBackend::new());
 
         let good_path = good.to_string_lossy().to_string();
-        match indexer::reindex_file(&backend, &plan, &good_path).await.unwrap() {
+        match indexer::reindex_file(&backend, &plan, &good_path, &git::GitContext::default()).await.unwrap() {
             indexer::ReindexOutcome::Reindexed { chunks } => assert!(chunks > 0, "indexable file chunks"),
             indexer::ReindexOutcome::Removed { .. } => panic!("existing file must be reindexed"),
         }
         let gone_path = gone.to_string_lossy().to_string();
-        match indexer::reindex_file(&backend, &plan, &gone_path).await.unwrap() {
+        match indexer::reindex_file(&backend, &plan, &gone_path, &git::GitContext::default()).await.unwrap() {
             indexer::ReindexOutcome::Removed { .. } => {}
             indexer::ReindexOutcome::Reindexed { .. } => panic!("gone file must be removed"),
         }

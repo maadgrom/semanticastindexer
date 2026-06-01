@@ -22,6 +22,8 @@ pub struct MockRow {
     pub text: String,
     pub symbol: Option<String>,
     pub vector: Vec<f32>,
+    pub commit_sha: Option<String>,
+    pub dirty: bool,
 }
 
 impl MockRow {
@@ -36,6 +38,8 @@ impl MockRow {
             text: format!("chunk {id}"),
             symbol: None,
             vector,
+            commit_sha: None,
+            dirty: false,
         }
     }
 
@@ -49,6 +53,8 @@ impl MockRow {
             text: self.text.clone(),
             score,
             symbol: self.symbol.clone(),
+            commit_sha: self.commit_sha.clone(),
+            dirty: self.dirty,
         }
     }
 }
@@ -128,6 +134,8 @@ impl MockBackend {
                     text: "alpha".to_string(),
                     score: 0.9000,
                     symbol: None,
+                    commit_sha: None,
+                    dirty: false,
                 },
                 Hit {
                     id: 2,
@@ -138,6 +146,8 @@ impl MockBackend {
                     text: "beta".to_string(),
                     score: 0.8000,
                     symbol: None,
+                    commit_sha: None,
+                    dirty: false,
                 },
             ],
         }
@@ -190,6 +200,8 @@ impl MockBackend {
                 text: h.text.clone(),
                 score: h.score,
                 symbol: h.symbol.clone(),
+                commit_sha: h.commit_sha.clone(),
+                dirty: h.dirty,
             })
             .collect())
     }
@@ -262,6 +274,10 @@ impl MockBackend {
     /// Number of seeded rows.
     pub async fn chunk_count(&self) -> Result<u64> {
         Ok(self.rows.len() as u64)
+    }
+
+    pub async fn has_dirty(&self) -> Result<bool> {
+        Ok(self.rows.iter().any(|r| r.dirty))
     }
 
     /// Deterministic canned query vector (length 4). Distinct text → distinct vector.

@@ -137,6 +137,8 @@ impl QdrantBackend {
                     "start_line": c.start_line as i64,
                     "end_line": c.end_line as i64,
                     "text": c.text,
+                    "commit": c.commit_sha,
+                    "dirty": c.dirty,
                 });
                 if let Some(symbol) = &c.symbol {
                     payload_json["symbol"] = json!(symbol);
@@ -191,6 +193,8 @@ impl QdrantBackend {
                     text: payload_str(payload, "text"),
                     score: p.score,
                     symbol: payload_str_opt(payload, "symbol"),
+                    commit_sha: payload.get("commit").and_then(|v| v.as_str().map(|s| s.to_string())),
+                    dirty: payload.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false),
                 }
             })
             .collect())
@@ -235,6 +239,8 @@ impl QdrantBackend {
                 text: payload_str(payload, "text"),
                 score: p.score,
                 symbol: payload_str_opt(payload, "symbol"),
+                commit_sha: payload.get("commit").and_then(|v| v.as_str().map(|s| s.to_string())),
+                dirty: payload.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false),
             });
             if out.len() >= limit as usize {
                 break;
@@ -272,6 +278,8 @@ impl QdrantBackend {
                     text: payload_str(payload, "text"),
                     score: 1.0,
                     symbol: payload_str_opt(payload, "symbol"),
+                    commit_sha: payload.get("commit").and_then(|v| v.as_str().map(|s| s.to_string())),
+                    dirty: payload.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false),
                 };
                 let vec = extract_vector(p.vectors)?;
                 Ok(Some((hit, vec)))
@@ -318,6 +326,8 @@ impl QdrantBackend {
                     text: payload_str(payload, "text"),
                     score: 1.0,
                     symbol: payload_str_opt(payload, "symbol"),
+                    commit_sha: payload.get("commit").and_then(|v| v.as_str().map(|s| s.to_string())),
+                    dirty: payload.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false),
                 };
                 if let Some(m) = &matcher {
                     if !m.is_match(&hit.path) {
@@ -340,6 +350,11 @@ impl QdrantBackend {
     pub async fn chunk_count(&self) -> Result<u64> {
         let info = self.client.collection_info(&self.collection).await?;
         Ok(info.result.and_then(|r| r.points_count).unwrap_or(0))
+    }
+
+    /// Stub: dirty awareness for Qdrant can be added via payload filter count later.
+    pub async fn has_dirty(&self) -> Result<bool> {
+        Ok(false)
     }
 
     /// Delete the whole collection (flush all vectors).
