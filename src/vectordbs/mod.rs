@@ -330,47 +330,22 @@ impl Backend {
     }
 }
 
-/// Build the backend selected by `plan.backend`. Arms are cfg-gated: selecting a
-/// backend whose feature was not compiled in yields a clear, actionable error.
-pub fn factory(plan: &Plan) -> Result<Backend> {
-    match plan.backend.as_str() {
-        "qdrant" => {
-            #[cfg(feature = "qdrant")]
-            {
-                Ok(Backend::Qdrant(qdrant::QdrantBackend::connect(plan)?))
-            }
-            #[cfg(not(feature = "qdrant"))]
-            {
-                anyhow::bail!(
-                    "backend 'qdrant' selected but this binary was built without the 'qdrant' feature (rebuild with --features qdrant)"
-                )
-            }
-        }
-        "duckdb" => {
-            #[cfg(feature = "duckdb")]
-            {
-                let embedder = build_embedder(plan)?;
-                Ok(Backend::DuckDb(Box::new(duckdb::DuckDbBackend::connect(
-                    plan, embedder,
-                )?)))
-            }
-            #[cfg(not(feature = "duckdb"))]
-            {
-                anyhow::bail!(
-                    "backend 'duckdb' selected but this binary was built without the 'duckdb' feature (rebuild with --features duckdb)"
-                )
-            }
-        }
-        other => anyhow::bail!("unknown backend '{other}' (expected 'qdrant' or 'duckdb')"),
-    }
+/// How a backend should be opened. Only the DuckDB arm of [`factory`] distinguishes
+/// these: `ReadOnly` opens the file without index maintenance or writes, so a search can
+/// run while an index is open elsewhere. Qdrant is a remote path that is already
+/// read-capable, so both modes behave identically there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Normal open: index maintenance + writes (indexing, `refresh`, HNSW persistence).
+    ReadWrite,
+    /// Read-only search path (the MCP server + the CLI `similar`/`duplicates` subcommands).
+    ReadOnly,
 }
 
-/// Build the backend for READ-ONLY search (the MCP server + the CLI `similar`/
-/// `duplicates` subcommands). Identical to [`factory`] except the DuckDB arm opens the
-/// file read-only (no index maintenance, no writes), so a search can run while an index
-/// is open elsewhere. Qdrant is already a remote read path here.
-#[cfg(any(feature = "duckdb", feature = "qdrant"))]
-pub fn factory_readonly(plan: &Plan) -> Result<Backend> {
+/// Build the backend selected by `plan.backend`, opened per `access`. Arms are cfg-gated:
+/// selecting a backend whose feature was not compiled in yields a clear, actionable error.
+pub fn factory(plan: &Plan, access: Access) -> Result<Backend> {
+    let _ = access; // only consulted by the duckdb arm
     match plan.backend.as_str() {
         "qdrant" => {
             #[cfg(feature = "qdrant")]
@@ -388,9 +363,11 @@ pub fn factory_readonly(plan: &Plan) -> Result<Backend> {
             #[cfg(feature = "duckdb")]
             {
                 let embedder = build_embedder(plan)?;
-                Ok(Backend::DuckDb(Box::new(
-                    duckdb::DuckDbBackend::connect_readonly(plan, embedder)?,
-                )))
+                let backend = match access {
+                    Access::ReadOnly => duckdb::DuckDbBackend::connect_readonly(plan, embedder)?,
+                    Access::ReadWrite => duckdb::DuckDbBackend::connect(plan, embedder)?,
+                };
+                Ok(Backend::DuckDb(Box::new(backend)))
             }
             #[cfg(not(feature = "duckdb"))]
             {

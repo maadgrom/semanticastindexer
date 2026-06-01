@@ -46,7 +46,7 @@ use clap::{Parser, Subcommand};
 use std::process::Command;
 
 use config::{DEFAULT_CONFIG, Plan, build_plan};
-use vectordbs::{Backend, Hit, factory};
+use vectordbs::{Access, Backend, Hit, factory};
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -228,11 +228,11 @@ async fn main() -> Result<()> {
 
     match &args.command {
         Some(Cmd::Flush) => {
-            let backend = factory(&plan)?;
+            let backend = factory(&plan, Access::ReadWrite)?;
             backend.flush().await
         }
         Some(Cmd::Sync(sync_args)) => {
-            let backend = factory(&plan)?;
+            let backend = factory(&plan, Access::ReadWrite)?;
             backend.ensure_ready(false).await?;
             sync(&backend, &plan, sync_args).await
         }
@@ -248,7 +248,7 @@ async fn main() -> Result<()> {
                 indexer::dry_run(&plan);
                 return Ok(());
             }
-            let backend = factory(&plan)?;
+            let backend = factory(&plan, Access::ReadWrite)?;
             backend.ensure_ready(args.recreate).await?;
             if !args.query_only {
                 index_sources(&backend, &plan).await?;
@@ -394,11 +394,11 @@ async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()
     // --allow-write opens the index WRITABLE (normal `connect`, incl. HNSW persistence) so
     // the `refresh` tool can delete + re-embed. Default is read-only: `refresh` then errors.
     let backend = if allow_write {
-        let b = vectordbs::factory(&plan)?;
+        let b = vectordbs::factory(&plan, Access::ReadWrite)?;
         b.ensure_ready(false).await?;
         b
     } else {
-        vectordbs::factory_readonly(&plan)?
+        vectordbs::factory(&plan, Access::ReadOnly)?
     };
     // The DuckDB backend is `!Send`/`!Sync` (its connection + ort session), so it cannot
     // be held across an `.await` inside an rmcp `#[tool]` handler (those futures must be
@@ -445,7 +445,7 @@ async fn run_duplicates(plan: &Plan, args: &DuplicatesArgs) -> Result<()> {
     let top_k = args.top_k.unwrap_or_else(|| plan.top_k() as u64);
     let max_clusters = args.max_clusters.unwrap_or(DEFAULT_DUP_MAX_CLUSTERS);
 
-    let backend = vectordbs::factory_readonly(plan)?;
+    let backend = vectordbs::factory(plan, Access::ReadOnly)?;
     let clusters = search::find_duplicates(
         &backend,
         min_score,
@@ -505,7 +505,7 @@ async fn run_similar(plan: &Plan, args: &SimilarArgs) -> Result<()> {
         .min_score
         .unwrap_or_else(|| plan.find_similar_min_score());
 
-    let backend = vectordbs::factory_readonly(plan)?;
+    let backend = vectordbs::factory(plan, Access::ReadOnly)?;
     let hits = search::find_similar(&backend, target, args.limit, min_score).await?;
 
     println!("{} similar (min_score {min_score}):", hits.len());
