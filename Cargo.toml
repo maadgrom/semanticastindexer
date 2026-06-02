@@ -24,10 +24,6 @@ qdrant = ["dep:qdrant-client"]
 duckdb = ["dep:duckdb"]
 # Local ONNX embedder via raw ort (ONNX Runtime) — implies the duckdb storage backend.
 ort = ["dep:ort", "dep:tokenizers", "dep:ndarray", "dep:hf-hub", "duckdb"]
-# CoreML execution provider for the ort embedder (Apple Silicon / macOS acceleration).
-# Off by default: registration falls back to CPU per-op if an op is unsupported, but the
-# `ort/coreml` cargo feature pulls in the CoreML build. Implies `ort`.
-coreml = ["ort", "ort/coreml"]
 # Remote Ollama HTTP embedder — implies the duckdb storage backend.
 ollama = ["dep:reqwest", "duckdb"]
 # AST chunker (tree-sitter). Supports TypeScript/TSX, Rust, and Go.
@@ -93,4 +89,9 @@ tempfile = "3"
 # and the tokenizer are hot, CPU-bound numeric code during indexing. The extra
 # inlining/vectorization is worth the modest compile-time cost.
 opt-level = 3
+lto = "thin"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
 lto = "thin"

@@ -178,24 +178,14 @@ pub mod ort_impl {
             let intra_threads = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1);
-            let builder = Session::builder()
+            let session = Session::builder()
                 .context("failed to create ONNX session builder")?
                 .with_intra_threads(intra_threads)
-                .context("failed to set ONNX intra-op thread count")?;
-
-            // CoreML acceleration on macOS / Apple Silicon when built with `--features coreml`.
-            // Registered as a preference: unsupported ops transparently fall back to the CPU
-            // provider, so this never breaks correctness — it only offloads what it can.
-            #[cfg(feature = "coreml")]
-            let builder = builder
-                .with_execution_providers([
-                    ort::execution_providers::CoreMLExecutionProvider::default().build(),
-                ])
-                .context("failed to register the CoreML execution provider")?;
-
-            let session = builder.commit_from_file(model_path).with_context(|| {
-                format!("failed to load ONNX model from {}", model_path.display())
-            })?;
+                .context("failed to set ONNX intra-op thread count")?
+                .commit_from_file(model_path)
+                .with_context(|| {
+                    format!("failed to load ONNX model from {}", model_path.display())
+                })?;
 
             let needs_token_type_ids = session.inputs.iter().any(|i| i.name == "token_type_ids");
 
