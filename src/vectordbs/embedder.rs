@@ -171,12 +171,31 @@ pub mod ort_impl {
                 ..Default::default()
             }));
 
-            let session = Session::builder()
+            // Size the ONNX intra-op thread pool to the machine. Indexing is a one-shot,
+            // throughput-bound batch job, so we want every core working the forward pass;
+            // the default pool can be conservative. Falls back to 1 if the count is
+            // unavailable.
+            let intra_threads = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1);
+            let builder = Session::builder()
                 .context("failed to create ONNX session builder")?
-                .commit_from_file(model_path)
-                .with_context(|| {
-                    format!("failed to load ONNX model from {}", model_path.display())
-                })?;
+                .with_intra_threads(intra_threads)
+                .context("failed to set ONNX intra-op thread count")?;
+
+            // CoreML acceleration on macOS / Apple Silicon when built with `--features coreml`.
+            // Registered as a preference: unsupported ops transparently fall back to the CPU
+            // provider, so this never breaks correctness — it only offloads what it can.
+            #[cfg(feature = "coreml")]
+            let builder = builder
+                .with_execution_providers([
+                    ort::execution_providers::CoreMLExecutionProvider::default().build(),
+                ])
+                .context("failed to register the CoreML execution provider")?;
+
+            let session = builder.commit_from_file(model_path).with_context(|| {
+                format!("failed to load ONNX model from {}", model_path.display())
+            })?;
 
             let needs_token_type_ids = session.inputs.iter().any(|i| i.name == "token_type_ids");
 
@@ -189,18 +208,30 @@ pub mod ort_impl {
         }
 
         /// Tokenize, run inference, mean-pool over the attention mask, L2-normalize.
+        ///
+        /// Inputs are length-sorted before batching. Padding is `BatchLongest`, so one
+        /// long passage otherwise inflates its whole batch and wastes compute on padding.
+        /// We sort by char length (a cheap proxy for token length — no extra tokenize pass)
+        /// and scatter results back to the caller's order, so output ordering is unchanged.
         fn embed_prefixed(&self, prefixed: &[String]) -> Result<Vec<Vec<f32>>> {
-            let mut out: Vec<Vec<f32>> = Vec::with_capacity(prefixed.len());
-            for batch in prefixed.chunks(EMBED_BATCH) {
-                out.extend(self.embed_batch(batch)?);
+            let mut order: Vec<usize> = (0..prefixed.len()).collect();
+            order.sort_by_key(|&i| prefixed[i].len());
+
+            let mut out: Vec<Vec<f32>> = vec![Vec::new(); prefixed.len()];
+            for idx_batch in order.chunks(EMBED_BATCH) {
+                let texts: Vec<String> = idx_batch.iter().map(|&i| prefixed[i].clone()).collect();
+                // embed_batch preserves input order, so vectors[k] maps to idx_batch[k].
+                for (&orig, vec) in idx_batch.iter().zip(self.embed_batch(texts)?) {
+                    out[orig] = vec;
+                }
             }
             Ok(out)
         }
 
-        fn embed_batch(&self, batch: &[String]) -> Result<Vec<Vec<f32>>> {
+        fn embed_batch(&self, batch: Vec<String>) -> Result<Vec<Vec<f32>>> {
             let encodings = self
                 .tokenizer
-                .encode_batch(batch.to_vec(), true)
+                .encode_batch(batch, true)
                 .map_err(|e| anyhow::anyhow!("tokenization failed: {e}"))?;
 
             let batch_size = encodings.len();

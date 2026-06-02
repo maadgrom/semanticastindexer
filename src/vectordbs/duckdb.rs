@@ -302,45 +302,70 @@ impl DuckDbBackend {
             );
         }
 
-        for (c, vec) in chunks.iter().zip(vectors.iter()) {
-            self.check_dim(vec.len())?;
-            let literal = float_array_literal(vec);
-            // `symbol` is nullable: the line chunker leaves it None (→ SQL NULL); the AST
-            // chunker sets the captured symbol. Additive — the line path is unchanged.
-            self.conn
-                .execute(
-                    &format!(
-                        "INSERT INTO {coll} (id, path, language, start_line, end_line, text, symbol, embedding, commit_sha, dirty)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, {lit}::FLOAT[{dim}], ?, ?)
-                         ON CONFLICT (id) DO UPDATE SET
-                           path = excluded.path,
-                           language = excluded.language,
-                           start_line = excluded.start_line,
-                           end_line = excluded.end_line,
-                           text = excluded.text,
-                           symbol = excluded.symbol,
-                           embedding = excluded.embedding,
-                           commit_sha = excluded.commit_sha,
-                           dirty = excluded.dirty;",
-                        coll = self.collection,
-                        lit = literal,
-                        dim = self.vector_dim,
-                    ),
-                    duckdb::params![
-                        c.id,
-                        c.path,
-                        c.language,
-                        c.start_line as i64,
-                        c.end_line as i64,
-                        c.text,
-                        c.symbol,
-                        c.commit_sha,
-                        c.dirty,
-                    ],
-                )
-                .with_context(|| format!("failed to upsert chunk id {}", c.id))?;
+        // One transaction per batch instead of one implicit commit per row. Without this
+        // each INSERT auto-commits (a durability fsync per chunk), which dominates the
+        // write cost during bulk indexing. A failure mid-batch rolls the whole batch back,
+        // which is safe: callers retry the batch and ids are PRIMARY KEY (idempotent).
+        self.conn
+            .execute_batch("BEGIN TRANSACTION;")
+            .context("failed to begin upsert transaction")?;
+
+        // Run the inserts inside the transaction; on any failure roll back so the
+        // connection isn't left with a dangling open transaction that poisons later calls.
+        let result = (|| {
+            for (c, vec) in chunks.iter().zip(vectors.iter()) {
+                self.check_dim(vec.len())?;
+                let literal = float_array_literal(vec);
+                // `symbol` is nullable: the line chunker leaves it None (→ SQL NULL); the AST
+                // chunker sets the captured symbol. Additive — the line path is unchanged.
+                self.conn
+                    .execute(
+                        &format!(
+                            "INSERT INTO {coll} (id, path, language, start_line, end_line, text, symbol, embedding, commit_sha, dirty)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, {lit}::FLOAT[{dim}], ?, ?)
+                             ON CONFLICT (id) DO UPDATE SET
+                               path = excluded.path,
+                               language = excluded.language,
+                               start_line = excluded.start_line,
+                               end_line = excluded.end_line,
+                               text = excluded.text,
+                               symbol = excluded.symbol,
+                               embedding = excluded.embedding,
+                               commit_sha = excluded.commit_sha,
+                               dirty = excluded.dirty;",
+                            coll = self.collection,
+                            lit = literal,
+                            dim = self.vector_dim,
+                        ),
+                        duckdb::params![
+                            c.id,
+                            c.path,
+                            c.language,
+                            c.start_line as i64,
+                            c.end_line as i64,
+                            c.text,
+                            c.symbol,
+                            c.commit_sha,
+                            c.dirty,
+                        ],
+                    )
+                    .with_context(|| format!("failed to upsert chunk id {}", c.id))?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })();
+
+        match result {
+            Ok(()) => {
+                self.conn
+                    .execute_batch("COMMIT;")
+                    .context("failed to commit upsert transaction")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
         }
-        Ok(())
     }
 
     /// Delete every stored chunk for a file path. Cheap: `DELETE` does not trigger
