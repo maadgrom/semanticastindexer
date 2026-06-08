@@ -344,6 +344,7 @@ impl CodeSearchServer {
         &self,
         Parameters(args): Parameters<FindDuplicatesArgs>,
     ) -> Result<CallToolResult, McpError> {
+        // sai-noduplicate: MCP orchestration twin of search::find_duplicates; routes reads through the !Send backend worker; shares the cluster_duplicates core
         // Resolution per knob: tool arg > config value (stored at startup) > built-in default.
         let top_k = clamp_limit(args.top_k.unwrap_or(self.inner.duplicate_top_k));
         let min_cluster_size = args
@@ -612,6 +613,7 @@ fn internal(e: anyhow::Error) -> McpError {
 
 /// Compile an optional path glob, surfacing a clear `invalid_params` on a bad pattern.
 fn compile_glob_opt(pattern: Option<&str>) -> Result<Option<globset::GlobMatcher>, McpError> {
+    // sai-noduplicate: glob-compile twin of duckdb::compile_glob; different error domain (McpError vs anyhow)
     match pattern {
         None => Ok(None),
         Some(p) => globset::Glob::new(p)
@@ -683,13 +685,7 @@ mod tests {
     //! `initialize`/`tools/list` smoke (see README); here we test the pure logic.
 
     use super::*;
-    use crate::vectordbs::Backend;
-    use crate::vectordbs::mock::{MockBackend, MockRow};
-
-    /// Build a Mock backend seeded with the given rows.
-    fn seeded(rows: Vec<MockRow>) -> Backend {
-        Backend::Mock(MockBackend::with_rows(rows))
-    }
+    use crate::vectordbs::mock::{MockRow, seeded};
 
     /// query_by_vector ranks by cosine similarity (best first), dedups by id, truncates.
     #[tokio::test]

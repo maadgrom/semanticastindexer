@@ -164,6 +164,7 @@ impl Backend {
 
     /// Begin a bulk insert window (e.g. drop index). No-op for Qdrant.
     pub async fn begin_bulk(&self) -> Result<()> {
+        // sai-noduplicate: inverse of end_bulk; intentionally symmetric bookend (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
             Backend::Qdrant(b) => b.begin_bulk().await,
@@ -176,6 +177,7 @@ impl Backend {
 
     /// End a bulk insert window (e.g. recreate index). No-op for Qdrant.
     pub async fn end_bulk(&self) -> Result<()> {
+        // sai-noduplicate: inverse of begin_bulk; intentionally symmetric bookend (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
             Backend::Qdrant(b) => b.end_bulk().await,
@@ -327,6 +329,7 @@ impl Backend {
     // Qdrant-only builds compile just the server-side-inference arm (which ignores `text`).
     #[cfg_attr(not(any(feature = "duckdb", test)), allow(unused_variables))]
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        // sai-noduplicate: asymmetric query-side twin of embed_passage (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
             Backend::Qdrant(_) => {
@@ -345,6 +348,7 @@ impl Backend {
     // Qdrant-only builds compile just the server-side-inference arm (which ignores `text`).
     #[cfg_attr(not(any(feature = "duckdb", test)), allow(unused_variables))]
     pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
+        // sai-noduplicate: asymmetric passage-side twin of embed_query (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
             Backend::Qdrant(_) => {

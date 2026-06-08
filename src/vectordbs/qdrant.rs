@@ -446,6 +446,7 @@ impl QdrantBackend {
 
 /// Render a string payload field. Only the kinds we actually store are handled.
 fn payload_str(payload: &HashMap<String, Value>, key: &str) -> String {
+    // sai-noduplicate: twin of payload_str_opt; different return type (String vs Option) and integer coercion
     match payload.get(key).and_then(|v| v.kind.as_ref()) {
         Some(Kind::StringValue(s)) => s.clone(),
         Some(Kind::IntegerValue(i)) => i.to_string(),
@@ -463,6 +464,7 @@ fn payload_int(payload: &HashMap<String, Value>, key: &str) -> usize {
 
 /// Render an optional string payload field (e.g. `symbol`, set only by the AST chunker).
 fn payload_str_opt(payload: &HashMap<String, Value>, key: &str) -> Option<String> {
+    // sai-noduplicate: twin of payload_str; Option-returning, no integer coercion
     match payload.get(key).and_then(|v| v.kind.as_ref()) {
         Some(Kind::StringValue(s)) => Some(s.clone()),
         _ => None,

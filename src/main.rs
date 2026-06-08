@@ -696,7 +696,6 @@ mod tests {
     use super::*;
     use crate::vectordbs::mock::{MockBackend, MockCalls};
     use globset::GlobSetBuilder;
-    use std::collections::HashSet;
     use std::fs;
     use std::sync::MutexGuard;
     use tempfile::TempDir;
@@ -712,38 +711,19 @@ mod tests {
     }
 
     /// Build a minimal `Plan` rooted at `root` with `ext` = ts and no globs. Mirrors
-    /// `build_plan` defaults without reading any YAML.
+    /// `build_plan` defaults without reading any YAML. Starts from the shared
+    /// `minimal_plan` (mock/ort, no globs) and overrides only the E5/e5-small knobs
+    /// these flow tests rely on.
     fn test_plan(root: &str) -> Plan {
-        let empty = GlobSetBuilder::new().build().expect("empty globset");
         Plan {
             root: root.to_string(),
-            ext: vec!["ts".to_string()],
-            backend: "mock".to_string(),
-            embedder: "ort".to_string(),
-            chunker: "lines".to_string(),
-            max_chunk_chars: 1400,
             prefix_style: crate::vectordbs::PrefixStyle::E5,
+            max_chunk_chars: 1400,
             collection: "test_coll".to_string(),
             model: "intfloat/multilingual-e5-small".to_string(),
             vector_dim: 384,
-            duckdb_path: ".index/code.duckdb".to_string(),
-            duckdb_model_cache: None,
             model_repo: "Xenova/multilingual-e5-small".to_string(),
-            ollama_url: "http://localhost:11434".to_string(),
-            ollama_model: None,
-            exclude_dirs: HashSet::new(),
-            include: GlobSetBuilder::new().build().expect("include globset"),
-            include_active: false,
-            exclude: empty,
-            skip_generated: true,
-            strip_comments: true,
-            honor_noindex_marker: true,
-            honor_noduplicate_marker: true,
-            limit: 5,
-            find_similar_min_score: 0.85,
-            duplicate_min_score: 0.93,
-            duplicate_min_cluster_size: 2,
-            top_k: 10,
+            ..crate::config::test_support::minimal_plan()
         }
     }
 

@@ -480,4 +480,27 @@ pub mod test_support {
             top_k: DEFAULT_TOP_K,
         }
     }
+
+    /// A `Plan` for the DuckDB backend with the Ollama embedder, pointed at
+    /// `duckdb_path` with the chosen `dim`. Captures the fields the duckdb test
+    /// builders share (backend "duckdb", embedder "ollama", ollama_model
+    /// "nomic-embed-text", skip_generated false). For the fields that differ
+    /// between callers (ext/prefix_style/collection/model/model_repo) this picks
+    /// the validation-test defaults; callers override via struct-update syntax.
+    pub fn duckdb_plan(duckdb_path: &std::path::Path, dim: u64) -> Plan {
+        Plan {
+            backend: "duckdb".to_string(),
+            embedder: "ollama".to_string(),
+            collection: "test_validation".to_string(),
+            model: "intfloat/multilingual-e5-small".to_string(),
+            vector_dim: dim,
+            prefix_style: PrefixStyle::E5,
+            model_repo: "Xenova/multilingual-e5-small".to_string(),
+            duckdb_path: duckdb_path.to_string_lossy().to_string(),
+            ollama_model: Some("nomic-embed-text".to_string()),
+            skip_generated: false,
+            max_chunk_chars: 1400,
+            ..minimal_plan()
+        }
+    }
 }

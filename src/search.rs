@@ -186,6 +186,7 @@ pub async fn find_duplicates(
     max_clusters: usize,
     path_glob: Option<&str>,
 ) -> Result<Vec<DupCluster>> {
+    // sai-noduplicate: CLI orchestration twin of mcp::find_duplicates; calls the Backend enum directly; shares the cluster_duplicates core
     let chunks = backend.all_chunks_with_vectors(path_glob).await?;
     let mut neighbours: Vec<Vec<Hit>> = Vec::with_capacity(chunks.len());
     for (hit, vec) in &chunks {
@@ -294,12 +295,7 @@ mod tests {
     //! duplicates scan, and find_similar resolution (code + location, self-exclusion).
 
     use super::*;
-    use crate::vectordbs::Backend;
-    use crate::vectordbs::mock::{MockBackend, MockRow};
-
-    fn seeded(rows: Vec<MockRow>) -> Backend {
-        Backend::Mock(MockBackend::with_rows(rows))
-    }
+    use crate::vectordbs::mock::{MockRow, seeded};
 
     /// find_duplicates: a tight cluster of near-identical vectors collapses into ONE
     /// component; a distinct vector stays separate; min_cluster_size filters it.

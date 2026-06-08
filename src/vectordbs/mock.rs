@@ -288,11 +288,13 @@ impl MockBackend {
 
     /// Deterministic canned query vector (length 4). Distinct text → distinct vector.
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        // sai-noduplicate: asymmetric query-side twin of embed_passage
         Ok(canned_vector(text))
     }
 
     /// Deterministic canned passage vector (same scheme as `embed_query`).
     pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
+        // sai-noduplicate: asymmetric passage-side twin of embed_query
         Ok(canned_vector(text))
     }
 }
@@ -305,4 +307,11 @@ fn canned_vector(text: &str) -> Vec<f32> {
         v[i % 4] += b as f32;
     }
     v.to_vec()
+}
+
+/// Build a `Backend::Mock` seeded with the given rows-with-vectors. Shared test helper
+/// for the `mcp` and `search` test modules.
+#[cfg(test)]
+pub fn seeded(rows: Vec<MockRow>) -> crate::vectordbs::Backend {
+    crate::vectordbs::Backend::Mock(MockBackend::with_rows(rows))
 }

@@ -623,26 +623,16 @@ mod ast {
     pub fn try_chunk_ast(path: &Path, content: &str, cap: usize) -> Option<Vec<Chunk>> {
         let ext = path.extension().and_then(|e| e.to_str())?;
 
-        match ext {
-            "rs" => chunk_ast_rust(content, cap),
-            "go" => chunk_ast_go(content, cap),
-            "ts" | "tsx" => chunk_ast_typescript(path, content, cap, ext),
-            _ => None,
-        }
-    }
-
-    fn chunk_ast_typescript(
-        _path: &Path,
-        content: &str,
-        cap: usize,
-        ext: &str,
-    ) -> Option<Vec<Chunk>> {
-        let language: tree_sitter::Language = match ext {
-            "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
-            "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        // Select the (grammar, query) pair by extension, then run the single shared
+        // collection path. Each language is just a grammar + query into that path.
+        let (language, query_src): (tree_sitter::Language, &str) = match ext {
+            "rs" => (tree_sitter_rust::LANGUAGE.into(), RUST_QUERY_SRC),
+            "go" => (tree_sitter_go::LANGUAGE.into(), GO_QUERY_SRC),
+            "ts" => (tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), TS_QUERY_SRC),
+            "tsx" => (tree_sitter_typescript::LANGUAGE_TSX.into(), TS_QUERY_SRC),
             _ => return None,
         };
-        collect_function_chunks(language, TS_QUERY_SRC, content, cap)
+        collect_function_chunks(language, query_src, content, cap)
     }
 
     /// Parse `content` with `language`, run `query_src` (which MUST define `@name` + `@item`
@@ -717,23 +707,6 @@ mod ast {
                 c
             })
             .collect()
-    }
-
-    // ------------------------------------------------------------------
-    // Rust + Go collectors (each is just a grammar + query into the shared path)
-    // ------------------------------------------------------------------
-
-    fn chunk_ast_rust(content: &str, cap: usize) -> Option<Vec<Chunk>> {
-        collect_function_chunks(
-            tree_sitter_rust::LANGUAGE.into(),
-            RUST_QUERY_SRC,
-            content,
-            cap,
-        )
-    }
-
-    fn chunk_ast_go(content: &str, cap: usize) -> Option<Vec<Chunk>> {
-        collect_function_chunks(tree_sitter_go::LANGUAGE.into(), GO_QUERY_SRC, content, cap)
     }
 
     /// Turn captured function nodes into chunks. Shared by the TS, Rust, and Go collectors.
@@ -1055,6 +1028,7 @@ const double = (n: number) => n * 2
     #[cfg(feature = "ast")]
     #[test]
     fn ast_rust_captures_only_functions() {
+        // sai-noduplicate: per-language AST capture test (Rust), mirror of the Go case
         use std::path::Path;
 
         let src = "\
@@ -1120,6 +1094,7 @@ impl Widget {
     #[cfg(feature = "ast")]
     #[test]
     fn ast_go_captures_only_functions() {
+        // sai-noduplicate: per-language AST capture test (Go), mirror of the Rust case
         use std::path::Path;
 
         let src = "\

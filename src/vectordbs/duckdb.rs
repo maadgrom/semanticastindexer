@@ -278,6 +278,7 @@ impl DuckDbBackend {
     /// first delete/upsert and end_bulk after the last one. Failure to do so leaves
     /// the experimental HNSW index in a degraded-recall state after deletes.
     pub async fn begin_bulk(&self) -> Result<()> {
+        // sai-noduplicate: inverse of end_bulk; intentionally symmetric bookend
         self.conn
             .execute_batch(&format!("DROP INDEX IF EXISTS {};", self.index_name()))
             .context("failed to drop HNSW index for bulk insert")
@@ -287,6 +288,7 @@ impl DuckDbBackend {
     ///
     /// LOGICAL INVARIANT: See begin_bulk. This call is what restores full recall.
     pub async fn end_bulk(&self) -> Result<()> {
+        // sai-noduplicate: inverse of begin_bulk; intentionally symmetric bookend
         self.conn
             .execute_batch(&self.create_index_sql())
             .context("failed to recreate HNSW index after bulk insert")
@@ -805,6 +807,7 @@ fn dedup_truncate(rows: Vec<Hit>, limit: usize) -> Vec<Hit> {
 
 /// Compile an optional path glob into a matcher, erroring on a bad pattern.
 fn compile_glob(pattern: Option<&str>) -> Result<Option<globset::GlobMatcher>> {
+    // sai-noduplicate: glob-compile twin of mcp::compile_glob_opt; different error domain (anyhow vs McpError)
     match pattern {
         None => Ok(None),
         Some(p) => {
@@ -840,40 +843,19 @@ mod no_duplicate_tests {
     use super::*;
     use crate::config::Plan;
     use crate::vectordbs::embedder;
-    use globset::GlobSetBuilder;
-    use std::collections::HashSet;
     use tempfile::TempDir;
 
     fn make_plan(db_path: &std::path::Path, dim: u64) -> Plan {
+        // Start from the shared DuckDB/Ollama base and override only the fields
+        // specific to the no-duplicate tests (Rust sources, nomic model, symmetric
+        // prefix, dedicated collection).
         Plan {
-            root: "src".to_string(),
             ext: vec!["rs".to_string()],
-            backend: "duckdb".to_string(),
-            embedder: "ollama".to_string(),
-            chunker: "lines".to_string(),
-            max_chunk_chars: 1400,
             prefix_style: crate::vectordbs::PrefixStyle::None,
             collection: "test_nodup".to_string(),
             model: "nomic-embed-text".to_string(),
-            vector_dim: dim,
-            duckdb_path: db_path.to_string_lossy().to_string(),
-            duckdb_model_cache: None,
             model_repo: "nomic".to_string(),
-            ollama_url: "http://localhost:11434".to_string(),
-            ollama_model: Some("nomic-embed-text".to_string()),
-            exclude_dirs: HashSet::new(),
-            include: GlobSetBuilder::new().build().unwrap(),
-            include_active: false,
-            exclude: GlobSetBuilder::new().build().unwrap(),
-            skip_generated: false,
-            strip_comments: true,
-            honor_noindex_marker: true,
-            honor_noduplicate_marker: true,
-            limit: 5,
-            find_similar_min_score: 0.85,
-            duplicate_min_score: 0.93,
-            duplicate_min_cluster_size: 2,
-            top_k: 10,
+            ..crate::config::test_support::duckdb_plan(db_path, dim)
         }
     }
 
@@ -911,6 +893,7 @@ mod no_duplicate_tests {
     /// has_no_duplicate_col returns false when the column is absent.
     #[test]
     fn has_no_duplicate_col_absent() {
+        // sai-noduplicate: paired column-guard test (absent case), mirror of _present
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("nodup_absent.duckdb");
 
@@ -932,6 +915,7 @@ mod no_duplicate_tests {
     /// has_no_duplicate_col returns true after ensure_ready creates the table with the column.
     #[test]
     fn has_no_duplicate_col_present() {
+        // sai-noduplicate: paired column-guard test (present case), mirror of _absent
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("nodup_present.duckdb");
 
@@ -951,6 +935,7 @@ mod no_duplicate_tests {
     /// all_chunks_with_vectors defaults no_duplicate to false on a table lacking the column.
     #[test]
     fn all_chunks_defaults_no_duplicate_false_on_old_table() {
+        // sai-noduplicate: paired all_chunks test (old-table case)
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("nodup_old.duckdb");
 
@@ -984,6 +969,7 @@ mod no_duplicate_tests {
     /// all_chunks_with_vectors reads the real no_duplicate value from a table that has the column.
     #[test]
     fn all_chunks_reads_no_duplicate_true() {
+        // sai-noduplicate: paired all_chunks test (new-table case)
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("nodup_new.duckdb");
 
@@ -1038,37 +1024,9 @@ mod validation_tests {
     /// Build a minimal Plan pointing at a temp DuckDB path with a chosen vector_dim.
     fn test_plan(duckdb_path: &std::path::Path, dim: u64) -> Plan {
         // We only need the fields that DuckDbBackend::connect reads for validation.
-        // Using a dummy embedder (ollama is cheapest to construct).
-        Plan {
-            root: "src".to_string(),
-            ext: vec!["ts".to_string()],
-            backend: "duckdb".to_string(),
-            embedder: "ollama".to_string(),
-            chunker: "lines".to_string(),
-            max_chunk_chars: 1400,
-            prefix_style: crate::vectordbs::PrefixStyle::E5,
-            collection: "test_validation".to_string(),
-            model: "intfloat/multilingual-e5-small".to_string(),
-            vector_dim: dim,
-            duckdb_path: duckdb_path.to_string_lossy().to_string(),
-            duckdb_model_cache: None,
-            model_repo: "Xenova/multilingual-e5-small".to_string(),
-            ollama_url: "http://localhost:11434".to_string(),
-            ollama_model: Some("nomic-embed-text".to_string()),
-            exclude_dirs: Default::default(),
-            include: globset::GlobSetBuilder::new().build().unwrap(),
-            include_active: false,
-            exclude: globset::GlobSetBuilder::new().build().unwrap(),
-            skip_generated: false,
-            strip_comments: true,
-            honor_noindex_marker: true,
-            honor_noduplicate_marker: true,
-            limit: 5,
-            find_similar_min_score: 0.85,
-            duplicate_min_score: 0.93,
-            duplicate_min_cluster_size: 2,
-            top_k: 10,
-        }
+        // Using a dummy embedder (ollama is cheapest to construct). The shared
+        // `duckdb_plan` builder already carries these E5 validation defaults.
+        crate::config::test_support::duckdb_plan(duckdb_path, dim)
     }
 
     fn make_ollama_embedder() -> Embedder {
@@ -1083,6 +1041,7 @@ mod validation_tests {
 
     #[test]
     fn duckdb_rejects_mismatched_dim_on_existing_table() {
+        // sai-noduplicate: paired dim-validation test (reject case)
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("mismatch.duckdb");
 
@@ -1119,6 +1078,7 @@ mod validation_tests {
 
     #[test]
     fn duckdb_accepts_matching_dim_on_existing_table() {
+        // sai-noduplicate: paired dim-validation test (accept case)
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("match.duckdb");
 
