@@ -24,6 +24,7 @@ pub struct MockRow {
     pub vector: Vec<f32>,
     pub commit_sha: Option<String>,
     pub dirty: bool,
+    pub no_duplicate: bool,
 }
 
 impl MockRow {
@@ -40,6 +41,7 @@ impl MockRow {
             vector,
             commit_sha: None,
             dirty: false,
+            no_duplicate: false,
         }
     }
 
@@ -55,6 +57,7 @@ impl MockRow {
             symbol: self.symbol.clone(),
             commit_sha: self.commit_sha.clone(),
             dirty: self.dirty,
+            no_duplicate: self.no_duplicate,
         }
     }
 }
@@ -136,6 +139,7 @@ impl MockBackend {
                     symbol: None,
                     commit_sha: None,
                     dirty: false,
+                    no_duplicate: false,
                 },
                 Hit {
                     id: 2,
@@ -148,6 +152,7 @@ impl MockBackend {
                     symbol: None,
                     commit_sha: None,
                     dirty: false,
+                    no_duplicate: false,
                 },
             ],
         }
@@ -202,6 +207,7 @@ impl MockBackend {
                 symbol: h.symbol.clone(),
                 commit_sha: h.commit_sha.clone(),
                 dirty: h.dirty,
+                no_duplicate: h.no_duplicate,
             })
             .collect())
     }

@@ -33,8 +33,11 @@ const AST_PREFERRED_EXTS: &[&str] = &["ts", "tsx", "rs", "go"];
 /// itself still dispatches per-file, so a mixed `--ext ts,go` walk AST-parses both
 /// and line-chunks anything without a grammar.
 fn ast_preferred_for_exts(exts: &[String]) -> bool {
-    exts.iter()
-        .any(|e| AST_PREFERRED_EXTS.iter().any(|&p| p.eq_ignore_ascii_case(e)))
+    exts.iter().any(|e| {
+        AST_PREFERRED_EXTS
+            .iter()
+            .any(|&p| p.eq_ignore_ascii_case(e))
+    })
 }
 const DEFAULT_DUCKDB_PATH: &str = ".index/code.duckdb";
 const DEFAULT_MODEL_REPO: &str = "Xenova/multilingual-e5-small";
@@ -98,6 +101,12 @@ pub struct Config {
     pub skip_generated_marker: bool,
     /// Strip comments from C-family source before embedding/storing. Default true.
     pub strip_comments: Option<bool>,
+    /// Honor the `sai-noindexing` marker: chunks carrying it are skipped entirely
+    /// (never embedded/stored). Default true.
+    pub honor_noindex_marker: Option<bool>,
+    /// Honor the `sai-noduplicate` marker: chunks carrying it are still indexed and
+    /// searchable but excluded from near-duplicate clustering. Default true.
+    pub honor_noduplicate_marker: Option<bool>,
     /// DuckDB backend settings (path + ONNX model cache/repo).
     pub duckdb: DuckDbConfig,
     /// Ollama embedder settings (url + model).
@@ -191,6 +200,10 @@ pub struct Plan {
     pub exclude: GlobSet,
     pub skip_generated: bool,
     pub strip_comments: bool,
+    /// Honor the `sai-noindexing` marker (skip matching chunks entirely). Default true.
+    pub honor_noindex_marker: bool,
+    /// Honor the `sai-noduplicate` marker (index but exclude from clustering). Default true.
+    pub honor_noduplicate_marker: bool,
     pub limit: u64,
     /// Resolved similarity-threshold defaults (config value or built-in). MCP tool args
     /// still override these per call.
@@ -340,16 +353,13 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
             .path
             .unwrap_or_else(|| DEFAULT_DUCKDB_PATH.to_string()),
         duckdb_model_cache: config.duckdb.model_cache,
-        model_repo: config
-            .duckdb
-            .model_repo
-            .unwrap_or_else(|| {
-                if is_ort {
-                    DEFAULT_ORT_MODEL_REPO.to_string()
-                } else {
-                    DEFAULT_MODEL_REPO.to_string()
-                }
-            }),
+        model_repo: config.duckdb.model_repo.unwrap_or_else(|| {
+            if is_ort {
+                DEFAULT_ORT_MODEL_REPO.to_string()
+            } else {
+                DEFAULT_MODEL_REPO.to_string()
+            }
+        }),
         ollama_url: config
             .ollama
             .url
@@ -364,6 +374,8 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
         exclude,
         skip_generated: config.skip_generated_marker,
         strip_comments: config.strip_comments.unwrap_or(true),
+        honor_noindex_marker: config.honor_noindex_marker.unwrap_or(true),
+        honor_noduplicate_marker: config.honor_noduplicate_marker.unwrap_or(true),
         limit: args.limit,
         find_similar_min_score,
         duplicate_min_score,
@@ -459,6 +471,8 @@ pub mod test_support {
             exclude: empty,
             skip_generated: true,
             strip_comments: true,
+            honor_noindex_marker: true,
+            honor_noduplicate_marker: true,
             limit: 5,
             find_similar_min_score: DEFAULT_FIND_SIMILAR_MIN_SCORE,
             duplicate_min_score: DEFAULT_DUPLICATE_MIN_SCORE,

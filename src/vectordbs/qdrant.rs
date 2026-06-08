@@ -139,6 +139,7 @@ impl QdrantBackend {
                     "text": c.text,
                     "commit": c.commit_sha,
                     "dirty": c.dirty,
+                    "no_duplicate": c.no_duplicate,
                 });
                 if let Some(symbol) = &c.symbol {
                     payload_json["symbol"] = json!(symbol);
@@ -193,8 +194,14 @@ impl QdrantBackend {
                     text: payload_str(payload, "text"),
                     score: p.score,
                     symbol: payload_str_opt(payload, "symbol"),
-                    commit_sha: payload.get("commit").and_then(|v| v.as_str().map(|s| s.to_string())),
-                    dirty: payload.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false),
+                    commit_sha: payload
+                        .get("commit")
+                        .and_then(|v| v.as_str().map(|s| s.to_string())),
+                    dirty: payload
+                        .get("dirty")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    no_duplicate: false,
                 }
             })
             .collect())
@@ -239,8 +246,17 @@ impl QdrantBackend {
                 text: payload_str(payload, "text"),
                 score: p.score,
                 symbol: payload_str_opt(payload, "symbol"),
-                commit_sha: payload.get("commit").and_then(|v| v.as_str().map(|s| s.to_string())),
-                dirty: payload.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false),
+                commit_sha: payload
+                    .get("commit")
+                    .and_then(|v| v.as_str().map(|s| s.to_string())),
+                dirty: payload
+                    .get("dirty")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                no_duplicate: payload
+                    .get("no_duplicate")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             });
             if out.len() >= limit as usize {
                 break;
@@ -278,8 +294,17 @@ impl QdrantBackend {
                     text: payload_str(payload, "text"),
                     score: 1.0,
                     symbol: payload_str_opt(payload, "symbol"),
-                    commit_sha: payload.get("commit").and_then(|v| v.as_str().map(|s| s.to_string())),
-                    dirty: payload.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false),
+                    commit_sha: payload
+                        .get("commit")
+                        .and_then(|v| v.as_str().map(|s| s.to_string())),
+                    dirty: payload
+                        .get("dirty")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    no_duplicate: payload
+                        .get("no_duplicate")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                 };
                 let vec = extract_vector(p.vectors)?;
                 Ok(Some((hit, vec)))
@@ -326,8 +351,17 @@ impl QdrantBackend {
                     text: payload_str(payload, "text"),
                     score: 1.0,
                     symbol: payload_str_opt(payload, "symbol"),
-                    commit_sha: payload.get("commit").and_then(|v| v.as_str().map(|s| s.to_string())),
-                    dirty: payload.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false),
+                    commit_sha: payload
+                        .get("commit")
+                        .and_then(|v| v.as_str().map(|s| s.to_string())),
+                    dirty: payload
+                        .get("dirty")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    no_duplicate: payload
+                        .get("no_duplicate")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                 };
                 if let Some(m) = &matcher {
                     if !m.is_match(&hit.path) {

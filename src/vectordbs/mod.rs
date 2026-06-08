@@ -105,6 +105,8 @@ pub struct CodeChunk {
     pub commit_sha: Option<String>,
     /// True if the source tree had uncommitted changes at index time.
     pub dirty: bool,
+    /// True if the chunk carries a sai-noduplicate marker: indexed/searchable but excluded from near-duplicate clustering.
+    pub no_duplicate: bool,
 }
 
 /// A search result row.
@@ -130,6 +132,8 @@ pub struct Hit {
     pub commit_sha: Option<String>,
     #[allow(dead_code)]
     pub dirty: bool,
+    /// True if the chunk carries a sai-noduplicate marker: indexed/searchable but excluded from near-duplicate clustering.
+    pub no_duplicate: bool,
 }
 
 /// The vector backend. Match-dispatched.

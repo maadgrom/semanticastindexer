@@ -156,6 +156,14 @@ skip_generated_marker: true
 # stay accurate. Applies to TS now and Go later.
 strip_comments: true
 
+# Honor opt-out marker comments (case-insensitive substring match on raw source):
+#   sai-noindexing   — skip the chunk entirely from indexing (never embedded/stored)
+#   sai-noduplicate  — include in search but exclude from duplicate clustering
+# Works with any comment syntax (// # -- <!-- etc.). Granular to function (AST) or
+# window (lines chunker). String literals containing the marker text trigger it too.
+honor_noindex_marker: true
+honor_noduplicate_marker: true
+
 # Similarity-search thresholds for the `find_similar` / `find_duplicates` MCP tools AND
 # the `similar` / `duplicates` CLI subcommands. Resolution per knob:
 #   CLI flag / MCP tool arg  >  this config value  >  built-in default.

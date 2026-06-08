@@ -227,7 +227,8 @@ impl DuckDbBackend {
                    symbol VARCHAR,
                    embedding FLOAT[{dim}],
                    commit_sha VARCHAR,
-                   dirty BOOLEAN DEFAULT false);
+                   dirty BOOLEAN DEFAULT false,
+                   no_duplicate BOOLEAN DEFAULT false);
                  {index_sql}",
                 coll = self.collection,
                 index_sql = self.create_index_sql(),
@@ -246,10 +247,14 @@ impl DuckDbBackend {
         let existed = self.table_exists()?;
         self.create_table_and_index()?;
         if existed {
-            // Best-effort additive migration for commit/dirty stamping.
+            // Best-effort additive migration for commit/dirty stamping and no_duplicate flag.
             let _ = self.conn.execute_batch(&format!(
                 "ALTER TABLE {} ADD COLUMN commit_sha VARCHAR; ALTER TABLE {} ADD COLUMN dirty BOOLEAN DEFAULT false;",
                 self.collection, self.collection
+            ));
+            let _ = self.conn.execute_batch(&format!(
+                "ALTER TABLE {} ADD COLUMN no_duplicate BOOLEAN DEFAULT false;",
+                self.collection
             ));
             if !recreate {
                 println!("using existing collection '{}'", self.collection);
@@ -321,8 +326,8 @@ impl DuckDbBackend {
                 self.conn
                     .execute(
                         &format!(
-                            "INSERT INTO {coll} (id, path, language, start_line, end_line, text, symbol, embedding, commit_sha, dirty)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, {lit}::FLOAT[{dim}], ?, ?)
+                            "INSERT INTO {coll} (id, path, language, start_line, end_line, text, symbol, embedding, commit_sha, dirty, no_duplicate)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, {lit}::FLOAT[{dim}], ?, ?, ?)
                              ON CONFLICT (id) DO UPDATE SET
                                path = excluded.path,
                                language = excluded.language,
@@ -332,7 +337,8 @@ impl DuckDbBackend {
                                symbol = excluded.symbol,
                                embedding = excluded.embedding,
                                commit_sha = excluded.commit_sha,
-                               dirty = excluded.dirty;",
+                               dirty = excluded.dirty,
+                               no_duplicate = excluded.no_duplicate;",
                             coll = self.collection,
                             lit = literal,
                             dim = self.vector_dim,
@@ -347,6 +353,7 @@ impl DuckDbBackend {
                             c.symbol,
                             c.commit_sha,
                             c.dirty,
+                            c.no_duplicate,
                         ],
                     )
                     .with_context(|| format!("failed to upsert chunk id {}", c.id))?;
@@ -420,6 +427,8 @@ impl DuckDbBackend {
                     symbol: None,
                     commit_sha,
                     dirty: dirty.unwrap_or(false),
+                    // query() is not used by the duplicates path — no need to read the column.
+                    no_duplicate: false,
                 })
             })
             .context("failed to run query")?;
@@ -445,10 +454,16 @@ impl DuckDbBackend {
             Some(_) => "WHERE id != ?",
             None => "",
         };
+        // Column layout (0-based):
+        //   0=id, 1=path, 2=language, 3=start_line, 4=end_line, 5=text,
+        //   6=symbol, 7=d, 8=commit_sha, 9=dirty, [10=no_duplicate if present]
+        // no_duplicate is appended last only when the column exists (old indexes lack it).
+        let has_nodup = self.has_no_duplicate_col();
+        let nodup_col = if has_nodup { ", no_duplicate" } else { "" };
         let sql = format!(
             "SELECT id, path, language, start_line, end_line, text, symbol,
                     array_cosine_distance(embedding, {lit}::FLOAT[{dim}]) AS d,
-                    commit_sha, dirty
+                    commit_sha, dirty{nodup_col}
              FROM {coll}
              {where_clause}
              ORDER BY d
@@ -461,7 +476,7 @@ impl DuckDbBackend {
             .conn
             .prepare(&sql)
             .context("failed to prepare query_by_vector")?;
-        let map_row = |row: &duckdb::Row<'_>| -> duckdb::Result<Hit> {
+        let map_row = move |row: &duckdb::Row<'_>| -> duckdb::Result<Hit> {
             let id: u64 = row.get(0)?;
             let path: String = row.get(1)?;
             let language: String = row.get(2)?;
@@ -472,6 +487,12 @@ impl DuckDbBackend {
             let distance: f32 = row.get(7)?;
             let commit_sha: Option<String> = row.get(8).ok();
             let dirty: Option<bool> = row.get(9).ok();
+            // Index 10 is only present when has_nodup; otherwise default to false.
+            let no_duplicate: bool = if has_nodup {
+                row.get::<_, bool>(10).unwrap_or(false)
+            } else {
+                false
+            };
             Ok(Hit {
                 id,
                 path,
@@ -483,6 +504,7 @@ impl DuckDbBackend {
                 symbol,
                 commit_sha,
                 dirty: dirty.unwrap_or(false),
+                no_duplicate,
             })
         };
         let rows: Vec<Hit> = match exclude_id {
@@ -539,6 +561,8 @@ impl DuckDbBackend {
                         symbol,
                         commit_sha: row.get(8).ok(),
                         dirty: row.get(9).ok().unwrap_or(false),
+                        // get_by_location is not used by the duplicates path — no need to read.
+                        no_duplicate: false,
                     },
                     embedding,
                 ))
@@ -557,8 +581,17 @@ impl DuckDbBackend {
         path_glob: Option<&str>,
     ) -> Result<Vec<(Hit, Vec<f32>)>> {
         let matcher = compile_glob(path_glob)?;
+        // Column layout (0-based):
+        //   0=id, 1=path, 2=language, 3=start_line, 4=end_line, 5=text,
+        //   6=symbol, 7=embedding, [8=no_duplicate if present]
+        // commit_sha/dirty are intentionally omitted from this SELECT; they were previously
+        // read via out-of-bounds row.get(8/9).ok() → always None/false. That behaviour is
+        // preserved: when has_nodup=true, no_duplicate lands at index 8 and the old OOB
+        // reads for commit_sha/dirty would shift to 9/10 (still OOB → same None/false result).
+        let has_nodup = self.has_no_duplicate_col();
+        let nodup_col = if has_nodup { ", no_duplicate" } else { "" };
         let sql = format!(
-            "SELECT id, path, language, start_line, end_line, text, symbol, embedding FROM {coll}",
+            "SELECT id, path, language, start_line, end_line, text, symbol, embedding{nodup_col} FROM {coll}",
             coll = self.collection,
         );
         let mut stmt = self
@@ -566,7 +599,7 @@ impl DuckDbBackend {
             .prepare(&sql)
             .context("failed to prepare all_chunks_with_vectors")?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map([], move |row| {
                 let id: u64 = row.get(0)?;
                 let path: String = row.get(1)?;
                 let language: String = row.get(2)?;
@@ -575,6 +608,12 @@ impl DuckDbBackend {
                 let text: String = row.get(5)?;
                 let symbol: Option<String> = row.get(6)?;
                 let embedding = embedding_to_vec(row.get(7)?)?;
+                // Index 8 is only present when has_nodup; otherwise default to false.
+                let no_duplicate: bool = if has_nodup {
+                    row.get::<_, bool>(8).unwrap_or(false)
+                } else {
+                    false
+                };
                 Ok((
                     Hit {
                         id,
@@ -585,8 +624,9 @@ impl DuckDbBackend {
                         text,
                         score: 1.0,
                         symbol,
-                        commit_sha: row.get(8).ok(),
-                        dirty: row.get(9).ok().unwrap_or(false),
+                        commit_sha: None,
+                        dirty: false,
+                        no_duplicate,
                     },
                     embedding,
                 ))
@@ -630,6 +670,20 @@ impl DuckDbBackend {
             Ok(v) => Ok(v),
             Err(_) => Ok(false),
         }
+    }
+
+    /// Whether the table has the `no_duplicate` column (old indexes opened read-only
+    /// may lack it; a missing column fails at prepare time, not at runtime).
+    fn has_no_duplicate_col(&self) -> bool {
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.columns \
+             WHERE table_name = '{}' AND column_name = 'no_duplicate')",
+            self.collection
+        );
+        matches!(
+            self.conn.query_row(&sql, [], |r| r.get::<_, bool>(0)),
+            Ok(true)
+        )
     }
 
     /// Embed a query through the owned local embedder (asymmetric `query:` side).
@@ -778,6 +832,201 @@ fn float_array_literal(v: &[f32]) -> String {
     s
 }
 
+/// Tests that don't require a live embedder: column-guard and no_duplicate round-trip
+/// via raw SQL inserts. Gated on `ollama` too: the embedder is constructed via
+/// `embedder::ollama_embedder`, which only exists under that feature.
+#[cfg(all(test, feature = "duckdb", feature = "ollama"))]
+mod no_duplicate_tests {
+    use super::*;
+    use crate::config::Plan;
+    use crate::vectordbs::embedder;
+    use globset::GlobSetBuilder;
+    use std::collections::HashSet;
+    use tempfile::TempDir;
+
+    fn make_plan(db_path: &std::path::Path, dim: u64) -> Plan {
+        Plan {
+            root: "src".to_string(),
+            ext: vec!["rs".to_string()],
+            backend: "duckdb".to_string(),
+            embedder: "ollama".to_string(),
+            chunker: "lines".to_string(),
+            max_chunk_chars: 1400,
+            prefix_style: crate::vectordbs::PrefixStyle::None,
+            collection: "test_nodup".to_string(),
+            model: "nomic-embed-text".to_string(),
+            vector_dim: dim,
+            duckdb_path: db_path.to_string_lossy().to_string(),
+            duckdb_model_cache: None,
+            model_repo: "nomic".to_string(),
+            ollama_url: "http://localhost:11434".to_string(),
+            ollama_model: Some("nomic-embed-text".to_string()),
+            exclude_dirs: HashSet::new(),
+            include: GlobSetBuilder::new().build().unwrap(),
+            include_active: false,
+            exclude: GlobSetBuilder::new().build().unwrap(),
+            skip_generated: false,
+            strip_comments: true,
+            honor_noindex_marker: true,
+            honor_noduplicate_marker: true,
+            limit: 5,
+            find_similar_min_score: 0.85,
+            duplicate_min_score: 0.93,
+            duplicate_min_cluster_size: 2,
+            top_k: 10,
+        }
+    }
+
+    fn make_ollama_embedder(plan: &Plan) -> Embedder {
+        Embedder::Ollama(
+            embedder::ollama_embedder(plan).expect("ollama embedder construction must succeed"),
+        )
+    }
+
+    /// Block on a future using a throwaway current-thread runtime (these tests run
+    /// outside any async context).
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// `CREATE TABLE` for the legacy schema that predates the `no_duplicate` column —
+    /// used by the "old table" guard tests.
+    const OLD_SCHEMA_SQL: &str = "CREATE TABLE test_nodup(
+                   id UBIGINT PRIMARY KEY,
+                   path VARCHAR,
+                   language VARCHAR,
+                   start_line INTEGER,
+                   end_line INTEGER,
+                   text VARCHAR,
+                   symbol VARCHAR,
+                   embedding FLOAT[4],
+                   commit_sha VARCHAR,
+                   dirty BOOLEAN DEFAULT false
+                 );";
+
+    /// has_no_duplicate_col returns false when the column is absent.
+    #[test]
+    fn has_no_duplicate_col_absent() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("nodup_absent.duckdb");
+
+        // Create table WITHOUT no_duplicate column.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(OLD_SCHEMA_SQL).unwrap();
+        }
+
+        let plan = make_plan(&db_path, 4);
+        let emb = make_ollama_embedder(&plan);
+        let backend = DuckDbBackend::connect(&plan, emb).unwrap();
+        assert!(
+            !backend.has_no_duplicate_col(),
+            "column absent: has_no_duplicate_col must return false"
+        );
+    }
+
+    /// has_no_duplicate_col returns true after ensure_ready creates the table with the column.
+    #[test]
+    fn has_no_duplicate_col_present() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("nodup_present.duckdb");
+
+        let plan = make_plan(&db_path, 4);
+        let emb = make_ollama_embedder(&plan);
+        let backend = DuckDbBackend::connect(&plan, emb).unwrap();
+
+        // ensure_ready creates the table with no_duplicate column.
+        block_on(backend.ensure_ready(false)).unwrap();
+
+        assert!(
+            backend.has_no_duplicate_col(),
+            "column present after ensure_ready: has_no_duplicate_col must return true"
+        );
+    }
+
+    /// all_chunks_with_vectors defaults no_duplicate to false on a table lacking the column.
+    #[test]
+    fn all_chunks_defaults_no_duplicate_false_on_old_table() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("nodup_old.duckdb");
+
+        // Seed: table WITHOUT no_duplicate, one row inserted.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("INSTALL vss; LOAD vss;").ok();
+            conn.execute_batch("SET hnsw_enable_experimental_persistence = true;")
+                .ok();
+            conn.execute_batch(OLD_SCHEMA_SQL).unwrap();
+            conn.execute_batch(
+                "INSERT INTO test_nodup VALUES (1, 'a.rs', 'rust', 1, 5, 'fn foo() {}', NULL,
+                   [0.1, 0.2, 0.3, 0.4]::FLOAT[4], NULL, false);",
+            )
+            .unwrap();
+        }
+
+        let plan = make_plan(&db_path, 4);
+        let emb = make_ollama_embedder(&plan);
+        let backend = DuckDbBackend::connect(&plan, emb).unwrap();
+
+        let results = block_on(backend.all_chunks_with_vectors(None)).unwrap();
+
+        assert_eq!(results.len(), 1, "should return the one seeded row");
+        assert!(
+            !results[0].0.no_duplicate,
+            "no_duplicate must default to false when column is absent"
+        );
+    }
+
+    /// all_chunks_with_vectors reads the real no_duplicate value from a table that has the column.
+    #[test]
+    fn all_chunks_reads_no_duplicate_true() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("nodup_new.duckdb");
+
+        // Seed: table WITH no_duplicate, one row with no_duplicate=true.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("INSTALL vss; LOAD vss;").ok();
+            conn.execute_batch("SET hnsw_enable_experimental_persistence = true;")
+                .ok();
+            conn.execute_batch(
+                "CREATE TABLE test_nodup(
+                   id UBIGINT PRIMARY KEY,
+                   path VARCHAR,
+                   language VARCHAR,
+                   start_line INTEGER,
+                   end_line INTEGER,
+                   text VARCHAR,
+                   symbol VARCHAR,
+                   embedding FLOAT[4],
+                   commit_sha VARCHAR,
+                   dirty BOOLEAN DEFAULT false,
+                   no_duplicate BOOLEAN DEFAULT false
+                 );
+                 INSERT INTO test_nodup VALUES (42, 'b.rs', 'rust', 10, 20, 'fn bar() {}', NULL,
+                   [0.5, 0.6, 0.7, 0.8]::FLOAT[4], NULL, false, true);",
+            )
+            .unwrap();
+        }
+
+        let plan = make_plan(&db_path, 4);
+        let emb = make_ollama_embedder(&plan);
+        let backend = DuckDbBackend::connect(&plan, emb).unwrap();
+
+        let results = block_on(backend.all_chunks_with_vectors(None)).unwrap();
+
+        assert_eq!(results.len(), 1, "should return the one seeded row");
+        assert!(
+            results[0].0.no_duplicate,
+            "no_duplicate must be true when stored as true"
+        );
+    }
+}
+
 #[cfg(all(test, feature = "duckdb", any(feature = "ort", feature = "ollama")))]
 mod validation_tests {
     use super::*;
@@ -812,6 +1061,8 @@ mod validation_tests {
             exclude: globset::GlobSetBuilder::new().build().unwrap(),
             skip_generated: false,
             strip_comments: true,
+            honor_noindex_marker: true,
+            honor_noduplicate_marker: true,
             limit: 5,
             find_similar_min_score: 0.85,
             duplicate_min_score: 0.93,
@@ -824,8 +1075,10 @@ mod validation_tests {
         // Construction only — we never call embed in these validation tests.
         // We use a throwaway plan just for construction (the actual Plan is passed to connect).
         let dummy_plan = test_plan(&PathBuf::from("/tmp/dummy"), 384);
-        Embedder::Ollama(embedder::ollama_embedder(&dummy_plan)
-            .expect("ollama embedder construction should succeed for test"))
+        Embedder::Ollama(
+            embedder::ollama_embedder(&dummy_plan)
+                .expect("ollama embedder construction should succeed for test"),
+        )
     }
 
     #[test]
@@ -858,7 +1111,10 @@ mod validation_tests {
             msg.contains("FLOAT[384]") && msg.contains("vector_dim=768"),
             "error should clearly mention the actual vs expected dim: {msg}"
         );
-        assert!(msg.contains("--recreate") || msg.contains("recreate"), "error should suggest --recreate");
+        assert!(
+            msg.contains("--recreate") || msg.contains("recreate"),
+            "error should suggest --recreate"
+        );
     }
 
     #[test]

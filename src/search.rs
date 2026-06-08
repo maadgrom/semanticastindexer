@@ -81,6 +81,10 @@ pub fn cluster_duplicates(
     let mut edges: HashMap<(usize, usize), f32> = HashMap::new();
 
     for (i, nbrs) in neighbours.iter().enumerate() {
+        // A chunk that opted out of clustering forms no edges as a seed.
+        if chunks[i].0.no_duplicate {
+            continue;
+        }
         for nb in nbrs {
             if nb.score < min_score {
                 continue;
@@ -88,6 +92,10 @@ pub fn cluster_duplicates(
             let Some(&j) = id_to_idx.get(&nb.id) else {
                 continue;
             };
+            // …and is never picked up as a neighbour either.
+            if chunks[j].0.no_duplicate {
+                continue;
+            }
             if i == j {
                 continue;
             }
@@ -113,9 +121,7 @@ pub fn cluster_duplicates(
         .collect();
     // Largest clusters first; tie-break by max_sim desc for determinism.
     // Use total_cmp for a total order (handles NaN / -0.0 safely; MSRV 1.85 supports it).
-    clusters.sort_by(|a, b| {
-        b.size.cmp(&a.size).then(b.max_sim.total_cmp(&a.max_sim))
-    });
+    clusters.sort_by(|a, b| b.size.cmp(&a.size).then(b.max_sim.total_cmp(&a.max_sim)));
     clusters.truncate(max_clusters);
     clusters
 }
@@ -420,6 +426,57 @@ mod tests {
         .unwrap();
         // The only other vector is orthogonal (cosine 0 < 0.5) → filtered out.
         assert!(hits.is_empty(), "orthogonal neighbour dropped by min_score");
+    }
+
+    /// Build a minimal `Hit` for the pure `cluster_duplicates` tests.
+    fn hit(id: u64, path: &str, score: f32, no_duplicate: bool) -> Hit {
+        Hit {
+            id,
+            path: path.to_string(),
+            language: "ts".to_string(),
+            start_line: 1,
+            end_line: 1,
+            text: String::new(),
+            score,
+            symbol: None,
+            commit_sha: None,
+            dirty: false,
+            no_duplicate,
+        }
+    }
+
+    /// `cluster_duplicates` excludes a `no_duplicate` chunk both as a cluster seed and as a
+    /// neighbour: two near-identical chunks would cluster, but flagging one drops it to a
+    /// singleton, leaving no cluster of the required size.
+    #[test]
+    fn cluster_duplicates_excludes_no_duplicate_chunks() {
+        // Sanity: WITHOUT the flag the two chunks cluster.
+        let chunks = vec![
+            (hit(1, "src/a.ts", 0.0, false), vec![1.0, 0.0]),
+            (hit(2, "src/b.ts", 0.0, false), vec![1.0, 0.0]),
+        ];
+        let neighbours = vec![
+            vec![hit(2, "src/b.ts", 0.99, false)],
+            vec![hit(1, "src/a.ts", 0.99, false)],
+        ];
+        let clusters = cluster_duplicates(&chunks, &neighbours, 0.95, 2, 50);
+        assert_eq!(clusters.len(), 1, "unflagged near-identical chunks cluster");
+
+        // WITH chunk 2 flagged no_duplicate: it forms no edge as a seed and is skipped as a
+        // neighbour of chunk 1 → no cluster of size >= 2 survives.
+        let chunks = vec![
+            (hit(1, "src/a.ts", 0.0, false), vec![1.0, 0.0]),
+            (hit(2, "src/b.ts", 0.0, true), vec![1.0, 0.0]),
+        ];
+        let neighbours = vec![
+            vec![hit(2, "src/b.ts", 0.99, false)],
+            vec![hit(1, "src/a.ts", 0.99, false)],
+        ];
+        let clusters = cluster_duplicates(&chunks, &neighbours, 0.95, 2, 50);
+        assert!(
+            clusters.is_empty(),
+            "a no_duplicate chunk is excluded from clustering (as seed and neighbour)"
+        );
     }
 
     /// Union-find groups transitively connected indices and keeps disjoint sets apart.

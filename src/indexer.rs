@@ -59,20 +59,68 @@ pub fn build_chunks(plan: &Plan, path: &Path, rel: &str, raw: &str) -> Vec<CodeC
         raw.to_string()
     };
     let language = language_for_path(path);
+    // Marker detection scans the RAW (pre-strip) lines, since comments are stripped
+    // before chunking but strip_c_comments preserves the line count, so a chunk's line
+    // range still indexes the original raw lines.
+    let raw_lines: Vec<&str> = raw.lines().collect();
     chunk_content(plan, path, &content)
         .into_iter()
-        .map(|c| CodeChunk {
-            id: point_id(rel, c.start_line),
-            path: rel.to_string(),
-            language: language.clone(),
-            start_line: c.start_line,
-            end_line: c.end_line,
-            text: c.text,
-            symbol: c.symbol,
-            commit_sha: None,
-            dirty: false,
+        .filter_map(|c| {
+            let (noindex, nodup) = scan_markers(
+                &raw_lines,
+                c.start_line,
+                c.end_line,
+                plan.honor_noindex_marker,
+                plan.honor_noduplicate_marker,
+            );
+            if noindex {
+                return None;
+            }
+            Some(CodeChunk {
+                id: point_id(rel, c.start_line),
+                path: rel.to_string(),
+                language: language.clone(),
+                start_line: c.start_line,
+                end_line: c.end_line,
+                text: c.text,
+                symbol: c.symbol,
+                commit_sha: None,
+                dirty: false,
+                no_duplicate: nodup,
+            })
         })
         .collect()
+}
+
+/// Scan the RAW (pre-comment-strip) line span of a chunk for opt-out markers.
+/// Returns (noindex, noduplicate). Case-insensitive substring match — language-agnostic.
+fn scan_markers(
+    raw_lines: &[&str],
+    start_line: usize,
+    end_line: usize,
+    noindex_on: bool,
+    nodup_on: bool,
+) -> (bool, bool) {
+    if !noindex_on && !nodup_on {
+        return (false, false);
+    }
+    let s = start_line.saturating_sub(1);
+    let e = end_line.min(raw_lines.len());
+    if s >= e {
+        return (false, false);
+    }
+    let mut noindex = false;
+    let mut nodup = false;
+    for line in &raw_lines[s..e] {
+        let lower = line.to_ascii_lowercase();
+        if noindex_on && lower.contains("sai-noindexing") {
+            noindex = true;
+        }
+        if nodup_on && lower.contains("sai-noduplicate") {
+            nodup = true;
+        }
+    }
+    (noindex, nodup)
 }
 
 /// Dispatch to the configured chunker. `lines` (default) is the line-window chunker;
@@ -576,7 +624,12 @@ mod ast {
         }
     }
 
-    fn chunk_ast_typescript(_path: &Path, content: &str, cap: usize, ext: &str) -> Option<Vec<Chunk>> {
+    fn chunk_ast_typescript(
+        _path: &Path,
+        content: &str,
+        cap: usize,
+        ext: &str,
+    ) -> Option<Vec<Chunk>> {
         let language: tree_sitter::Language = match ext {
             "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
             "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
@@ -664,7 +717,12 @@ mod ast {
     // ------------------------------------------------------------------
 
     fn chunk_ast_rust(content: &str, cap: usize) -> Option<Vec<Chunk>> {
-        collect_function_chunks(tree_sitter_rust::LANGUAGE.into(), RUST_QUERY_SRC, content, cap)
+        collect_function_chunks(
+            tree_sitter_rust::LANGUAGE.into(),
+            RUST_QUERY_SRC,
+            content,
+            cap,
+        )
     }
 
     fn chunk_ast_go(content: &str, cap: usize) -> Option<Vec<Chunk>> {
@@ -928,21 +986,46 @@ const double = (n: number) => n * 2
 
         let symbols: Vec<String> = chunks.iter().filter_map(|c| c.symbol.clone()).collect();
         // Free functions and methods are captured by name.
-        assert!(symbols.contains(&"alpha".to_string()), "alpha ({symbols:?})");
+        assert!(
+            symbols.contains(&"alpha".to_string()),
+            "alpha ({symbols:?})"
+        );
         assert!(symbols.contains(&"beta".to_string()), "beta ({symbols:?})");
-        assert!(symbols.contains(&"render".to_string()), "method render ({symbols:?})");
-        assert!(symbols.contains(&"update".to_string()), "method update ({symbols:?})");
+        assert!(
+            symbols.contains(&"render".to_string()),
+            "method render ({symbols:?})"
+        );
+        assert!(
+            symbols.contains(&"update".to_string()),
+            "method update ({symbols:?})"
+        );
         // The arrow-function `const` is a function → captured by its binding name.
-        assert!(symbols.contains(&"double".to_string()), "arrow const ({symbols:?})");
+        assert!(
+            symbols.contains(&"double".to_string()),
+            "arrow const ({symbols:?})"
+        );
 
         // The class shell itself is NOT a function → never emitted as a chunk.
-        assert!(!symbols.contains(&"Widget".to_string()), "no class-shell chunk");
+        assert!(
+            !symbols.contains(&"Widget".to_string()),
+            "no class-shell chunk"
+        );
 
         // No non-function code leaks in: the import line and the plain `VERSION` const
         // must not appear in ANY chunk's text.
-        let all_text: String = chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join("\n");
-        assert!(!all_text.contains("import { helper }"), "import must not be indexed");
-        assert!(!all_text.contains("VERSION"), "plain const must not be indexed");
+        let all_text: String = chunks
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !all_text.contains("import { helper }"),
+            "import must not be indexed"
+        );
+        assert!(
+            !all_text.contains("VERSION"),
+            "plain const must not be indexed"
+        );
     }
 
     /// Rust function-only chunking: free functions, impl methods, and nested functions are
@@ -975,9 +1058,18 @@ impl Widget {
             .expect("Rust fixture must parse via the AST chunker");
         let symbols: Vec<String> = chunks.iter().filter_map(|c| c.symbol.clone()).collect();
 
-        assert!(symbols.contains(&"free_fn".to_string()), "free_fn ({symbols:?})");
-        assert!(symbols.contains(&"nested".to_string()), "nested fn ({symbols:?})");
-        assert!(symbols.contains(&"method".to_string()), "impl method ({symbols:?})");
+        assert!(
+            symbols.contains(&"free_fn".to_string()),
+            "free_fn ({symbols:?})"
+        );
+        assert!(
+            symbols.contains(&"nested".to_string()),
+            "nested fn ({symbols:?})"
+        );
+        assert!(
+            symbols.contains(&"method".to_string()),
+            "impl method ({symbols:?})"
+        );
 
         // Non-function items must never be captured…
         for forbidden in ["DEFAULT_BACKEND", "config", "Alias", "Widget"] {
@@ -987,9 +1079,19 @@ impl Widget {
             );
         }
         // …nor appear as text (no remainder pass): the const/mod/type/struct lines are gone.
-        let all_text: String = chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join("\n");
-        assert!(!all_text.contains("DEFAULT_BACKEND"), "const text must not be indexed");
-        assert!(!all_text.contains("struct Widget"), "struct decl must not be indexed");
+        let all_text: String = chunks
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !all_text.contains("DEFAULT_BACKEND"),
+            "const text must not be indexed"
+        );
+        assert!(
+            !all_text.contains("struct Widget"),
+            "struct decl must not be indexed"
+        );
     }
 
     /// Go function-only chunking: top-level `func` declarations and methods (with a receiver)
@@ -1022,8 +1124,14 @@ func (w Widget) Method() uint64 {
             .expect("Go fixture must parse via the AST chunker");
         let symbols: Vec<String> = chunks.iter().filter_map(|c| c.symbol.clone()).collect();
 
-        assert!(symbols.contains(&"FreeFn".to_string()), "FreeFn ({symbols:?})");
-        assert!(symbols.contains(&"Method".to_string()), "receiver method ({symbols:?})");
+        assert!(
+            symbols.contains(&"FreeFn".to_string()),
+            "FreeFn ({symbols:?})"
+        );
+        assert!(
+            symbols.contains(&"Method".to_string()),
+            "receiver method ({symbols:?})"
+        );
 
         // Non-function declarations must never be captured…
         for forbidden in ["DefaultBackend", "Widget", "main"] {
@@ -1033,9 +1141,19 @@ func (w Widget) Method() uint64 {
             );
         }
         // …nor appear as text (no remainder pass).
-        let all_text: String = chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join("\n");
-        assert!(!all_text.contains("DefaultBackend"), "const text must not be indexed");
-        assert!(!all_text.contains("type Widget"), "struct decl must not be indexed");
+        let all_text: String = chunks
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !all_text.contains("DefaultBackend"),
+            "const text must not be indexed"
+        );
+        assert!(
+            !all_text.contains("type Widget"),
+            "struct decl must not be indexed"
+        );
         assert!(!all_text.contains("import"), "import must not be indexed");
     }
 
@@ -1069,8 +1187,14 @@ export function huge(): number {
         let symbols: Vec<String> = chunks.iter().filter_map(|c| c.symbol.clone()).collect();
 
         // Methods are captured directly by their own name (no `Class.` prefix anymore).
-        assert!(symbols.iter().any(|s| s == "one"), "method one ({symbols:?})");
-        assert!(symbols.iter().any(|s| s == "two"), "method two ({symbols:?})");
+        assert!(
+            symbols.iter().any(|s| s == "one"),
+            "method one ({symbols:?})"
+        );
+        assert!(
+            symbols.iter().any(|s| s == "two"),
+            "method two ({symbols:?})"
+        );
         // No class-shell chunk.
         assert!(!symbols.iter().any(|s| s == "Big"), "no whole-class chunk");
 
@@ -1092,7 +1216,9 @@ export function huge(): number {
     #[test]
     fn ast_returns_none_for_unsupported_extension() {
         use std::path::Path;
-        assert!(super::ast::try_chunk_ast(Path::new("x.py"), "def f():\n    pass\n", 1400).is_none());
+        assert!(
+            super::ast::try_chunk_ast(Path::new("x.py"), "def f():\n    pass\n", 1400).is_none()
+        );
     }
 
     /// AST chunker on a file with NO functions (only imports + plain statements). Since the
@@ -1112,8 +1238,8 @@ foo();
 bar();
 ";
 
-        let chunks = super::ast::try_chunk_ast(Path::new("no-fns.ts"), src, 1400)
-            .expect("should parse");
+        let chunks =
+            super::ast::try_chunk_ast(Path::new("no-fns.ts"), src, 1400).expect("should parse");
 
         assert!(
             chunks.is_empty(),
@@ -1144,6 +1270,122 @@ bar();
         assert!(
             chunks.iter().all(|c| c.language == "tsx"),
             "every chunk from a .tsx file is labelled \"tsx\""
+        );
+    }
+
+    /// `scan_markers` detects each marker (case-insensitively), reports neither when the
+    /// span is clean, respects the on/off flags, and tolerates out-of-range spans.
+    #[test]
+    fn scan_markers_detects_respects_flags_and_ranges() {
+        let lines = vec![
+            "fn a() {",                  // 1
+            "  // sai-NoIndexing keep",  // 2 (uppercase mix)
+            "  foo();",                  // 3
+            "}",                         // 4
+            "fn b() {",                  // 5
+            "  // SAI-NODUPLICATE here", // 6 (uppercase)
+            "}",                         // 7
+            "fn c() { ok() }",           // 8 (no markers)
+        ];
+
+        // Marker found within the span (case-insensitive).
+        assert_eq!(super::scan_markers(&lines, 1, 4, true, true), (true, false));
+        assert_eq!(super::scan_markers(&lines, 5, 7, true, true), (false, true));
+        // No marker in the span → neither.
+        assert_eq!(
+            super::scan_markers(&lines, 8, 8, true, true),
+            (false, false)
+        );
+
+        // Flags gate detection: noindex off → not reported even though present.
+        assert_eq!(
+            super::scan_markers(&lines, 1, 4, false, true),
+            (false, false)
+        );
+        // nodup off → not reported.
+        assert_eq!(
+            super::scan_markers(&lines, 5, 7, true, false),
+            (false, false)
+        );
+        // Both off short-circuits.
+        assert_eq!(
+            super::scan_markers(&lines, 1, 7, false, false),
+            (false, false)
+        );
+
+        // Out-of-range / empty spans are safe (no panic, no detection).
+        assert_eq!(
+            super::scan_markers(&lines, 100, 200, true, true),
+            (false, false)
+        );
+        assert_eq!(
+            super::scan_markers(&lines, 5, 5, true, true),
+            (false, false)
+        );
+    }
+
+    /// `build_chunks` (lines chunker) drops a span carrying `sai-noindexing` entirely,
+    /// marks a span carrying `sai-noduplicate` as `no_duplicate`, and leaves a plain
+    /// span unmarked.
+    #[test]
+    fn build_chunks_honors_markers() {
+        use std::path::Path;
+        let mut plan = crate::config::test_support::minimal_plan();
+        plan.chunker = "lines".to_string();
+        plan.strip_comments = true;
+        plan.honor_noindex_marker = true;
+        plan.honor_noduplicate_marker = true;
+
+        // noindex: the whole single-window file is dropped.
+        let src_noindex = "export function a() {\n  // sai-noindexing\n  return 1\n}\n";
+        let chunks = super::build_chunks(&plan, Path::new("a.ts"), "a.ts", src_noindex);
+        assert!(chunks.is_empty(), "a sai-noindexing chunk is never stored");
+
+        // noduplicate: indexed, flagged.
+        let src_nodup = "export function b() {\n  // sai-noduplicate\n  return 2\n}\n";
+        let chunks = super::build_chunks(&plan, Path::new("b.ts"), "b.ts", src_nodup);
+        assert!(
+            !chunks.is_empty(),
+            "a sai-noduplicate chunk is still stored"
+        );
+        assert!(
+            chunks.iter().all(|c| c.no_duplicate),
+            "the chunk is flagged no_duplicate"
+        );
+
+        // plain: indexed, not flagged.
+        let src_plain = "export function c() {\n  return 3\n}\n";
+        let chunks = super::build_chunks(&plan, Path::new("c.ts"), "c.ts", src_plain);
+        assert!(!chunks.is_empty(), "a plain chunk is stored");
+        assert!(
+            chunks.iter().all(|c| !c.no_duplicate),
+            "a plain chunk is not flagged no_duplicate"
+        );
+    }
+
+    /// Toggling the honor flags off disables detection: a `sai-noindexing` span is kept
+    /// and a `sai-noduplicate` span is not flagged.
+    #[test]
+    fn build_chunks_marker_flags_off_disable_detection() {
+        use std::path::Path;
+        let mut plan = crate::config::test_support::minimal_plan();
+        plan.chunker = "lines".to_string();
+        plan.honor_noindex_marker = false;
+        plan.honor_noduplicate_marker = false;
+
+        let src_noindex = "export function a() {\n  // sai-noindexing\n  return 1\n}\n";
+        let chunks = super::build_chunks(&plan, Path::new("a.ts"), "a.ts", src_noindex);
+        assert!(
+            !chunks.is_empty(),
+            "with honor_noindex_marker off the chunk is kept"
+        );
+
+        let src_nodup = "export function b() {\n  // sai-noduplicate\n  return 2\n}\n";
+        let chunks = super::build_chunks(&plan, Path::new("b.ts"), "b.ts", src_nodup);
+        assert!(!chunks.is_empty(), "chunk present");
+        assert!(
+            chunks.iter().all(|c| !c.no_duplicate),
+            "with honor_noduplicate_marker off the chunk is not flagged"
         );
     }
 }

@@ -360,6 +360,40 @@ skip_generated_marker: true   # skip files whose head has @generated / "DO NOT E
 strip_comments: true          # remove // and /* */ before embedding (code only)
 ```
 
+### Opt-out markers
+
+Add language-agnostic marker comments in your source to control indexing per function/chunk:
+
+| Marker | Behavior |
+| ------ | --------- |
+| `sai-noindexing` | Skip the chunk **entirely** from indexing — never embedded or stored, so it won't appear in search, `find_similar`, or `duplicates`. |
+| `sai-noduplicate` | Include in search/`find_similar`, but exclude from near-duplicate clustering (the `duplicates` command / MCP tool). |
+
+**Example:**
+
+```typescript
+// sai-noindexing
+function internalHelper() {
+  // This function is never indexed
+}
+
+// sai-noduplicate
+function intentionallySimilar() {
+  // Indexed and searchable, but won't be grouped in duplicates
+}
+```
+
+Detection is a **case-insensitive substring match** on the raw source (before comment stripping), so it works with any comment syntax: `// sai-noindexing`, `# sai-noduplicate`, `-- sai-noindexing`, `<!-- sai-noduplicate -->`, etc. A string literal containing the marker text would also trigger it — avoid embedding the literal strings in code unless you intend the opt-out.
+
+**Granularity:** With the AST chunker (TS/TSX/Rust/Go), the marker applies to a single function. With the `lines` chunker, the marker applies at window granularity (~60-line chunks with 8-line overlap) — a marker near a window boundary may only drop the window(s) containing it.
+
+**Config toggles** (both default to `true`):
+
+```yaml
+honor_noindex_marker: true        # respect sai-noindexing comments
+honor_noduplicate_marker: true    # respect sai-noduplicate comments
+```
+
 ### Selection order
 
 For each file under `--root` (after dir pruning + extension filter):

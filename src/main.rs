@@ -309,13 +309,25 @@ fn finish(t0: std::time::Instant, args: &Args, ctx: &git::GitContext, extra: &st
         Some(s) => (s.as_str(), if ctx.dirty { ", dirty" } else { "" }),
         None => ("unknown", if ctx.dirty { ", dirty" } else { "" }),
     };
-    eprintln!("done{} at {}{} in {:.2}s", extra, sha, d, t0.elapsed().as_secs_f32());
+    eprintln!(
+        "done{} at {}{} in {:.2}s",
+        extra,
+        sha,
+        d,
+        t0.elapsed().as_secs_f32()
+    );
 }
 
 /// Internal: run a top-level command future, then always report its wall time (unless --silent).
 /// Used so every CLI entrypoint (index, sync, duplicates, flush, mcp, ...) gets consistent timing
 /// without repeating the "let r = ...; finish(...); r" pattern in every match arm.
-async fn run_timed<F, T>(t0: std::time::Instant, args: &Args, ctx: &git::GitContext, extra: &str, f: F) -> Result<T>
+async fn run_timed<F, T>(
+    t0: std::time::Instant,
+    args: &Args,
+    ctx: &git::GitContext,
+    extra: &str,
+    f: F,
+) -> Result<T>
 where
     F: Future<Output = Result<T>>,
 {
@@ -361,7 +373,10 @@ fn confirm_default_no(question: &str) -> Result<bool> {
     std::io::stdout().flush().ok();
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;
-    Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 /// For `duplicates` (and similar truth-sensitive read commands): if the index has any
@@ -413,15 +428,20 @@ async fn index_sources(backend: &Backend, plan: &Plan, ctx: &git::GitContext) ->
     backend.begin_bulk().await?;
     let mut done = 0usize;
     let mut files_done = 0usize;
-    let mut last_path: Option<String> = None;
+    let mut last_path: Option<&str> = None;
     for batch in chunks.chunks(UPSERT_BATCH) {
-        // When we cross into a new source file's chunks, announce it so the user sees
-        // exactly which files are being indexed right now (ORT embedding can be slow).
-        if let Some(first) = batch.first() {
-            if last_path.as_deref() != Some(first.path.as_str()) {
+        // Announce every distinct file as we cross into its chunks. A single batch can
+        // span many files, so scan all chunks — not just batch.first() — or the counter
+        // degenerates into a batch index and most files are never reported.
+        for c in batch {
+            if last_path != Some(c.path.as_str()) {
                 files_done += 1;
-                eprintln!("  [ {}/{} files ] indexing {}", files_done, files, first.path);
-                last_path = Some(first.path.clone());
+                // Clear the in-progress "embedded …" line before the permanent file line.
+                eprintln!(
+                    "\r\x1b[K  [ {}/{} files ] indexing {}",
+                    files_done, files, c.path
+                );
+                last_path = Some(c.path.as_str());
             }
         }
         backend.upsert(batch).await?;
@@ -448,7 +468,12 @@ async fn index_sources(backend: &Backend, plan: &Plan, ctx: &git::GitContext) ->
 
 /// Re-index only changed files: delete each file's existing points, then upload the current
 /// content fresh. Deleted/now-excluded files are removed from the collection.
-async fn sync(backend: &Backend, plan: &Plan, sync_args: &SyncArgs, ctx: &git::GitContext) -> Result<()> {
+async fn sync(
+    backend: &Backend,
+    plan: &Plan,
+    sync_args: &SyncArgs,
+    ctx: &git::GitContext,
+) -> Result<()> {
     let changed = changed_files(sync_args)?;
     if changed.is_empty() {
         println!("sync: no changed files");
@@ -712,6 +737,8 @@ mod tests {
             exclude: empty,
             skip_generated: true,
             strip_comments: true,
+            honor_noindex_marker: true,
+            honor_noduplicate_marker: true,
             limit: 5,
             find_similar_min_score: 0.85,
             duplicate_min_score: 0.93,
@@ -752,7 +779,9 @@ mod tests {
         assert!(expected > 0, "fixture must produce chunks");
 
         let backend = Backend::Mock(MockBackend::new());
-        index_sources(&backend, &plan, &git::GitContext::default()).await.unwrap();
+        index_sources(&backend, &plan, &git::GitContext::default())
+            .await
+            .unwrap();
 
         let calls = mock_calls(&backend);
         assert_eq!(calls.begin_bulk, 1, "exactly one begin_bulk");
@@ -791,7 +820,9 @@ mod tests {
         };
 
         let backend = Backend::Mock(MockBackend::new());
-        sync(&backend, &plan, &sync_args, &git::GitContext::default()).await.unwrap();
+        sync(&backend, &plan, &sync_args, &git::GitContext::default())
+            .await
+            .unwrap();
 
         let calls = mock_calls(&backend);
         // delete_by_path called once per changed path (3).
@@ -828,12 +859,20 @@ mod tests {
         let backend = Backend::Mock(MockBackend::new());
 
         let good_path = good.to_string_lossy().to_string();
-        match indexer::reindex_file(&backend, &plan, &good_path, &git::GitContext::default()).await.unwrap() {
-            indexer::ReindexOutcome::Reindexed { chunks } => assert!(chunks > 0, "indexable file chunks"),
+        match indexer::reindex_file(&backend, &plan, &good_path, &git::GitContext::default())
+            .await
+            .unwrap()
+        {
+            indexer::ReindexOutcome::Reindexed { chunks } => {
+                assert!(chunks > 0, "indexable file chunks")
+            }
             indexer::ReindexOutcome::Removed { .. } => panic!("existing file must be reindexed"),
         }
         let gone_path = gone.to_string_lossy().to_string();
-        match indexer::reindex_file(&backend, &plan, &gone_path, &git::GitContext::default()).await.unwrap() {
+        match indexer::reindex_file(&backend, &plan, &gone_path, &git::GitContext::default())
+            .await
+            .unwrap()
+        {
             indexer::ReindexOutcome::Removed { .. } => {}
             indexer::ReindexOutcome::Reindexed { .. } => panic!("gone file must be removed"),
         }

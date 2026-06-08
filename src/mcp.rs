@@ -417,11 +417,11 @@ impl CodeSearchServer {
         &self,
         Parameters(args): Parameters<PrepareMcpSetupArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let target = args.target_directory
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir()
+        let target = args.target_directory.clone().unwrap_or_else(|| {
+            std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string()));
+                .unwrap_or_else(|_| ".".to_string())
+        });
 
         let backend = args.backend.unwrap_or_else(|| "duckdb".to_string());
         let embedder = args.embedder.unwrap_or_else(|| "ollama".to_string());
@@ -437,7 +437,10 @@ impl CodeSearchServer {
 
         let setup_script_path = std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("../../mcp-setup/setup.sh").canonicalize().ok()))
+            .and_then(|p| {
+                p.parent()
+                    .map(|d| d.join("../../mcp-setup/setup.sh").canonicalize().ok())
+            })
             .flatten()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or("./mcp-setup/setup.sh".to_string());
@@ -581,7 +584,12 @@ impl ServerHandler for CodeSearchServer {
 /// Serve the MCP server over stdio until EOF. The backend-worker handle + plan are supplied
 /// by `main`. `allow_write` gates the `refresh` write tool. `allow_setup` gates execution
 /// inside the `prepare_mcp_setup` tool.
-pub async fn serve_inner(backend: BackendHandle, plan: &Plan, allow_write: bool, allow_setup: bool) -> Result<()> {
+pub async fn serve_inner(
+    backend: BackendHandle,
+    plan: &Plan,
+    allow_write: bool,
+    allow_setup: bool,
+) -> Result<()> {
     let server = CodeSearchServer::new(backend, plan, allow_write, allow_setup);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
