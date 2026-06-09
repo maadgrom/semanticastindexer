@@ -5,3 +5,5 @@
 # DuckDB index files created by the duckdb backend / e2e.
 /.index
 *.duckdb
+# Assembled static-site preview (landing page + mdBook) from `make site`.
+/.site
