@@ -3,9 +3,9 @@
 Thanks for hacking on **semanticastindexer** (SAI). This page is the developer
 setup guide: how to build and test the crate, what the Cargo feature flags gate,
 how the `src/` tree is laid out, and how to run the MCP server locally for
-debugging. Before changing anything load-bearing, read the
-[logical audit](./logical-audit.md) for the invariants that must hold, and
-[how it works](../concepts/how-it-works.md) for the indexing pipeline.
+debugging. Before changing anything load-bearing, read
+[how it works](../concepts/how-it-works.md) for the indexing pipeline and the
+invariants it must preserve.
 
 ## Toolchain
 
@@ -144,6 +144,6 @@ launching the server over it.
 - Run `make fmt` and `make check-all` (clippy with `-D warnings`) before opening
   a PR — CI builds and tests with `--features all`.
 - Add or update tests using the mock backend; they must pass offline.
-- Respect the invariants documented in the
-  [logical audit](./logical-audit.md) — in particular stable point IDs, the
-  `!Send` worker boundary, and the read-only-by-default MCP contract.
+- Respect the core invariants (see [how it works → Invariants](../concepts/how-it-works.md#invariants)):
+  stable point IDs, the `!Send` worker boundary, the DuckDB `begin_bulk`/`end_bulk`
+  contract, and the read-only-by-default MCP server.

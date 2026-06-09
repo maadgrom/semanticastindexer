@@ -46,5 +46,4 @@
 # Project
 
 - [Contributing](project/contributing.md)
-- [Internals: logical audit](project/logical-audit.md)
 - [Changelog](project/changelog.md)

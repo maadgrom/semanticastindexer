@@ -194,9 +194,12 @@ the single write path exposed by the MCP server and is gated by `--allow-write` 
 site. See [keeping the index in sync](../guides/keeping-in-sync.md) and the
 [MCP server reference](../reference/mcp-server.md).
 
-## Logical audits
+## Invariants
 
-Key algorithmic invariants — chunking "nothing dropped", the DuckDB HNSW bulk contract,
-cross-backend point IDs, prefix consistency, worker isolation, dimension guards, and more —
-are documented and verified in [Internals: logical audit](../project/logical-audit.md).
-Re-read that page before changing core indexing, clustering, or backend logic.
+A few algorithmic invariants are load-bearing and enforced in the code itself: chunking
+"nothing dropped" (the dry-run, full-index, and refresh paths share one per-file routine),
+the DuckDB HNSW bulk contract (`begin_bulk`/`end_bulk` around every write), stable
+cross-backend point IDs, one resolved prefix style applied everywhere, the `!Send` worker
+boundary, and the runtime dimension guards. Re-read the relevant modules (`src/indexer.rs`,
+`src/vectordbs/`, `src/worker.rs`, `src/search.rs`) before changing core indexing,
+clustering, or backend logic.

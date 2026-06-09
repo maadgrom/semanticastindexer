@@ -29,7 +29,7 @@ the backend lives on a **dedicated worker thread**, and the server holds only a 
 channel handle (`BackendHandle`). Each tool handler builds a request, sends it to the worker,
 and awaits a `oneshot` reply — keeping handler futures `Send` while serializing all backend
 access through the single-threaded connection. For the full rationale see
-[Internals: logical audit](../project/logical-audit.md).
+[how it works](../concepts/how-it-works.md#the-backend-worker-thread-actor-model).
 
 ### Threshold and limit resolution
 
