@@ -8,7 +8,7 @@ The resolution order for most knobs is:
 CLI flag  >  indexer.yaml value  >  built-in default
 ```
 
-Qdrant credentials are the exception — they live **outside** this chain (see [Environment variables](#environment-variables) below).
+The Qdrant **API key** is the exception — it is a secret read only from the `QDRANT_API_KEY` environment variable, never from YAML (see [Environment variables](#environment-variables) below). The Qdrant URL is a normal setting: `qdrant.url` in YAML, overridable by `QDRANT_URL`.
 
 > If no `indexer.yaml` exists at the default path, SAI prints `note: no config at indexer.yaml — using built-in defaults (only hard dirs pruned)` and continues with the defaults below. If you pass an explicit `--config` to a missing file, it is a hard error instead.
 
@@ -33,6 +33,7 @@ Type, default, and resolution for every recognized key. "Has CLI flag" means a `
 | `duckdb.model_repo` | string | `ort` → `jinaai/jina-embeddings-v2-base-code`; otherwise `Xenova/multilingual-e5-small` | config > embedder-aware default | config-only |
 | `ollama.url` | string | `http://localhost:11434` | config > default | config-only |
 | `ollama.model` | string | `mxbai-embed-large` | config > default | config-only |
+| `qdrant.url` | string | unset (`None`) | **`QDRANT_URL` env > config** | config or env (see [Environment variables](#environment-variables)) |
 | `exclude_dirs` | list of strings | `[]` (merged with hard-pruned dirs) | config (additive) | config-only |
 | `include` | list of glob strings | `[]` (inactive = match everything) | config | config-only |
 | `exclude` | list of glob strings | `[]` | config | config-only |
@@ -204,12 +205,14 @@ Any other extension falls back to the `lines` chunker even when `ast` support is
 
 ## Environment variables
 
-Qdrant credentials are read **only** from environment variables and sit **outside** the CLI > config > default chain — they are never read from YAML and have no config key:
+The Qdrant **API key is a secret** and is read **only** from the environment — it never belongs in YAML. The cluster **URL** is not secret: set it in YAML as `qdrant.url`, or via the `QDRANT_URL` environment variable (which takes precedence over the YAML value).
 
-| Variable | Purpose |
-| --- | --- |
-| `QDRANT_URL` | Qdrant cluster URL |
-| `QDRANT_API_KEY` | Qdrant API key |
+| Variable | Purpose | YAML equivalent |
+| --- | --- | --- |
+| `QDRANT_API_KEY` | Qdrant API key (**secret** — keep it out of version control) | none (env-only by design) |
+| `QDRANT_URL` | Qdrant cluster gRPC URL; overrides `qdrant.url` if set | `qdrant.url` |
+
+If your `indexer.yaml` contains `qdrant.url` it is safe to commit (the URL is not a secret); the key never lives there.
 
 ## Footgun: unknown keys are silently ignored
 

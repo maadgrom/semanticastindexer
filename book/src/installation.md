@@ -130,15 +130,16 @@ Then run the one-command setup script to register the MCP server:
 
 ## Security
 
-- Credentials are read only from the `QDRANT_URL` / `QDRANT_API_KEY` environment variables —
-  never commit them.
+- The Qdrant **API key** is read only from the `QDRANT_API_KEY` environment variable (a
+  secret — never commit it). The cluster URL can be set in `indexer.yaml` (`qdrant.url`)
+  or via `QDRANT_URL`.
 - If an API key is ever exposed, **rotate it** in the cluster's *API Keys* tab.
 - Add `target/` to `.gitignore` (build artifact).
 - The MCP server is **read-only by default**; the write tool (`sai_refresh`) requires
   `--allow-write`.
 
 See [security and privacy](operations/security.md) for the full threat model and the
-[environment variables](reference/environment.md) reference for every credential SAI reads.
+[environment variables](reference/configuration.md#environment-variables) reference for every credential SAI reads.
 
 ## Uninstall
 

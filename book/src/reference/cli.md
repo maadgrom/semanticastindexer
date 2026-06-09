@@ -2,7 +2,7 @@
 
 The `semanticastindexer` (SAI) binary is a single CLI with an optional subcommand. With **no subcommand** it runs a full index of `--root`; subcommands cover storage maintenance (`flush`), incremental re-indexing (`sync`), similarity search (`similar`, `duplicates`), and the MCP server (`mcp`).
 
-Run the binary from the **target project's repo root** so stored payload paths stay project-relative (or point `--root` at the project's source dir). Connection settings for the Qdrant backend are read from the environment, never hard-coded — see [environment variables](../reference/environment.md) (`QDRANT_URL`, `QDRANT_API_KEY`). Persistent configuration lives in `indexer.yaml`; see the [configuration reference](../reference/configuration.md) for every key.
+Run the binary from the **target project's repo root** so stored payload paths stay project-relative (or point `--root` at the project's source dir). Connection settings for the Qdrant backend are read from the environment, never hard-coded — see [environment variables](../reference/configuration.md#environment-variables) (`QDRANT_URL`, `QDRANT_API_KEY`). Persistent configuration lives in `indexer.yaml`; see the [configuration reference](../reference/configuration.md) for every key.
 
 ## Synopsis
 
@@ -260,5 +260,5 @@ done at <git-sha>[, dirty] in <seconds>s
 ## See also
 
 - [Configuration reference](../reference/configuration.md) — every `indexer.yaml` key.
-- [Environment variables](../reference/environment.md) — `QDRANT_URL`, `QDRANT_API_KEY`.
+- [Environment variables](../reference/configuration.md#environment-variables) — `QDRANT_URL`, `QDRANT_API_KEY`.
 - [Glossary](../concepts/glossary.md) — backend, embedder, chunker, and marker terms.

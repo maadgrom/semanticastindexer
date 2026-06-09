@@ -30,7 +30,6 @@
 - [Output schemas](reference/output-schemas.md)
 - [Backends and embedders](reference/backends-and-embedders.md)
 - [Chunking](reference/chunking.md)
-- [Environment variables](reference/environment.md)
 
 # Integrations
 

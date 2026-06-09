@@ -41,10 +41,18 @@ pub struct QdrantBackend {
 }
 
 impl QdrantBackend {
-    /// Build a Qdrant client from QDRANT_URL / QDRANT_API_KEY.
+    /// Build a Qdrant client. The cluster URL comes from the `QDRANT_URL` env var (which
+    /// wins) or `qdrant.url` in `indexer.yaml`. The API key is a SECRET and is read ONLY
+    /// from `QDRANT_API_KEY` in the environment (never from YAML).
     pub fn connect(plan: &Plan) -> Result<Self> {
         let url = std::env::var("QDRANT_URL")
-            .context("set QDRANT_URL to your cluster gRPC endpoint, e.g. https://<id>.<region>.aws.cloud.qdrant.io:6334")?;
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| plan.qdrant_url.clone())
+            .context(
+                "set the Qdrant URL via the QDRANT_URL env var or `qdrant.url` in indexer.yaml, \
+                 e.g. https://<id>.<region>.aws.cloud.qdrant.io:6334",
+            )?;
         let mut builder = Qdrant::from_url(&url);
         match std::env::var("QDRANT_API_KEY") {
             Ok(key) if !key.is_empty() => builder = builder.api_key(key),

@@ -125,7 +125,7 @@ Other practical measures:
 
 - **Sync deliberately.** Because each sync rebuilds the whole HNSW index, batch your changes and sync once rather than after every edit. See [Keeping in sync](../guides/keeping-in-sync.md).
 - **Skip generated and opt-out code.** Generated files and `sai-noindexing` spans are dropped before embedding, which keeps the index focused and smaller. See [Opt-out markers](../guides/opt-out-markers.md).
-- **Reuse the model cache.** Set the model cache directory so the model is downloaded once and reused offline across runs and CI. See [CI/CD](../guides/ci-cd.md) and [Environment](../reference/environment.md).
+- **Reuse the model cache.** Set the model cache directory so the model is downloaded once and reused offline across runs and CI. See [CI/CD](../guides/ci-cd.md) and [Environment](../reference/configuration.md#environment-variables).
 
 ## What is not measured
 

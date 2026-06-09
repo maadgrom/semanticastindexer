@@ -36,8 +36,9 @@ semanticastindexer sync --silent
 
 ## Passing Qdrant credentials as secrets
 
-When you target the Qdrant backend, credentials are read **only** from the environment
-— never from a flag or config file. Set them once and never commit them:
+When you target the Qdrant backend, the **API key** is read **only** from the environment
+(it is a secret); the cluster **URL** can come from `qdrant.url` in `indexer.yaml` or the
+`QDRANT_URL` env var. In CI the simplest is to pass both as secrets and never commit the key:
 
 | Variable | Value |
 | --- | --- |
@@ -53,8 +54,8 @@ env:
 ```
 
 If a key is ever exposed, rotate it in the cluster's *API Keys* tab. See
-[reference/environment.md](../reference/environment.md) for the full list of variables
-SAI reads.
+[Configuration → Environment variables](../reference/configuration.md#environment-variables) for how
+the URL and key are resolved.
 
 ## Sync on every push (Qdrant backend)
 
@@ -207,5 +208,5 @@ job that only searches or reports duplicates can never mutate the collection. Se
 ## See also
 
 - [Keeping in sync](./keeping-in-sync.md) — `sync`, git hooks, and revision ranges.
-- [Environment reference](../reference/environment.md) — `QDRANT_URL`, `QDRANT_API_KEY`, and friends.
+- [Environment reference](../reference/configuration.md#environment-variables) — `QDRANT_URL`, `QDRANT_API_KEY`, and friends.
 - [Troubleshooting](../operations/troubleshooting.md) — what to do when a CI run errors out.

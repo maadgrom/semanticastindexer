@@ -6,9 +6,8 @@ runs locally. This page covers how to set up a cluster, what `semanticastindexer
 (SAI) expects from it, and how the collection is created and validated.
 
 For the full backend matrix (qdrant vs. duckdb), see
-[../reference/backends-and-embedders.md](../reference/backends-and-embedders.md).
-For the connection variables, see
-[../reference/environment.md](../reference/environment.md).
+[backends and embedders](../reference/backends-and-embedders.md). For how the connection
+URL and API key are configured, see [Configuration → Environment variables](../reference/configuration.md#environment-variables).
 
 ## How server-side inference works
 
@@ -25,8 +24,7 @@ matching E5's asymmetric prefix scheme.
 > works against Qdrant Cloud (or another inference-enabled deployment). If you point
 > the `qdrant` backend at a vanilla local Qdrant, upserts and queries that rely on
 > the `Document` API will fail. To run fully locally, use the `duckdb` backend
-> instead — see
-> [../reference/backends-and-embedders.md](../reference/backends-and-embedders.md).
+> instead — see [backends and embedders](../reference/backends-and-embedders.md).
 
 ## Cluster requirements
 
@@ -42,29 +40,40 @@ These match SAI's expectations for the Qdrant path: the model is
 `intfloat/multilingual-e5-small`, `vector_dim` is `384`, and chunks are tokenized
 within the 512-token context window server-side.
 
-## Connection (environment only)
+## Connection
 
-Credentials are read **from the environment only** — never put them in `indexer.yaml`.
-Two variables are required:
+The cluster **URL** can live in `indexer.yaml` (`qdrant.url`) or come from the
+`QDRANT_URL` environment variable, which **overrides** the YAML value. The **API key is a
+secret** and is read **only** from `QDRANT_API_KEY` in the environment — never put it in YAML.
+
+In `indexer.yaml`:
+
+```yaml
+backend: qdrant
+qdrant:
+  url: https://<cluster-id>.<region>.aws.cloud.qdrant.io:6334   # gRPC port :6334
+```
+
+The API key always comes from the environment (optionally the URL too):
 
 ```bash
-# gRPC endpoint on port :6334
-export QDRANT_URL="https://<cluster-id>.<region>.aws.cloud.qdrant.io:6334"
 export QDRANT_API_KEY="<key from the cluster's API Keys tab>"
+# optional: supply or override the URL from the environment instead of YAML
+export QDRANT_URL="https://<cluster-id>.<region>.aws.cloud.qdrant.io:6334"
 ```
 
 Notes from the connection code:
 
-- `QDRANT_URL` is **required**. If it is unset, SAI errors with a message telling
-  you to set it to your cluster gRPC endpoint
+- A URL is **required**: set `qdrant.url` or `QDRANT_URL`. If neither is set, SAI errors
+  telling you to provide the cluster gRPC endpoint
   (`https://<id>.<region>.aws.cloud.qdrant.io:6334`).
 - Use the **gRPC port `:6334`**, not the REST port.
-- If `QDRANT_API_KEY` is unset (or empty), SAI prints a warning and proceeds —
-  Qdrant Cloud will then reject the request, so set the key.
+- If `QDRANT_API_KEY` is unset (or empty), SAI prints a warning and proceeds — Qdrant
+  Cloud will then reject the request, so set the key.
 
 Select the backend in `indexer.yaml` (`backend: qdrant`) or override per run with
-`--backend qdrant`. See [../reference/configuration.md](../reference/configuration.md)
-and [../reference/cli.md](../reference/cli.md).
+`--backend qdrant`. See the [configuration reference](../reference/configuration.md)
+and the [CLI reference](../reference/cli.md).
 
 ## How the collection is created
 
@@ -122,6 +131,6 @@ See the [CLI reference](../reference/cli.md) for the `index` command and
 
 ## Related pages
 
-- [../reference/environment.md](../reference/environment.md) — `QDRANT_URL` / `QDRANT_API_KEY`.
-- [../reference/backends-and-embedders.md](../reference/backends-and-embedders.md) — qdrant vs. duckdb.
+- [Configuration → Environment variables](../reference/configuration.md#environment-variables) — `qdrant.url`, `QDRANT_URL`, `QDRANT_API_KEY`.
+- [Backends and embedders](../reference/backends-and-embedders.md) — qdrant vs. duckdb.
 - [../reference/configuration.md](../reference/configuration.md) — `backend`, `model`, `vector_dim`.

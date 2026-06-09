@@ -4,33 +4,34 @@ This page consolidates everything about credentials, what data leaves your machi
 capabilities the MCP server can expose. Two things drive the security model: **where
 credentials come from** and **which backend you choose**.
 
-## Credentials come only from the environment
+## The API key is a secret; the URL is not
 
-Qdrant connection details are read **only** from environment variables — never from
-`indexer.yaml` or any other config file:
+The only secret SAI uses is the Qdrant **API key**, and it is read **only** from the
+environment — never from `indexer.yaml` or any other config file. The cluster **URL** is
+not a secret and may live in YAML (`qdrant.url`) or in the environment.
 
-| Variable | Purpose |
-| -------- | ------- |
-| `QDRANT_URL` | Your Qdrant Cloud cluster URL |
-| `QDRANT_API_KEY` | The cluster API key |
+| Value | Where it comes from |
+| ----- | ------------------- |
+| `QDRANT_API_KEY` | **Environment only** (secret). There is no YAML key for it by design. |
+| Qdrant URL | `qdrant.url` in `indexer.yaml`, or the `QDRANT_URL` env var (which overrides YAML). |
 
 Rules:
 
-- **Never commit credentials.** Keep them out of YAML, `.mcp.json`, and shell history that
-  lands in version control.
-- **Rotate any exposed key.** If an API key is ever leaked, rotate it in the cluster's
+- **Never commit the API key.** Keep it out of YAML, `.mcp.json`, and shell history that
+  lands in version control. The URL is safe to commit.
+- **Rotate any exposed key.** If the API key is ever leaked, rotate it in the cluster's
   *API Keys* tab and update `QDRANT_API_KEY`.
-- These variables only matter for the **Qdrant** backend. The local DuckDB backend needs no
+- These only matter for the **Qdrant** backend. The local DuckDB backend needs no
   credentials at all.
 
 ```bash
-# Provide credentials at runtime, never in a file:
-export QDRANT_URL="https://<your-cluster>.qdrant.io"
+# The key always comes from the environment; the URL can come from YAML or here.
 export QDRANT_API_KEY="<your-key>"
+export QDRANT_URL="https://<your-cluster>.qdrant.io:6334"   # or set qdrant.url in indexer.yaml
 semanticastindexer --backend qdrant --root src --ext ts,tsx
 ```
 
-See [environment variables](../reference/environment.md) for the full list and
+See [environment variables](../reference/configuration.md#environment-variables) for the full list and
 [Qdrant Cloud](../integrations/qdrant-cloud.md) for cluster setup.
 
 ## What leaves the machine

@@ -6,7 +6,7 @@ fix. Most problems fall into one of three buckets: a first-run model download, a
 dimension/feature mismatch, or an MCP wiring issue.
 
 For deeper background see [Backends and embedders](../reference/backends-and-embedders.md),
-[Environment variables](../reference/environment.md), and [MCP clients](../integrations/mcp-clients.md).
+[Environment variables](../reference/configuration.md#environment-variables), and [MCP clients](../integrations/mcp-clients.md).
 
 ## Q: The first run hangs for a long time, or fails with no network. What is it doing?
 
@@ -128,8 +128,8 @@ on the cluster.
 **Fixes:**
 
 - Use a Qdrant Cloud cluster with Inference enabled and the embedding model present
-  (`intfloat/multilingual-e5-small`, vector size 384, context window 512). Set the
-  credentials in the environment — never in YAML:
+  (`intfloat/multilingual-e5-small`, vector size 384, context window 512). Provide the
+  API key in the environment (the URL can be `qdrant.url` in YAML or `QDRANT_URL`):
 
   ```bash
   export QDRANT_URL="https://<cluster-id>.<region>.aws.cloud.qdrant.io:6334"   # gRPC :6334
@@ -144,7 +144,7 @@ on the cluster.
   ```
 
 See [Qdrant Cloud setup](../integrations/qdrant-cloud.md) and the
-[Environment](../reference/environment.md) reference.
+[Environment](../reference/configuration.md#environment-variables) reference.
 
 ## Q: I get a "rebuild with --features ..." error. What does that mean?
 

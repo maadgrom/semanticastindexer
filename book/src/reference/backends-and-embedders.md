@@ -186,7 +186,7 @@ download fails, the error suggests exactly this:
 
 > 🔒 **Qdrant creds stay in the environment.** `QDRANT_URL` / `QDRANT_API_KEY` are read from
 > the environment, never from YAML. See
-> [Environment variables](environment.md) and
+> [Environment variables](configuration.md#environment-variables) and
 > [Security and privacy](../operations/security.md).
 
 ## Recommended model for code de-duplication
