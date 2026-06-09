@@ -6,10 +6,52 @@ This guide shows how to wire it into a pipeline — keeping the index in sync on
 push, caching the local ONNX model, running Ollama as a service, passing Qdrant
 credentials as secrets, and failing the build when new near-duplicates appear.
 
-> **The repo does not ship an indexing workflow.** The only workflow checked into this
-> project is `.github/workflows/release.yml`, which builds and publishes release
-> binaries — it does **not** index your code. The examples below are templates for
-> *your* repository, not files that already exist here.
+> **The repo does not ship an *indexing* workflow.** It ships `release.yml` (release
+> binaries) and `docker.yml` (the container image described below), but nothing that
+> indexes your code. The indexing examples below are templates for *your* repository.
+
+## Run SAI from the prebuilt container
+
+Prebuilt images are published to the GitHub Container Registry, so a job can run SAI
+without compiling it:
+
+- `ghcr.io/maadgrom/semanticastindexer:latest` — **Alpine, lean** (musl): qdrant + duckdb +
+  ollama + ast + mcp, no local ONNX embedder. Small; for the Qdrant (server-side inference)
+  and Ollama CI paths.
+- `ghcr.io/maadgrom/semanticastindexer:latest-full` — **glibc, `--features all`**: adds the
+  `ort` on-device ONNX embedder (its model downloads on first use; cache it).
+- `ghcr.io/maadgrom/semanticastindexer:latest-with-model` — the full image with the default
+  ONNX model baked in, for a network-free first run.
+
+Use it as the job container:
+
+```yaml
+jobs:
+  dedup-gate:
+    runs-on: ubuntu-latest
+    container: ghcr.io/maadgrom/semanticastindexer:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Index against Qdrant (server-side inference, no local model)
+        run: semanticastindexer --root src --ext ts,tsx --backend qdrant --silent
+        env:
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+      - name: Fail if new near-duplicates appear
+        run: semanticastindexer duplicates --backend qdrant --min-score 0.88
+```
+
+Or one-shot with `docker run` (mount the repo, pass the key as an env var):
+
+```bash
+docker run --rm -v "$PWD:/repo" -w /repo \
+  -e QDRANT_URL -e QDRANT_API_KEY \
+  ghcr.io/maadgrom/semanticastindexer:latest duplicates --backend qdrant --min-score 0.88
+```
+
+Every image bundles `git`, so `sync --since` / `--staged` work inside it. Tags: `:X.Y.Z` and
+`:latest` (releases), `:edge` (main), `:sha-<short>`, each with `-full` and `-with-model`
+companions.
 
 ## CI is non-interactive by design
 

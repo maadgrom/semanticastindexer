@@ -1,0 +1,16 @@
+# Keep the build context small: the image build only needs Cargo.* + src/ + rust-toolchain.toml.
+target/
+.git/
+book/
+docs/
+mcp-setup/
+.site/
+.index/
+*.duckdb
+.fastembed_cache/
+.model_cache/
+.env
+.playwright-mcp/
+*.png
+*.md
+.github/
