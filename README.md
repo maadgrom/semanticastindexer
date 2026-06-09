@@ -36,6 +36,14 @@ Supported ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`
 👉 **[maadgrom.github.io/semanticastindexer](https://maadgrom.github.io/semanticastindexer/)**.
 Prefer to build from source? See the [installation guide](docs/install.md).
 
+Embeds **on-device** via ONNX Runtime (no API keys) using a compact model pulled from
+Hugging Face (`jina-embeddings-v2-base-code`, 161M params, 768-dim; or `e5-small`, 118M,
+384-dim) — or point at an **Ollama** server over HTTP, which is convenient in CI/CD. See
+[embeddings](docs/install.md#embeddings).
+
+**Uninstall:** `curl -fsSL https://maadgrom.github.io/semanticastindexer/uninstall.sh | bash`
+(removes the binary, skill, and MCP config entries; see [uninstall](docs/install.md#uninstall)).
+
 ## Quickstart
 
 ```bash

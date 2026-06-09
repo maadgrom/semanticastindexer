@@ -79,8 +79,11 @@
 
   /* Nav */
   header.nav { display: flex; align-items: center; justify-content: space-between; height: 64px; }
-  .brand { display: flex; align-items: center; gap: 9px; font-family: var(--mono); font-weight: 600; letter-spacing: -0.01em; color: var(--text); }
-  .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px var(--dot-ring); }
+  .brand { display: flex; align-items: center; gap: 8px; font-family: var(--mono); color: var(--text); }
+  .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px var(--dot-ring); flex-shrink: 0; }
+  .brand .sai { font-weight: 700; letter-spacing: 0.05em; font-size: 15px; }
+  .brand .full { font-size: 11.5px; color: var(--text-faint); letter-spacing: 0.01em; }
+  .brand .full u { color: var(--text-dim); text-decoration-color: var(--accent); text-underline-offset: 2px; text-decoration-thickness: 1.5px; }
   .nav-links { display: flex; gap: 22px; font-size: 14px; }
   .nav-links a { color: var(--text-dim); }
   .nav-links a:hover { color: var(--text); text-decoration: none; }
@@ -185,6 +188,15 @@
   .step .t span { color: var(--text-dim); font-size: 14px; }
   .step .t code { font-family: var(--mono); font-size: 13px; color: var(--text); background: var(--bg-raised); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-soft); }
 
+  /* Embeddings (2-up: on-device ONNX vs Ollama server) */
+  .embed { padding: 48px 0 0; }
+  .embed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line-soft); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .embed-cell { background: var(--bg-raised); padding: 18px 20px; }
+  .embed-cell .ec-h { font-family: var(--mono); font-size: 12.5px; color: var(--accent); margin: 0 0 9px; }
+  .embed-cell p { margin: 0; font-size: 14px; color: var(--text-dim); line-height: 1.55; }
+  .embed-cell p code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .embed-cell .ec-meta { margin-top: 11px; font-size: 12.5px; }
+
   /* Footer */
   footer { margin-top: 56px; border-top: 1px solid var(--line-soft); padding: 28px 0 60px; }
   .foot-row { display: flex; flex-wrap: wrap; gap: 10px 24px; font-size: 14px; }
@@ -195,6 +207,8 @@
 
   @media (max-width: 560px) {
     .nav-links { gap: 16px; }
+    .brand .full { display: none; }
+    .embed-grid { grid-template-columns: 1fr; }
     .hero { padding: 40px 0 22px; }
     .panel { padding: 16px; }
     .copy span.lbl { display: none; }
@@ -214,7 +228,7 @@
 <div class="wrap">
 
   <header class="nav">
-    <span class="brand"><span class="dot" aria-hidden="true"></span>semanticastindexer</span>
+    <span class="brand"><span class="dot" aria-hidden="true"></span><span class="sai">SAI</span><span class="full"><u>S</u>emantic<u>A</u>st<u>I</u>ndexer</span></span>
     <nav class="nav-links">
       <a href="#install">Install</a>
       <a href="https://github.com/maadgrom/semanticastindexer">GitHub</a>
@@ -307,6 +321,22 @@
     </div>
   </section>
 
+  <section class="embed">
+    <h2 class="sec-h"># embeddings</h2>
+    <div class="embed-grid">
+      <div class="embed-cell">
+        <p class="ec-h">ort · on-device ONNX</p>
+        <p>Embeds locally with ONNX Runtime. No server, no API keys. The model is pulled from Hugging Face on first run: the code-trained <code>jina-embeddings-v2-base-code</code> (161M params, 768-dim), or <code>e5-small</code> (118M, 384-dim) as the zero-config text default.</p>
+        <p class="ec-meta"><a href="https://huggingface.co/models?pipeline_tag=feature-extraction&amp;library=onnx">Browse ONNX embedding models on Hugging Face →</a></p>
+      </div>
+      <div class="embed-cell">
+        <p class="ec-h">ollama · embedding server</p>
+        <p>Or point at an Ollama server over HTTP, local or remote. Handy in CI/CD where an embedding service already runs: pull a model (e.g. <code>mxbai-embed-large</code>), set its url, and index.</p>
+        <p class="ec-meta"><a href="https://ollama.com/search?c=embedding">Browse embedding models on Ollama →</a></p>
+      </div>
+    </div>
+  </section>
+
   <footer>
     <div class="foot-row">
       <a href="https://github.com/maadgrom/semanticastindexer/blob/main/docs/install.md">Installation</a>
@@ -316,6 +346,7 @@
       <a href="https://github.com/maadgrom/semanticastindexer/blob/main/docs/configuration.md">Configuration</a>
       <a href="https://github.com/maadgrom/semanticastindexer/blob/main/docs/cli.md">CLI</a>
       <a href="https://github.com/maadgrom/semanticastindexer/blob/main/docs/mcp-server.md">MCP server</a>
+      <a href="https://github.com/maadgrom/semanticastindexer/blob/main/docs/install.md#uninstall">Uninstall</a>
     </div>
     <p class="foot-meta"><a href="https://github.com/maadgrom/semanticastindexer/blob/main/LICENSE">MIT licensed</a>. Build from source: <code>cargo build --release --features all</code></p>
   </footer>

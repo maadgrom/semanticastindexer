@@ -43,6 +43,25 @@ path. On Windows, install the binary above, then paste the printed block into yo
 | **Ollama** | n/a (embedding backend) | Installs the binary configured with `--embedder ollama`; run `ollama serve` + `ollama pull nomic-embed-text` |
 | **Generic / manual** | your client's MCP config | Paste the printed `.mcp.json` block |
 
+## Embeddings
+
+The DuckDB backend embeds **locally** via a pluggable embedder (`embedder: ort | ollama`):
+
+- **`ort` (default) — on-device ONNX Runtime.** No server, no API keys. The model is pulled
+  from Hugging Face on first run: the code-trained
+  [`jina-embeddings-v2-base-code`](https://huggingface.co/jinaai/jina-embeddings-v2-base-code)
+  (161M params, 768-dim), or [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small)
+  (118M, 384-dim) as the zero-config text default. Swap in any
+  [ONNX embedding model on Hugging Face](https://huggingface.co/models?pipeline_tag=feature-extraction&library=onnx)
+  (set `model` + a matching `vector_dim`).
+- **`ollama` — embedding server over HTTP.** Point at a local or remote Ollama server. Handy in
+  **CI/CD**, where an embedding service often already runs: `ollama serve`,
+  `ollama pull mxbai-embed-large`, set `ollama.url` + `ollama.model`, and index. Browse
+  [embedding models on Ollama](https://ollama.com/search?c=embedding).
+
+See [backends & embedders](backends-and-embedders.md) for the full matrix and the recommended
+code model for de-duplication.
+
 ## Build from source
 
 If you prefer to build the binary yourself (or there's no release for your platform), build
@@ -76,4 +95,19 @@ Then run the [one-command setup script](mcp-server.md#one-command-setup-script):
 - Credentials are read only from `QDRANT_URL` / `QDRANT_API_KEY` — never commit them.
 - If an API key is ever exposed, **rotate it** in the cluster's *API Keys* tab.
 - Add `target/` to `.gitignore` (build artifact).
-- The MCP server is **read-only by default**; the write tool (`refresh`) requires `--allow-write`.
+- The MCP server is **read-only by default**; the write tool (`sai_refresh`) requires `--allow-write`.
+
+## Uninstall
+
+```bash
+curl -fsSL https://maadgrom.github.io/semanticastindexer/uninstall.sh | bash
+```
+
+Removes the binary (`~/.cargo/bin` / `~/.local/bin`), the Claude Code skill
+(`~/.claude/skills/semantic-code-search-mcp/`), and the `semantic-code-search` entry from
+known JSON MCP configs (Claude Desktop, Cursor, Windsurf, and `./.mcp.json`), backing each up
+to `<file>.bak`. Pass `--yes` to skip the confirmation prompt.
+
+Left untouched (delete by hand if you want them gone): per-project index files (`.index/`) and
+`indexer.yaml`, the Codex (`~/.codex/config.toml`) and Continue (`~/.continue/config.yaml`)
+entries, and any PATH line the installer added to your shell rc.
