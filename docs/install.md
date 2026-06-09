@@ -1,23 +1,34 @@
 # Installation
 
-The fastest path is the hosted **install page**, which gives a copy-paste one-liner per
-platform:
+## Quick install (per OS)
 
-👉 **[maadgrom.github.io/semanticastindexer](https://maadgrom.github.io/semanticastindexer/)**
+Downloads a prebuilt binary from the latest GitHub Release. No Rust toolchain needed.
 
 ```bash
-# Generic example — pick your platform on the page for the exact command:
-curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash -s -- --platform generic
+# macOS / Linux
+curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash
+
+# Windows (PowerShell)
+powershell -c "irm https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.ps1 | iex"
 ```
 
-`install.sh` downloads a prebuilt binary from the latest GitHub Release (no Rust toolchain
-needed), then prints the ready-to-paste MCP config for your platform (and, for Claude Code,
-installs the `semantic-code-search-mcp` skill into `~/.claude/skills/`). Supported platform
-ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`, `codex`, `hermes`,
-`ollama`, `generic`.
+Or pick your OS on the hosted install page:
+👉 **[maadgrom.github.io/semanticastindexer](https://maadgrom.github.io/semanticastindexer/)**
 
-Pass `--write` to let the script merge the config into your client's config file
-(best-effort, with a backup); omit it to just print the snippet and the exact target path.
+## Connect your coding agent
+
+Optional, the binary is a full CLI on its own. On macOS/Linux, add `--platform <id>` and
+`install.sh` wires up that client's MCP config (and, for Claude Code, installs the
+`semantic-code-search-mcp` skill into `~/.claude/skills/`):
+
+```bash
+curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash -s -- --platform cursor
+```
+
+Supported ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`, `codex`,
+`hermes`, `ollama`, `generic`. Pass `--write` to merge the config into your client's config
+file (best-effort, with a backup); omit it to just print the snippet and the exact target
+path. On Windows, install the binary above, then paste the printed block into your client.
 
 ## Per-platform config locations
 

@@ -2,12 +2,13 @@
 #
 # semanticastindexer one-line installer.
 #
-#   curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh \
-#       | bash -s -- --platform claude-code
+#   curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash
 #
 # Downloads a prebuilt binary from the latest GitHub Release (no Rust toolchain
-# required), then wires up the MCP config for your platform. By default it PRINTS the
-# config snippet and the exact file path; pass --write to merge it for JSON-based clients.
+# required). Then, unless you pass --platform/--all/--non-interactive, it ASKS which
+# coding agent(s) to connect (reading your keypress from the terminal, so it works even
+# under `curl | bash`). For JSON-based clients, pass --write to merge the config for you;
+# otherwise it prints the snippet and the exact file path.
 #
 set -euo pipefail
 
@@ -19,6 +20,7 @@ SERVER_NAME="semantic-code-search"
 RELEASE_INSTALLER="https://github.com/${OWNER}/${REPO}/releases/latest/download/${BINARY_NAME}-installer.sh"
 RAW_BASE="https://raw.githubusercontent.com/${OWNER}/${REPO}/main"
 PAGES_URL="https://${OWNER}.github.io/${REPO}/"
+ALL_AGENTS="claude-code claude-desktop cursor windsurf continue codex hermes ollama"
 
 # Colors (disabled when not a tty)
 if [ -t 1 ]; then
@@ -36,42 +38,46 @@ print_help() {
 semanticastindexer installer
 
 Usage:
-  install.sh --platform <id> [options]
+  install.sh [options]
 
-Platforms:
-  claude-code     Install binary + the semantic-code-search-mcp skill + project .mcp.json
-  claude-desktop  Binary + claude_desktop_config.json MCP entry
-  cursor          Binary + ~/.cursor/mcp.json
-  windsurf        Binary + ~/.codeium/windsurf/mcp_config.json
-  continue        Binary + ~/.continue/config.yaml MCP entry
-  codex           Binary + ~/.codex/config.toml [mcp_servers.*]
-  hermes          Binary + generic MCP JSON snippet (paste into Hermes's MCP config)
-  ollama          Binary configured for the local Ollama embedder (not an MCP client)
-  generic         Binary + print the canonical .mcp.json block
+By default the binary is installed, then you are asked which coding agent(s) to connect.
 
-Options:
-  --platform <id>      Target platform (default: generic)
+Agent selection (skip the prompt):
+  --platform <id>      Connect one client non-interactively
+  --all                Connect every supported client
+  --non-interactive    Don't prompt; just install the binary + print a generic MCP block
+
+Supported platform ids:
+  claude-code  claude-desktop  cursor  windsurf  continue  codex  hermes  ollama  generic
+
+Other options:
   --collection <name>  Collection name (default: source_code)
-  --embedder <id>      ort | ollama (default: ort; 'ollama' platform forces ollama)
+  --embedder <id>      ort | ollama (default: ort; the 'ollama' client forces ollama)
   --write              Merge config into the client's file (JSON clients only; best-effort, backs up)
   --skip-binary        Don't install the binary (just emit config)
   --help, -h           Show this help
 
 Examples:
-  curl -fsSL ${PAGES_URL}install.sh | bash -s -- --platform claude-code
-  curl -fsSL ${PAGES_URL}install.sh | bash -s -- --platform cursor --write
+  curl -fsSL ${PAGES_URL}install.sh | bash                              # install + interactive picker
+  curl -fsSL ${PAGES_URL}install.sh | bash -s -- --platform claude-code # one client
+  curl -fsSL ${PAGES_URL}install.sh | bash -s -- --all --write          # every client, merged
 EOF
 }
 
 # --- Args ---
-PLATFORM="generic"
+PLATFORM=""
+PLATFORM_SET=false
+ALL=false
+NON_INTERACTIVE=false
 COLLECTION="source_code"
 EMBEDDER="ort"
 WRITE=false
 SKIP_BINARY=false
 while [ $# -gt 0 ]; do
     case "$1" in
-        --platform)   PLATFORM="${2:-}"; shift 2 ;;
+        --platform)   PLATFORM="${2:-}"; PLATFORM_SET=true; shift 2 ;;
+        --all)        ALL=true; shift ;;
+        --non-interactive) NON_INTERACTIVE=true; shift ;;
         --collection) COLLECTION="${2:-}"; shift 2 ;;
         --embedder)   EMBEDDER="${2:-}"; shift 2 ;;
         --write)      WRITE=true; shift ;;
@@ -81,7 +87,6 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ "$PLATFORM" = "ollama" ] && EMBEDDER="ollama"
 PROJECT_DIR="$(pwd)"
 
 # --- Install the prebuilt binary via the cargo-dist release installer ---
@@ -113,22 +118,19 @@ resolve_binary() {
     for c in "${candidates[@]}"; do
         if [ -n "$c" ] && [ -x "$c" ]; then printf '%s' "$c"; return; fi
     done
-    # Not found yet (PATH not refreshed in this shell) — emit the most likely path.
     printf '%s' "$HOME/.cargo/bin/$BINARY_NAME"
 }
 
-# --- Config snippet builders ---
-mcp_args_json() {
-    printf '["mcp", "--backend", "duckdb", "--embedder", "%s", "--collection", "%s"]' "$EMBEDDER" "$COLLECTION"
-}
+# --- Config snippet builders ($1=binary path, $2=embedder) ---
+mcp_args_json() { printf '["mcp", "--backend", "duckdb", "--embedder", "%s", "--collection", "%s"]' "$1" "$COLLECTION"; }
 
-json_snippet() { # $1 = binary path
+json_snippet() {
     cat <<EOF
 {
   "mcpServers": {
     "${SERVER_NAME}": {
       "command": "$1",
-      "args": $(mcp_args_json),
+      "args": $(mcp_args_json "$2"),
       "cwd": "${PROJECT_DIR}"
     }
   }
@@ -136,36 +138,37 @@ json_snippet() { # $1 = binary path
 EOF
 }
 
-toml_snippet() { # $1 = binary path
+toml_snippet() {
     cat <<EOF
 [mcp_servers.${SERVER_NAME}]
 command = "$1"
-args = ["mcp", "--backend", "duckdb", "--embedder", "${EMBEDDER}", "--collection", "${COLLECTION}"]
+args = ["mcp", "--backend", "duckdb", "--embedder", "$2", "--collection", "${COLLECTION}"]
 cwd = "${PROJECT_DIR}"
 EOF
 }
 
-yaml_snippet() { # $1 = binary path
+yaml_snippet() {
     cat <<EOF
 mcpServers:
   - name: ${SERVER_NAME}
     command: "$1"
-    args: ["mcp", "--backend", "duckdb", "--embedder", "${EMBEDDER}", "--collection", "${COLLECTION}"]
+    args: ["mcp", "--backend", "duckdb", "--embedder", "$2", "--collection", "${COLLECTION}"]
     cwd: "${PROJECT_DIR}"
 EOF
 }
 
 # Best-effort merge of the JSON snippet into an existing JSON config (python3); else print.
-write_json_config() { # $1 = target path, $2 = binary path
-    local target="$1" bin="$2"
+# $1 = target path, $2 = binary path, $3 = embedder
+write_json_config() {
+    local target="$1" bin="$2" emb="$3"
     if ! command -v python3 >/dev/null 2>&1; then
         warn "python3 not found — printing snippet instead of merging."
-        print_block "$target" "$(json_snippet "$bin")"
+        print_block "$target" "$(json_snippet "$bin" "$emb")"
         return
     fi
     mkdir -p "$(dirname "$target")"
     [ -f "$target" ] && cp "$target" "${target}.bak" && log "Backed up existing config to ${target}.bak"
-    SERVER_NAME="$SERVER_NAME" BIN="$bin" EMBEDDER="$EMBEDDER" COLLECTION="$COLLECTION" CWD="$PROJECT_DIR" \
+    SERVER_NAME="$SERVER_NAME" BIN="$bin" EMBEDDER="$emb" COLLECTION="$COLLECTION" CWD="$PROJECT_DIR" \
     python3 - "$target" <<'PY'
 import json, os, sys
 target = sys.argv[1]
@@ -196,14 +199,13 @@ print_block() { # $1 = where it goes, $2 = content
     echo "----------------------------------------------------------------------"
 }
 
-# Install the Claude Code skill into ~/.claude/skills/
 install_claude_skill() {
     local skill_dir="$HOME/.claude/skills/semantic-code-search-mcp"
     mkdir -p "$skill_dir"
     if curl -fsSL "${RAW_BASE}/mcp-setup/SKILL.md" -o "${skill_dir}/SKILL.md"; then
         success "Installed skill → ${skill_dir}/SKILL.md"
     else
-        warn "Could not download SKILL.md (offline / no release branch?). Skipping skill file."
+        warn "Could not download SKILL.md (offline?). Skipping skill file."
     fi
 }
 
@@ -215,56 +217,109 @@ desktop_config_path() {
     esac
 }
 
+# Wire up one client. $1 = platform id, $2 = binary path.
+configure_platform() {
+    local id="$1" bin="$2"
+    local emb="$EMBEDDER"; [ "$id" = "ollama" ] && emb="ollama"
+    printf '\n%b• %s%b\n' "$BOLD" "$id" "$NC"
+    case "$id" in
+        claude-code)
+            install_claude_skill
+            if [ "$WRITE" = true ]; then write_json_config "${PROJECT_DIR}/.mcp.json" "$bin" "$emb"
+            else print_block "${PROJECT_DIR}/.mcp.json (in the project you want to search)" "$(json_snippet "$bin" "$emb")"; fi ;;
+        claude-desktop)
+            local p; p="$(desktop_config_path)"
+            if [ "$WRITE" = true ]; then write_json_config "$p" "$bin" "$emb"; else print_block "$p" "$(json_snippet "$bin" "$emb")"; fi ;;
+        cursor)
+            if [ "$WRITE" = true ]; then write_json_config "$HOME/.cursor/mcp.json" "$bin" "$emb"; else print_block "$HOME/.cursor/mcp.json" "$(json_snippet "$bin" "$emb")"; fi ;;
+        windsurf)
+            if [ "$WRITE" = true ]; then write_json_config "$HOME/.codeium/windsurf/mcp_config.json" "$bin" "$emb"; else print_block "$HOME/.codeium/windsurf/mcp_config.json" "$(json_snippet "$bin" "$emb")"; fi ;;
+        continue)
+            print_block "$HOME/.continue/config.yaml" "$(yaml_snippet "$bin" "$emb")"
+            [ "$WRITE" = true ] && warn "--write supports JSON clients only; paste the YAML above into Continue's config." ;;
+        codex)
+            print_block "$HOME/.codex/config.toml" "$(toml_snippet "$bin" "$emb")"
+            [ "$WRITE" = true ] && warn "--write supports JSON clients only; paste the TOML above into ~/.codex/config.toml." ;;
+        hermes)
+            warn "Hermes config location is client-specific — paste this generic MCP block into its MCP config."
+            print_block "your Hermes MCP config" "$(json_snippet "$bin" "$emb")" ;;
+        ollama)
+            warn "Ollama is the embedding backend, not an MCP client. Make sure it is running:"
+            echo "    ollama serve"
+            echo "    ollama pull nomic-embed-text"
+            print_block "your MCP client config (uses --embedder ollama)" "$(json_snippet "$bin" "$emb")" ;;
+        generic)
+            print_block "your MCP client config" "$(json_snippet "$bin" "$emb")" ;;
+        *)
+            warn "Unknown platform '$id' — skipping." ;;
+    esac
+    return 0
+}
+
+# Interactive multi-select, reading from the controlling terminal (works under curl | bash).
+# Echoes the chosen space-separated platform ids (empty = skip).
+prompt_agents() {
+    local choice
+    {
+        echo ""
+        echo "Which coding agent(s) should I connect? (the binary works as a CLI regardless)"
+        echo ""
+        echo "   1) Claude Code       4) Windsurf        7) Hermes"
+        echo "   2) Claude Desktop    5) Continue.dev    8) Ollama"
+        echo "   3) Cursor            6) Codex CLI       9) Generic / manual"
+        echo ""
+        printf "Enter numbers (e.g. 1 3), 'all', or press Enter to skip: "
+    } >/dev/tty
+    read -r choice </dev/tty || choice=""
+
+    case "$choice" in
+        ""|n|N|no|none|skip) printf '' ; return ;;
+        all|a|A|ALL) printf '%s' "$ALL_AGENTS" ; return ;;
+    esac
+
+    local out=""
+    for tok in $choice; do
+        case "$tok" in
+            1) out="$out claude-code" ;;
+            2) out="$out claude-desktop" ;;
+            3) out="$out cursor" ;;
+            4) out="$out windsurf" ;;
+            5) out="$out continue" ;;
+            6) out="$out codex" ;;
+            7) out="$out hermes" ;;
+            8) out="$out ollama" ;;
+            9) out="$out generic" ;;
+            *) printf "Ignoring unknown choice: %s\n" "$tok" >/dev/tty ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 # --- Main ---
 main() {
-    printf '\n%bsemanticastindexer%b — installing for platform: %b%s%b\n\n' "$BOLD" "$NC" "$BOLD" "$PLATFORM" "$NC"
+    printf '\n%bsemanticastindexer installer%b\n\n' "$BOLD" "$NC"
     install_binary
     local BIN; BIN="$(resolve_binary)"
     log "Binary: $BIN"
 
-    case "$PLATFORM" in
-        claude-code)
-            install_claude_skill
-            if [ "$WRITE" = true ]; then
-                write_json_config "${PROJECT_DIR}/.mcp.json" "$BIN"
-            else
-                print_block "${PROJECT_DIR}/.mcp.json (in the project you want to search)" "$(json_snippet "$BIN")"
-            fi
-            ;;
-        claude-desktop)
-            local p; p="$(desktop_config_path)"
-            if [ "$WRITE" = true ]; then write_json_config "$p" "$BIN"; else print_block "$p" "$(json_snippet "$BIN")"; fi
-            ;;
-        cursor)
-            if [ "$WRITE" = true ]; then write_json_config "$HOME/.cursor/mcp.json" "$BIN"; else print_block "$HOME/.cursor/mcp.json" "$(json_snippet "$BIN")"; fi
-            ;;
-        windsurf)
-            if [ "$WRITE" = true ]; then write_json_config "$HOME/.codeium/windsurf/mcp_config.json" "$BIN"; else print_block "$HOME/.codeium/windsurf/mcp_config.json" "$(json_snippet "$BIN")"; fi
-            ;;
-        continue)
-            print_block "$HOME/.continue/config.yaml" "$(yaml_snippet "$BIN")"
-            [ "$WRITE" = true ] && warn "--write supports JSON clients only; paste the YAML above into Continue's config."
-            ;;
-        codex)
-            print_block "$HOME/.codex/config.toml" "$(toml_snippet "$BIN")"
-            [ "$WRITE" = true ] && warn "--write supports JSON clients only; paste the TOML above into ~/.codex/config.toml."
-            ;;
-        hermes)
-            warn "Hermes config location is client-specific — paste this generic MCP block into its MCP config."
-            print_block "your Hermes MCP config" "$(json_snippet "$BIN")"
-            ;;
-        ollama)
-            success "Configured for the local Ollama embedder."
-            warn "Ollama is the embedding backend, not an MCP client. Make sure Ollama is running:"
-            echo "    ollama serve"
-            echo "    ollama pull nomic-embed-text"
-            print_block "your MCP client config (uses --embedder ollama)" "$(json_snippet "$BIN")"
-            ;;
-        generic|*)
-            [ "$PLATFORM" != "generic" ] && warn "Unknown platform '$PLATFORM' — falling back to generic."
-            print_block "your MCP client config" "$(json_snippet "$BIN")"
-            ;;
-    esac
+    # Decide which clients to wire up.
+    local targets=""
+    if [ "$PLATFORM_SET" = true ]; then
+        targets="$PLATFORM"
+    elif [ "$ALL" = true ]; then
+        targets="$ALL_AGENTS"
+    elif [ "$NON_INTERACTIVE" = true ] || [ ! -r /dev/tty ]; then
+        targets="generic"
+    else
+        targets="$(prompt_agents)"
+    fi
+
+    if [ -z "$targets" ]; then
+        log "No client selected. The binary is installed; re-run with --platform <id> or --all to wire one up."
+    else
+        local id
+        for id in $targets; do configure_platform "$id" "$BIN"; done
+    fi
 
     echo
     success "Done. Next steps:"

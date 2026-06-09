@@ -14,18 +14,27 @@ collection?" in plain English — or surface the functions that are near-copies 
 
 ## Install
 
-The fastest path is the hosted install page — pick your platform, copy one line:
-
-👉 **[maadgrom.github.io/semanticastindexer](https://maadgrom.github.io/semanticastindexer/)**
+One line, no Rust toolchain required (downloads a prebuilt binary):
 
 ```bash
-# Example (the page gives the exact per-platform command):
+# macOS / Linux
+curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash
+
+# Windows (PowerShell)
+powershell -c "irm https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.ps1 | iex"
+```
+
+Then connect your coding agent (optional, the binary is a full CLI on its own). On
+macOS/Linux, add `--platform <id>` and the installer wires up that client's MCP config:
+
+```bash
 curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash -s -- --platform claude-code
 ```
 
-`install.sh` downloads a prebuilt binary (no Rust needed) and wires up the MCP config for
-your platform — Claude Code, Claude Desktop, Cursor, Windsurf, Continue.dev, Codex CLI, and
-more. Prefer to build from source? See the [installation guide](docs/install.md).
+Supported ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`, `codex`,
+`hermes`, `ollama`, `generic`. Or pick yours on the install page:
+👉 **[maadgrom.github.io/semanticastindexer](https://maadgrom.github.io/semanticastindexer/)**.
+Prefer to build from source? See the [installation guide](docs/install.md).
 
 ## Quickstart
 
