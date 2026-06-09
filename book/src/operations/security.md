@@ -46,7 +46,7 @@ inference and storage.
 | **`duckdb` + `ollama`** | Your code chunks are sent over HTTP to the **Ollama server you point at**. A local server (`ollama serve` on your box) means nothing leaves the machine; a remote server means chunks go to that host. Plus the model pull on whichever host runs Ollama. |
 | **`qdrant`** | Your code **text** is sent to **Qdrant Cloud**, which performs the embedding (server-side inference) and stores both the text and the vectors. |
 
-In short: choose `duckdb` + `ort` for a fully offline, nothing-leaves-the-machine setup; use
+Choose `duckdb` + `ort` for a fully offline, nothing-leaves-the-machine setup; use
 `duckdb` + `ollama` against your own local server for the same privacy with a separate
 embedding process; and treat `qdrant` as a deliberate decision to send code to a third-party
 cloud service.

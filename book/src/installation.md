@@ -22,7 +22,7 @@ Prefer to pick your OS interactively? Use the hosted install page:
 
 On macOS/Linux the installer downloads the binary, then **asks which coding agent(s) to
 connect** (reading your keypress straight from the terminal, so the prompt works even under
-`curl | bash`). Press Enter to skip the prompt and just install the binary — it's a full CLI
+`curl | bash`). Press Enter to skip the prompt and install only the binary — it's a full CLI
 on its own. See the [CLI reference](reference/cli.md) to start indexing immediately.
 
 ## Connect your coding agent
@@ -103,7 +103,7 @@ de-duplication.
 ## Build from source
 
 If you prefer to build the binary yourself (or there's no release for your platform), build
-with **all features enabled** so every capability is present:
+with **all features enabled**:
 
 ```bash
 # Recommended — full-featured binary (everything included)

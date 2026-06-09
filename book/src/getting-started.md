@@ -153,7 +153,7 @@ Other supported ids include `claude-desktop`, `cursor`, `windsurf`, `continue`, 
 per-platform config locations.
 
 Once your agent has restarted and picked up the MCP server, ask it something that triggers a
-search. Under the hood it calls the `sai_search_code` tool — the same semantic search you ran
+search. It calls the `sai_search_code` tool — the same semantic search you ran
 in step 5:
 
 ```text

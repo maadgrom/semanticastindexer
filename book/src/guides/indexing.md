@@ -26,8 +26,7 @@ cd /path/to/your/project
 "$BIN" --root src --ext ts,tsx --collection source_code
 ```
 
-Only files whose extension appears in `--ext` are read. Both flags override `indexer.yaml`;
-CLI flags always take precedence over the config file.
+Only files whose extension appears in `--ext` are read. Both flags override `indexer.yaml`.
 
 ## Dry-run first
 

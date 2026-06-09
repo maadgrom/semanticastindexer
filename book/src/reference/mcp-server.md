@@ -145,7 +145,7 @@ numbered `next_steps` list. The first build can take several minutes (much longe
 
 **Write tool.** Re-index specific files in place: for each path it deletes that path's existing
 points, then re-chunks, re-embeds, and re-upserts the files that still exist and pass the index
-filters (extension, globs, not generated). Paths that are gone or excluded are simply removed.
+filters (extension, globs, not generated). Paths that are gone or excluded are removed.
 The whole batch runs in one bulk window (HNSW drop → per-path delete + re-embed + upsert →
 rebuild), reusing the same per-file logic as the `sync` command.
 

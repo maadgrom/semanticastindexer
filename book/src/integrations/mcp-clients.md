@@ -17,8 +17,7 @@ restart, jump to [../operations/troubleshooting.md](../operations/troubleshootin
 1. **Install the binary** ([../installation.md](../installation.md)). Note its absolute
    path — an absolute `command` path is the safest choice in every client config below.
    When built from source the binary lands at `./target/release/semanticastindexer`.
-2. **Index the project once** before starting the server, so there's an index for the
-   tools to read.
+2. **Index the project once** before starting the server.
 
 The server defaults to `--backend duckdb --embedder ollama` and is **read-only by
 default**. The snippets below pass `--embedder ort` for the fully offline ONNX embedder;
@@ -287,7 +286,7 @@ Then paste the printed block into your client's MCP config. The shape is the sam
 }
 ```
 
-Whatever the client, the rules are the same:
+The rules are the same for any client:
 
 - `command` points at the binary (absolute path is safest).
 - `args` starts with `mcp` and selects backend, embedder, and collection.

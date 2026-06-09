@@ -216,7 +216,7 @@ If your `indexer.yaml` contains `qdrant.url` it is safe to commit (the URL is no
 
 ## Footgun: unknown keys are silently ignored
 
-The `Config` struct is deserialized with all fields optional and `#[serde(default)]`, so a partial file still parses — **and unrecognized or misspelled YAML keys are silently ignored**. A typo like `skip_generated_marekr: true` or `exclude_dir:` will not raise an error; the intended setting simply never takes effect and the default is used instead. Double-check key spelling and nesting (e.g. `duckdb.path`, `similarity.top_k`) against the [Key reference](#key-reference) table above.
+The `Config` struct is deserialized with all fields optional and `#[serde(default)]`, so a partial file still parses — **and unrecognized or misspelled YAML keys are silently ignored**. A typo like `skip_generated_marekr: true` or `exclude_dir:` will not raise an error; the intended setting never takes effect and the default is used instead. Double-check key spelling and nesting (e.g. `duckdb.path`, `similarity.top_k`) against the [Key reference](#key-reference) table above.
 
 ## See also
 

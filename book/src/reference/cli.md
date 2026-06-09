@@ -205,7 +205,7 @@ semanticastindexer duplicates --min-score 0.85 --top-k 10 \
 
 Before scanning, `duplicates` checks whether the index contains **dirty-stamped** chunks (chunks recorded from an uncommitted working tree). If so:
 
-- On an **interactive TTY**, it warns and asks to proceed; the prompt **defaults to NO**, and declining aborts the scan (so you appreciate the results may reflect uncommitted work).
+- On an **interactive TTY**, it warns and asks to proceed; the prompt **defaults to NO**, and declining aborts the scan (the results may reflect uncommitted work).
 - On a **non-interactive stdin** (CI, git hooks, MCP), it prints the warning to stderr and proceeds without prompting — it never blocks.
 - With `--silent`, the dirty check is skipped entirely.
 

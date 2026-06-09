@@ -32,7 +32,7 @@ DuckDB's HNSW vector index makes per-row `INSERT` expensive (the graph is mainta
 
 This rebuild is a **real cost on large repos**: the index is rebuilt over *every stored vector*, not just the ones you changed. A full `index` pays it once. But every `sync` also wraps its deletes + upserts in `begin_bulk`/`end_bulk` — so even a sync that touches one file rebuilds the entire HNSW index at the end. On a large collection that rebuild can dominate a small sync.
 
-Two consequences worth internalizing:
+Two consequences:
 
 - **`DELETE` is cheap.** Deleting a path's rows does *not* trigger an HNSW rebuild, so `delete_by_path` needs no index teardown. The cost is the *recreate* in `end_bulk`.
 - **Sync cost scales with index size, not change size.** If syncs feel slow on a huge repo, the rebuild is the likely cause. Sync less often, or scope the index smaller (see [large monorepos](#tips-for-large-monorepos)). See [Keeping in sync](../guides/keeping-in-sync.md) for when syncs run.
@@ -129,6 +129,6 @@ Other practical measures:
 
 ## What is not measured
 
-To be explicit: SAI ships **no benchmark suite and no published throughput numbers**. The constants here — batch 32, 512-token window, all-core intra-op threads, drop-and-rebuild HNSW, Qdrant batch 32 — are real and load-bearing, but actual wall-clock time depends entirely on your hardware, model, repo size, and chunk cap. Measure on your own repo, change one variable at a time (model, `max_chunk_chars`, scope), and compare.
+SAI ships **no benchmark suite and no published throughput numbers**. The constants here — batch 32, 512-token window, all-core intra-op threads, drop-and-rebuild HNSW, Qdrant batch 32 — are real and load-bearing, but actual wall-clock time depends entirely on your hardware, model, repo size, and chunk cap. Measure on your own repo, change one variable at a time (model, `max_chunk_chars`, scope), and compare.
 
 If indexing or search is slower than expected, see [Troubleshooting](./troubleshooting.md).

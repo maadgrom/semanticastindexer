@@ -3,8 +3,7 @@
 This page is the precise, parseable contract for everything SAI returns: the
 **structured JSON** emitted by each MCP tool, and the **plain-text** lines printed
 by the CLI subcommands. Field names, nesting, and defaults are taken directly from
-the implementation (`src/mcp.rs`, `src/search.rs`, `src/main.rs`) — nothing here is
-invented. For the tools and flags that produce these results, see the
+the implementation (`src/mcp.rs`, `src/search.rs`, `src/main.rs`). For the tools and flags that produce these results, see the
 [MCP server and tools reference](./mcp-server.md) and the [CLI reference](./cli.md); for the
 meaning of terms like *chunk*, *symbol*, and *cosine similarity*, see the
 [glossary](../concepts/glossary.md).

@@ -1,7 +1,7 @@
 # Troubleshooting and FAQ
 
 This is the FAQ hub for `semanticastindexer` (SAI). Each entry pairs a symptom you'll
-actually see (an error message, an empty result, a missing tool) with the cause and the
+see (an error message, an empty result, a missing tool) with the cause and the
 fix. Most problems fall into one of three buckets: a first-run model download, a
 dimension/feature mismatch, or an MCP wiring issue.
 

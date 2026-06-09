@@ -164,8 +164,8 @@ post-commit:
 
 ## Don't block the commit
 
-Embedding takes time, and the Qdrant backend talks to the network. You do not want a `git
-commit` to stall on it. Two pieces handle that:
+Embedding takes time, and the Qdrant backend talks to the network. Two pieces keep a `git
+commit` from stalling on it:
 
 - **`&`** — background the sync so the hook returns immediately and git proceeds.
 - **`>/dev/null 2>&1`** — discard stdout and stderr so the backgrounded process does not bleed

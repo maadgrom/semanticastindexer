@@ -11,7 +11,7 @@ When you do **not** explicitly set `--chunker` (CLI) or `chunker:` (in `indexer.
 - Languages with good AST support — currently **`ts`, `tsx`, `rs`, and `go`** — **and** a binary built with `--features ast` default to the symbol-aware `ast` chunker.
 - Everything else defaults to the reliable `lines` chunker.
 
-You can always force a specific chunker:
+You can force a specific chunker:
 
 ```bash
 # Force the line-window chunker

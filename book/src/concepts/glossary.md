@@ -1,6 +1,6 @@
 # Glossary
 
-Plain-language definitions for the domain terms used across the SAI docs. Where a term has a dedicated reference page, a link is provided.
+Plain-language definitions for the domain terms used across the SAI docs. Terms with a dedicated reference page link to it.
 
 ## AST / tree-sitter
 

@@ -59,7 +59,7 @@ built-in defaults for whatever you leave out.
 
 ## Cutoffs are model-specific
 
-**The right thresholds depend on the model, so tune them per model.** A cosine of
+**Tune the thresholds per model.** A cosine of
 `0.85` does not mean the same thing across embedders: a code-trained model (e.g.
 Jina code, the default for the `ort` embedder) generally produces *lower* raw
 cosines for the same pair of snippets than a general text model like

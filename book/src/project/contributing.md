@@ -13,8 +13,7 @@ debugging. Before changing anything load-bearing, read the
   "1.85"` / `edition = "2024"`).
 - The repo ships a `rust-toolchain.toml` that pins the **stable** channel and
   installs the `rustfmt` and `clippy` components. `rustup` activates it
-  automatically when you build inside the repo, so you don't need to manage
-  toolchains by hand.
+  automatically when you build inside the repo.
 
 ```toml
 # rust-toolchain.toml
@@ -26,8 +25,8 @@ profile = "minimal"
 
 ## Build & test
 
-Always build with **`--features all`** — that is the canonical, supported
-configuration and gives you a single binary with every backend, embedder, the
+Always build with **`--features all`** — the canonical, supported
+configuration. It gives you a single binary with every backend, embedder, the
 AST chunker, and the MCP server.
 
 ```bash

@@ -8,8 +8,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 For downloadable builds and per-version release notes, see the
 [GitHub releases page](https://github.com/maadgrom/semanticastindexer/releases).
 
-The entries below are reproduced from the in-repo changelog for convenience; the
-file in the repository is always the source of truth.
+The entries below are reproduced from the in-repo changelog; the file in the
+repository is always the source of truth.
 
 ## [0.1.0] - 2026-05-31
 
@@ -72,7 +72,7 @@ linger alongside the new ones:
     --collection source_code --recreate
 ```
 
-This migration is a one-time step per existing collection. After the re-index, point IDs are
+After the re-index, point IDs are
 stable across subsequent `sync` runs, so incremental updates correctly replace the points for
 changed files. See [`../reference/cli.md`](../reference/cli.md) for `flush`, `sync`, and
 `--recreate`.

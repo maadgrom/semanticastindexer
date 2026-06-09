@@ -36,8 +36,7 @@ Set up a Qdrant Cloud cluster with:
 - Vector size **384**.
 - Context window **512 tokens**.
 
-These match SAI's expectations for the Qdrant path: the model is
-`intfloat/multilingual-e5-small`, `vector_dim` is `384`, and chunks are tokenized
+These match SAI's expectations for the Qdrant path; chunks are tokenized
 within the 512-token context window server-side.
 
 ## Connection

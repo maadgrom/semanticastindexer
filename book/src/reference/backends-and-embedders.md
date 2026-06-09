@@ -2,8 +2,7 @@
 
 SAI (`semanticastindexer`) has a pluggable vector **backend**, and — for the DuckDB
 backend — a pluggable **embedder**. The backend decides where vectors are stored and how
-nearest-neighbour search runs; the embedder decides how text is turned into vectors. This
-page documents both layers exactly as the code implements them.
+nearest-neighbour search runs; the embedder decides how text is turned into vectors.
 
 The same five MCP tools and the same CLI subcommands work over either backend:
 `sai_search_code`, `sai_find_similar`, `sai_find_duplicates`, `sai_index_status`,

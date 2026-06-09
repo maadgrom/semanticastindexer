@@ -92,7 +92,7 @@ honor_noduplicate_marker: true    # respect sai-noduplicate comments
 
 Set `honor_noindex_marker: false` to index even chunks containing `sai-noindexing`, and
 `honor_noduplicate_marker: false` to include `sai-noduplicate` chunks in duplicate
-clustering. When a toggle is off, that marker is simply ignored — the other toggle is
+clustering. When a toggle is off, that marker is ignored — the other toggle is
 unaffected. See [`configuration.md`](../reference/configuration.md) for where these keys
 live in `indexer.yaml`.
 

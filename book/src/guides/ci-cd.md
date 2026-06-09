@@ -88,7 +88,7 @@ jobs:
 ```
 
 `sync` deletes each changed file's old points and uploads the current content fresh;
-files that are gone (deleted or now excluded) are simply removed from the collection.
+files that are gone (deleted or now excluded) are removed from the collection.
 For the full mechanics — staged diffs (`--staged`), explicit `--file` lists, and how it
 pairs with git hooks — see [keeping in sync](./keeping-in-sync.md).
 

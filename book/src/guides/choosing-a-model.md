@@ -74,7 +74,7 @@ you need a **fresh index**: delete `.index/code.duckdb` or run with `--recreate`
 
 ### Default (offline ONNX, code-trained) — recommended
 
-This is what you get with the `ort` embedder and no `model` set. Stated
+This is what you get with the `ort` embedder and no `model` set, stated
 explicitly:
 
 ```yaml

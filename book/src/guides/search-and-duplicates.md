@@ -14,7 +14,7 @@ server always agree:
 
 All three open the index **read-only**, so a search can run while an index is
 open elsewhere. The `similar` and `duplicates` subcommands need a full build
-(`--features all` is the recommended configuration) so every backend and
+(`--features all` is recommended) so every backend and
 embedder is available. The top-level `--backend` / `--embedder` / `--collection`
 / `--config` flags still apply (before or after the subcommand) and pick up the
 YAML defaults.
