@@ -197,6 +197,16 @@
   .embed-cell p code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
   .embed-cell .ec-meta { margin-top: 11px; font-size: 12.5px; }
 
+  /* One config file (annotated YAML preview) */
+  .config { padding: 48px 0 0; }
+  .config > p { font-size: 15px; color: var(--text-dim); margin: 0 0 16px; max-width: 64ch; }
+  .config > p code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .yaml { margin: 0; background: var(--bg-input); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.7; color: var(--text-dim); }
+  .yaml .k { color: var(--accent); }
+  .yaml .c { color: var(--text-faint); }
+  .config-foot { font-size: 13.5px; color: var(--text-faint); margin: 14px 0 0; max-width: 64ch; }
+  .config-foot code { color: var(--text-dim); font-family: var(--mono); }
+
   /* Footer */
   footer { margin-top: 56px; border-top: 1px solid var(--line-soft); padding: 28px 0 60px; }
   .foot-row { display: flex; flex-wrap: wrap; gap: 10px 24px; font-size: 14px; }
@@ -209,6 +219,7 @@
     .nav-links { gap: 16px; }
     .brand .full { display: none; }
     .embed-grid { grid-template-columns: 1fr; }
+    .yaml { font-size: 12px; }
     .hero { padding: 40px 0 22px; }
     .panel { padding: 16px; }
     .copy span.lbl { display: none; }
@@ -335,6 +346,27 @@
         <p class="ec-meta"><a href="https://ollama.com/search?c=embedding">Browse embedding models on Ollama →</a></p>
       </div>
     </div>
+  </section>
+
+  <section class="config">
+    <h2 class="sec-h"># one config file</h2>
+    <p>One <code>indexer.yaml</code> is the whole control surface. It picks the backend, embedder, and chunker, sets the model, and defines exactly what leaves the repo: tests, generated files, shadcn primitives, comments. The CLI and the MCP server both read it.</p>
+    <pre class="yaml"><span class="k">backend</span>: duckdb          <span class="c"># qdrant | duckdb</span>
+<span class="k">embedder</span>: ort            <span class="c"># ort (offline ONNX) | ollama</span>
+<span class="k">chunker</span>: ast             <span class="c"># lines | ast (symbol-aware)</span>
+<span class="k">collection</span>: source_code
+<span class="k">model</span>: jinaai/jina-embeddings-v2-base-code
+<span class="k">vector_dim</span>: 768
+
+<span class="k">exclude</span>:                 <span class="c"># what never leaves the repo</span>
+  - "**/*.test.*"
+  - "**/components/ui/**"
+  - "**/*.gen.*"
+<span class="k">strip_comments</span>: true
+
+<span class="k">similarity</span>:              <span class="c"># sai_find_* cutoffs, tuned per model</span>
+  <span class="k">duplicate_min_score</span>: 0.88</pre>
+    <p class="config-foot">Full reference in the <a href="https://github.com/maadgrom/semanticastindexer/blob/main/docs/configuration.md">configuration guide</a>. Opt out per function with <code>sai-noindexing</code> and <code>sai-noduplicate</code> comment markers.</p>
   </section>
 
   <footer>
