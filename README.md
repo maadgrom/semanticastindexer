@@ -34,15 +34,15 @@ curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash -s --
 Supported ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`, `codex`,
 `hermes`, `ollama`, `generic`. Or pick yours on the install page:
 👉 **[maadgrom.github.io/semanticastindexer](https://maadgrom.github.io/semanticastindexer/)**.
-Prefer to build from source? See the [installation guide](docs/install.md).
+Prefer to build from source? See the [installation guide](book/src/installation.md).
 
 Embeds **on-device** via ONNX Runtime (no API keys) using a compact model pulled from
 Hugging Face (`jina-embeddings-v2-base-code`, 161M params, 768-dim; or `e5-small`, 118M,
 384-dim) — or point at an **Ollama** server over HTTP, which is convenient in CI/CD. See
-[embeddings](docs/install.md#embeddings).
+[embeddings](book/src/installation.md#embeddings).
 
 **Uninstall:** `curl -fsSL https://maadgrom.github.io/semanticastindexer/uninstall.sh | bash`
-(removes the binary, skill, and MCP config entries; see [uninstall](docs/install.md#uninstall)).
+(removes the binary, skill, and MCP config entries; see [uninstall](book/src/installation.md#uninstall)).
 
 ## Quickstart
 
@@ -56,15 +56,19 @@ semanticastindexer duplicates                          # codebase-wide near-dupl
 
 ## Documentation
 
+📖 **Full documentation site:** <https://maadgrom.github.io/semanticastindexer/book/>
+(source in [`book/`](book/src/SUMMARY.md))
+
 | Page | What's inside |
 | ---- | ------------- |
-| [Installation](docs/install.md) | Install page, per-platform config locations, build from source |
-| [Architecture](docs/architecture.md) | The indexing pipeline, point IDs, payload shape |
-| [Backends & embedders](docs/backends-and-embedders.md) | Qdrant vs DuckDB, ort vs ollama, recommended code model |
-| [Chunking](docs/chunking.md) | `lines` vs `ast` chunkers, size caps, embedding prefixes |
-| [Configuration](docs/configuration.md) | `indexer.yaml`, opt-out markers, what's filtered out |
-| [CLI usage](docs/cli.md) | All commands, flags, `similar` / `duplicates`, git hooks |
-| [MCP server](docs/mcp-server.md) | Tools, similarity thresholds, `.mcp.json` wiring |
+| [Getting started](book/src/getting-started.md) | Install to first query to first duplicates, fully offline |
+| [Installation](book/src/installation.md) | Per-OS install, connect an agent, build from source, uninstall |
+| [How it works](book/src/concepts/how-it-works.md) | The indexing pipeline, query path, worker model, point IDs |
+| [CLI reference](book/src/reference/cli.md) | Every subcommand and flag |
+| [Configuration](book/src/reference/configuration.md) | Every `indexer.yaml` key, type, and default |
+| [MCP server & tools](book/src/reference/mcp-server.md) | All six `sai_` tools, gating, `.mcp.json` wiring |
+| [Backends & embedders](book/src/reference/backends-and-embedders.md) | Qdrant vs DuckDB, ort vs ollama, recommended code model |
+| [Troubleshooting](book/src/operations/troubleshooting.md) | First-run downloads, dimension mismatch, MCP wiring |
 
 ## Build & test
 
@@ -74,7 +78,7 @@ cargo test --release --features all
 ```
 
 The first build with `--features all` is slower (bundled DuckDB + ONNX Runtime); subsequent
-builds are incremental and fast. See [Installation → build from source](docs/install.md#build-from-source).
+builds are incremental and fast. See [Installation → build from source](book/src/installation.md#build-from-source).
 
 ## Security
 

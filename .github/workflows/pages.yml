@@ -1,0 +1,59 @@
+name: Deploy site (landing page + mdBook)
+
+# Serves the hand-built landing page at the Pages root and the mdBook docs at /book/.
+# Requires repo Settings -> Pages -> Source = "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "book/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: latest
+
+      - name: Build mdBook
+        run: mdbook build book
+
+      - name: Assemble site (landing at root, book at /book/)
+        run: |
+          mkdir -p _site/book
+          # Landing page + the install/uninstall one-liners + .nojekyll (served raw).
+          cp docs/index.html docs/install.sh docs/uninstall.sh _site/
+          cp docs/.nojekyll _site/.nojekyll
+          # Rendered mdBook under /book/.
+          cp -r book/html/. _site/book/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
