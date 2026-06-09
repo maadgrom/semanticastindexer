@@ -94,6 +94,9 @@ When the semanticastindexer MCP server is running with `--allow-setup`, the `pre
 
 ## Related Project Documentation
 
-See the main project README for deeper details on chunking strategies, similarity tuning, and advanced usage.
+- [Installation & per-platform setup](../docs/install.md)
+- [MCP server: tools, thresholds, wiring](../docs/mcp-server.md)
+- [Chunking strategies](../docs/chunking.md) and [similarity tuning](../docs/configuration.md)
+- Hosted install page: <https://maadgrom.github.io/semanticastindexer/>
 
 This skill is maintained as part of the semanticastindexer repository.
