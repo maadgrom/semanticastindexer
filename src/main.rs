@@ -53,7 +53,8 @@ use vectordbs::{Access, Backend, Hit, factory};
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    about = "Index source files into Qdrant via E5-small server-side inference (Document API)"
+    about = "Semantic code search and near-duplicate detection: index source into Qdrant Cloud or local DuckDB, query in natural language, and serve over MCP",
+    long_about = "Index source files into a vector backend (Qdrant Cloud server-side inference, or local DuckDB with on-device ONNX/Ollama embeddings) for semantic code search and near-duplicate detection. Run as a CLI or as an MCP server for AI coding agents. Configured by indexer.yaml; flags override config."
 )]
 pub struct Args {
     /// Subcommand. Omitted = full index of --root (the default).

@@ -1,0 +1,25 @@
+[book]
+title = "semanticastindexer (SAI)"
+description = "Semantic code search and near-duplicate detection. A CLI and MCP server."
+authors = ["maadgrom"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "html"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/maadgrom/semanticastindexer"
+edit-url-template = "https://github.com/maadgrom/semanticastindexer/edit/main/book/{path}"
+site-url = "/semanticastindexer/book/"
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 25
