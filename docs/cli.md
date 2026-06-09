@@ -125,6 +125,6 @@ flags still apply (before or after the subcommand) and pick up the YAML defaults
 > server-side, so `--code` against `--backend qdrant` returns a clear error. `duplicates` and
 > `similar --path/--line` work on either backend (stored vectors, no re-embed).
 
-The same logic backs the MCP `find_similar` / `find_duplicates` tools — the union-find
+The same logic backs the MCP `sai_find_similar` / `sai_find_duplicates` tools — the union-find
 clustering and the find_similar resolution live in one shared module (`src/search.rs`), used
 by both the CLI handlers and the MCP server, so there is no duplicated algorithm.

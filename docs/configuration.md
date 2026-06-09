@@ -53,8 +53,8 @@ Add language-agnostic marker comments in your source to control indexing per fun
 
 | Marker | Behavior |
 | ------ | --------- |
-| `sai-noindexing` | Skip the chunk **entirely** from indexing — never embedded or stored, so it won't appear in search, `find_similar`, or `duplicates`. |
-| `sai-noduplicate` | Include in search/`find_similar`, but exclude from near-duplicate clustering (the `duplicates` command / MCP tool). |
+| `sai-noindexing` | Skip the chunk **entirely** from indexing — never embedded or stored, so it won't appear in search, `sai_find_similar`, or `sai_find_duplicates`. |
+| `sai-noduplicate` | Include in search/`sai_find_similar`, but exclude from near-duplicate clustering (the `duplicates` command / `sai_find_duplicates` MCP tool). |
 
 **Example:**
 

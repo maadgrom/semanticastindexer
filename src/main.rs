@@ -196,12 +196,12 @@ struct SimilarArgs {
 #[cfg(feature = "mcp")]
 #[derive(clap::Args, Debug, Clone)]
 struct McpArgs {
-    /// Open the index WRITABLE and register the `refresh` tool. Without this flag the
-    /// server is read-only and `refresh` returns a clear "restart with --allow-write" error.
+    /// Open the index WRITABLE and register the `sai_refresh` tool. Without this flag the
+    /// server is read-only and `sai_refresh` returns a clear "restart with --allow-write" error.
     #[arg(long, default_value_t = false)]
     allow_write: bool,
 
-    /// Allow the `prepare_mcp_setup` tool to actually execute the mcp-setup script
+    /// Allow the `sai_prepare_mcp_setup` tool to actually execute the mcp-setup script
     /// (can trigger long builds and file modifications). Use with caution.
     #[arg(long, default_value_t = false)]
     allow_setup: bool,

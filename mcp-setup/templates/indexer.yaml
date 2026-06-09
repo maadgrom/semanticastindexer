@@ -161,7 +161,7 @@ skip_generated_marker: true
 # stay accurate. Applies to TS now and Go later.
 strip_comments: true
 
-# Similarity-search thresholds for the `find_similar` / `find_duplicates` MCP tools AND
+# Similarity-search thresholds for the `sai_find_similar` / `sai_find_duplicates` MCP tools AND
 # the `similar` / `duplicates` CLI subcommands. Resolution per knob:
 #   CLI flag / MCP tool arg  >  this config value  >  built-in default.
 # These cutoffs are MODEL-SPECIFIC (a Qwen3 cosine of 0.85 is looser than e5's 0.85), so
