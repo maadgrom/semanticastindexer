@@ -141,25 +141,38 @@
   .proof-sub code { font-family: var(--mono); font-size: 0.86em; color: var(--accent); background: var(--accent-tint); border: 1px solid var(--accent-border); padding: 1px 6px; border-radius: 5px; }
   .chat { background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
   .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line-soft); background: var(--bg-input); font-family: var(--mono); font-size: 12px; }
-  .chat-head .cmd-line { color: var(--text-dim); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .chat-head .cmd-line .prompt { color: var(--accent); }
+  .chat-head .tool-call { display: inline-flex; align-items: center; gap: 8px; color: var(--accent); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-head .tool-call .tc-mark { width: 6px; height: 6px; background: var(--accent); transform: rotate(45deg); border-radius: 1px; flex-shrink: 0; }
   .chat-head .turns { color: var(--text-faint); flex-shrink: 0; }
-  .chat-body { display: flex; flex-direction: column; gap: 14px; padding: 18px; }
-  .msg { max-width: 86%; }
-  .msg .who { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--text-faint); margin: 0 0 5px; }
-  .msg .bubble { margin: 0; border: 1px solid var(--line); border-radius: 12px; padding: 11px 14px; font-size: 14.5px; line-height: 1.5; color: var(--text-dim); }
-  .msg .bubble code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
-  .msg.agent { align-self: flex-start; }
-  .msg.agent .bubble { background: var(--bg); border-top-left-radius: 4px; }
-  .msg.you { align-self: flex-end; text-align: right; }
-  .msg.you .who { color: var(--accent); }
-  .msg.you .bubble { background: var(--accent-tint); border-color: var(--accent-border); border-top-right-radius: 4px; color: var(--text); font-weight: 500; text-align: left; }
-  .msg.verdict { align-self: stretch; max-width: 100%; }
-  .msg.verdict .who { color: var(--accent); }
-  .msg.verdict .bubble { background: var(--accent-tint); border-color: var(--accent-border); border-left: 2px solid var(--accent); color: var(--text); font-weight: 500; }
-  /* staggered reveal: the argument unfolds in sequence (skipped under reduced motion) */
-  .chat-body.reveal-on .msg { opacity: 0; transform: translateY(10px); }
-  .chat-body.reveal-on.in .msg { opacity: 1; transform: none; transition: opacity .5s ease, transform .55s cubic-bezier(0.16,1,0.3,1); transition-delay: calc(var(--i, 0) * 80ms); }
+  .chat-body { display: flex; flex-direction: column; gap: 18px; padding: 20px; }
+  .turn { display: flex; gap: 12px; max-width: 100%; }
+  .turn.cont { margin-top: -12px; }
+  .avatar { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; display: grid; place-items: center; background: var(--accent-tint); border: 1px solid var(--accent-border); }
+  .avatar::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .turn.cont .avatar { visibility: hidden; }
+  .turn .content { min-width: 0; flex: 1; }
+  .turn .name { font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--accent); margin: 2px 0 5px; }
+  .turn.cont .name { display: none; }
+  .turn .body { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--text-dim); }
+  .turn .body code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  /* user turn: right-aligned bubble, no avatar (modern-agent style) */
+  .turn.you { align-self: flex-end; max-width: 82%; }
+  .turn.you .avatar { display: none; }
+  .turn.you .content { flex: 0 1 auto; }
+  .turn.you .body { overflow-wrap: anywhere; }
+  .turn.you .name { display: none; }
+  .turn.you .body { color: var(--text); font-weight: 500; background: var(--bg-input); border: 1px solid var(--line); border-radius: 14px 14px 5px 14px; padding: 10px 14px; }
+  /* verdict: the agent's conclusion lands as an accent callout */
+  .turn.verdict .body { color: var(--text); font-weight: 500; background: var(--accent-tint); border: 1px solid var(--accent-border); border-left: 2px solid var(--accent); border-radius: 10px; padding: 11px 14px; }
+  /* thinking indicator (three pulsing dots) */
+  .thinking { display: inline-flex; align-items: center; gap: 5px; padding: 12px 14px; background: var(--bg-input); border: 1px solid var(--line); border-radius: 12px; }
+  .thinking i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); animation: think 1.4s infinite ease-in-out both; }
+  .thinking i:nth-child(2) { animation-delay: .18s; }
+  .thinking i:nth-child(3) { animation-delay: .36s; }
+  @keyframes think { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+  /* staggered reveal: the exchange unfolds in sequence (skipped under reduced motion) */
+  .chat-body.reveal-on .turn { opacity: 0; transform: translateY(10px); }
+  .chat-body.reveal-on.in .turn { opacity: 1; transform: none; transition: opacity .5s ease, transform .55s cubic-bezier(0.16,1,0.3,1); transition-delay: calc(var(--i, 0) * 80ms); }
   .proof-foot { margin: 18px 0 0; font-size: 14px; color: var(--text-dim); }
   .proof-foot strong { color: var(--text); font-weight: 600; }
 
@@ -187,11 +200,13 @@
     .copy span.lbl { display: none; }
     .copy { padding: 0 13px; }
     .chat-head { font-size: 11px; }
-    .chat-body { padding: 14px; gap: 12px; }
-    .msg { max-width: 94%; }
+    .chat-body { padding: 14px; gap: 16px; }
+    .turn.you { max-width: 90%; }
+    .avatar { width: 26px; height: 26px; }
   }
   @media (prefers-reduced-motion: reduce) {
-    * { transition: none !important; }
+    * { transition: none !important; animation: none !important; }
+    .thinking i { opacity: .55; }
   }
 </style>
 </head>
@@ -238,22 +253,42 @@
   <section class="proof">
     <h2 class="sec-h"># proof, not vibes</h2>
     <h3 class="proof-title">Your agent will argue. The index won't.</h3>
-    <p class="proof-sub">Cosine similarity is not an opinion. <code>find_duplicates</code> hands you the file and line, so "that delegation is intentional" turns into "fix the four copies." From a real deslop session:</p>
+    <p class="proof-sub">Cosine similarity is not an opinion. <code>sai_find_duplicates</code> hands you the file and line, so "that delegation is intentional" turns into "fix the four copies." From a real deslop session:</p>
     <div class="chat" aria-label="Transcript: an agent triaging duplicate-detector findings">
       <div class="chat-head">
-        <span class="cmd-line"><span class="prompt">$ </span>semanticastindexer duplicates</span>
-        <span class="turns">49 clusters found</span>
+        <span class="tool-call"><span class="tc-mark" aria-hidden="true"></span>sai_find_duplicates</span>
+        <span class="turns">49 clusters</span>
       </div>
       <div class="chat-body">
-        <div class="msg agent" style="--i:0"><span class="who">agent</span><p class="bubble">Most of these 49 clusters are false positives. Intentional repository delegation, one-line constructors, layer-appropriate test helpers. I'll fix only genuine copy-paste.</p></div>
-        <div class="msg you" style="--i:1"><span class="who">you</span><p class="bubble">I don't believe you triaged them all. Give me a table.</p></div>
-        <div class="msg agent" style="--i:2"><span class="who">agent</span><p class="bubble">Ran a 9-agent parallel audit, opened the actual code at every cluster. 3 fixed, 7 real but deferred, 39 false positives.</p></div>
-        <div class="msg you" style="--i:3"><span class="who">you</span><p class="bubble">So you can say this is not slop?</p></div>
-        <div class="msg agent" style="--i:4"><span class="who">agent</span><p class="bubble">Fair challenge. Let me read the lines instead of trusting my own summary.</p></div>
-        <div class="msg agent verdict" style="--i:5"><span class="who">agent</span><p class="bubble">No. I was wrong. It is slop. The auth-guard, try, catch envelope is duplicated verbatim across four project actions.</p></div>
+        <div class="turn agent" style="--i:0">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content"><p class="name">agent</p><p class="body">Most of these 49 clusters are false positives. Intentional repository delegation, one-line constructors, layer-appropriate test helpers. I'll fix only genuine copy-paste.</p></div>
+        </div>
+        <div class="turn you" style="--i:1">
+          <div class="content"><p class="body">I don't believe you triaged them all. Give me a table.</p></div>
+        </div>
+        <div class="turn agent" style="--i:2">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content"><p class="name">agent</p><p class="body">Ran a 9-agent parallel audit, opened the actual code at every cluster. 3 fixed, 7 real but deferred, 39 false positives.</p></div>
+        </div>
+        <div class="turn you" style="--i:3">
+          <div class="content"><p class="body">So you can say this is not slop?</p></div>
+        </div>
+        <div class="turn agent" style="--i:4">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content"><p class="name">agent</p><p class="body">Fair challenge. Let me read the lines instead of trusting my own summary.</p></div>
+        </div>
+        <div class="turn agent cont" style="--i:5">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content"><div class="thinking" role="status" aria-label="agent is reading the code"><i></i><i></i><i></i></div></div>
+        </div>
+        <div class="turn agent cont verdict" style="--i:6">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content"><p class="body">No. I was wrong. It is slop. The auth-guard, try, catch envelope is duplicated verbatim across four project actions.</p></div>
+        </div>
       </div>
     </div>
-    <p class="proof-foot"><strong>find_duplicates flagged it on the first pass.</strong> The agent argued for three rounds. The index was right the whole time.</p>
+    <p class="proof-foot"><strong>sai_find_duplicates flagged it on the first pass.</strong> The agent argued for three rounds. The index was right the whole time.</p>
   </section>
 
   <section class="steps">
@@ -264,7 +299,7 @@
     </div>
     <div class="step">
       <span class="n">02</span>
-      <span class="t"><strong>Restart your client</strong><span>It picks up the MCP server and its tools: <code>search_code</code> for plain-English search, <code>find_similar</code> for the nearest matches to one function, and <code>find_duplicates</code> for repo-wide clusters.</span></span>
+      <span class="t"><strong>Restart your client</strong><span>It picks up the MCP server and its tools: <code>sai_search_code</code> for plain-English search, <code>sai_find_similar</code> for the nearest matches to one function, and <code>sai_find_duplicates</code> for repo-wide clusters.</span></span>
     </div>
     <div class="step">
       <span class="n">03</span>
