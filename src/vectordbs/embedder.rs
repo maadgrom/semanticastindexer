@@ -99,6 +99,7 @@ pub mod ort_impl {
     use ort::session::Session;
     use ort::value::Tensor;
     use std::path::Path;
+    use std::sync::Mutex;
     use tokenizers::Tokenizer;
 
     /// Passages embedded per ONNX forward pass.
@@ -116,7 +117,7 @@ pub mod ort_impl {
     pub struct OrtEmbedder {
         /// Mutex because ort 2.0.0-rc.10+ requires `&mut Session` for `run()`; usage is
         /// single-threaded (the worker owns the backend), so the lock is uncontended.
-        session: std::sync::Mutex<Session>,
+        session: Mutex<Session>,
         tokenizer: Tokenizer,
         /// Whether the loaded model declares a `token_type_ids` input.
         needs_token_type_ids: bool,
@@ -199,7 +200,7 @@ pub mod ort_impl {
             let needs_token_type_ids = session.inputs().iter().any(|i| i.name() == "token_type_ids");
 
             Ok(Self {
-                session: std::sync::Mutex::new(session),
+                session: Mutex::new(session),
                 tokenizer,
                 needs_token_type_ids,
                 prefix_style,
