@@ -1,6 +1,6 @@
 # semanticastindexer MCP Setup
 
-This directory contains everything needed to turn `semanticastindexer` into a first-class semantic code search MCP server for any agentic coding system.
+This directory contains everything needed to turn `semanticastindexer` into a first-class near-duplicate detector and semantic code search MCP server for any agentic coding system.
 
 ## Quick Start
 

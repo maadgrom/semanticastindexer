@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>semanticastindexer - semantic code search for your AI coding agent</title>
-<meta name="description" content="Index your codebase once, then search it in plain English or surface near-duplicate functions. A local-first MCP server and CLI. Symbol-aware for TypeScript, Rust, and Go; line-based for any other language. One-line install for macOS, Linux, and Windows." />
+<title>semanticastindexer - near-duplicate detection for your AI coding agent</title>
+<meta name="description" content="Index your codebase once, then surface near-duplicate functions or search it in plain English. A local-first MCP server and CLI. Symbol-aware for TypeScript, Rust, and Go; line-based for any other language. One-line install for macOS, Linux, and Windows." />
 <meta property="og:title" content="semanticastindexer" />
-<meta property="og:description" content="Semantic code search and near-duplicate detection as an MCP server + CLI. Symbol-aware for TypeScript, Rust, and Go. One-line install per OS." />
+<meta property="og:description" content="Near-duplicate detection and semantic code search as an MCP server + CLI. Symbol-aware for TypeScript, Rust, and Go. One-line install per OS." />
 <meta property="og:type" content="website" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230c0e10'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%233fb950'/%3E%3C/svg%3E" />
 <style>
@@ -167,12 +167,63 @@
   .turn.you .body { color: var(--text); font-weight: 500; background: var(--bg-input); border: 1px solid var(--line); border-radius: 14px 14px 5px 14px; padding: 10px 14px; }
   /* verdict: the agent's conclusion lands as an accent callout */
   .turn.verdict .body { color: var(--text); font-weight: 500; background: var(--accent-tint); border: 1px solid var(--accent-border); border-left: 2px solid var(--accent); border-radius: 10px; padding: 11px 14px; }
-  /* thinking indicator (three pulsing dots) */
+  /* thinking indicator (three pulsing dots) - kept for fallback */
   .thinking { display: inline-flex; align-items: center; gap: 5px; padding: 12px 14px; background: var(--bg-input); border: 1px solid var(--line); border-radius: 12px; }
   .thinking i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); animation: think 1.4s infinite ease-in-out both; }
   .thinking i:nth-child(2) { animation-delay: .18s; }
   .thinking i:nth-child(3) { animation-delay: .36s; }
   @keyframes think { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+
+  /* agent thinking / reasoning trace before replies (deslop process made visible) */
+  .turn.agent-thinking {
+    opacity: 0.92;
+  }
+  .turn.agent-thinking .content {
+    max-width: 82%;
+  }
+  .turn.agent-thinking .reasoning {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.45;
+    background: var(--bg-input);
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    padding: 9px 11px;
+    color: var(--text-faint);
+  }
+  .turn.agent-thinking .reason-head {
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+  .turn.agent-thinking .reason-line {
+    display: block;
+    padding-left: 2px;
+  }
+  .turn.agent-thinking .verdict-reasoning {
+    border-color: var(--accent-border);
+    background: var(--accent-tint);
+  }
+  .turn.agent-thinking .verdict-reasoning .reason-head {
+    color: var(--text);
+  }
+  .turn.agent-thinking .verdict-reasoning .reason-line {
+    color: var(--text-dim);
+  }
+
+  /* verdict turn stands out as the objective conclusion */
+  .turn.verdict .body {
+    color: var(--text);
+    font-weight: 500;
+    background: var(--accent-tint);
+    border: 1px solid var(--accent-border);
+    border-left: 2px solid var(--accent);
+    border-radius: 10px;
+    padding: 11px 14px;
+  }
+
   /* staggered reveal: the exchange unfolds in sequence (skipped under reduced motion) */
   .chat-body.reveal-on .turn { opacity: 0; transform: translateY(10px); }
   .chat-body.reveal-on.in .turn { opacity: 1; transform: none; transition: opacity .5s ease, transform .55s cubic-bezier(0.16,1,0.3,1); transition-delay: calc(var(--i, 0) * 80ms); }
@@ -249,8 +300,8 @@
 
   <section class="hero">
     <p class="eyebrow">MCP server + CLI</p>
-    <h1>Semantic code search<br><span class="soft">for your AI coding agent.</span></h1>
-    <p class="lede">Index your codebase once. Ask in plain English, or surface near-duplicate functions. Local-first, private, no API keys required.</p>
+    <h1>Near-duplicate detection<br><span class="soft">for your AI coding agent.</span></h1>
+    <p class="lede">Index your codebase once. Search in plain English, or surface the near-duplicate functions your agent keeps writing. Local-first, private, no API keys required.</p>
     <div class="langs">
       <span class="lang-label">symbol-aware</span>
       <span class="pill">TypeScript</span>
@@ -292,6 +343,17 @@
         <div class="turn you" style="--i:1">
           <div class="content"><p class="body">I don't believe you triaged them all. Give me a table.</p></div>
         </div>
+        <div class="turn agent-thinking" style="--i:1.5">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content">
+            <p class="name">agent</p>
+            <div class="reasoning">
+              <div class="reason-head">triaging clusters</div>
+              <div class="reason-line">12 candidates above 0.90 similarity</div>
+              <div class="reason-line">focusing on symbol-level auth patterns</div>
+            </div>
+          </div>
+        </div>
         <div class="turn agent" style="--i:2">
           <div class="avatar" aria-hidden="true"></div>
           <div class="content"><p class="name">agent</p><p class="body">Ran a 9-agent parallel audit, opened the actual code at every cluster. 3 fixed, 7 real but deferred, 39 false positives.</p></div>
@@ -303,9 +365,17 @@
           <div class="avatar" aria-hidden="true"></div>
           <div class="content"><p class="name">agent</p><p class="body">Fair challenge. Let me read the lines instead of trusting my own summary.</p></div>
         </div>
-        <div class="turn agent cont" style="--i:5">
+        <div class="turn agent-thinking" style="--i:5">
           <div class="avatar" aria-hidden="true"></div>
-          <div class="content"><div class="thinking" role="status" aria-label="agent is reading the code"><i></i><i></i><i></i></div></div>
+          <div class="content">
+            <p class="name">agent</p>
+            <div class="reasoning verdict-reasoning">
+              <div class="reason-head">reading the actual lines</div>
+              <div class="reason-line">auth-guard + try/catch envelope</div>
+              <div class="reason-line">identical across four project actions</div>
+              <div class="reason-line">no intentional delegation marker</div>
+            </div>
+          </div>
         </div>
         <div class="turn agent cont verdict" style="--i:6">
           <div class="avatar" aria-hidden="true"></div>
@@ -328,7 +398,11 @@
     </div>
     <div class="step">
       <span class="n">03</span>
-      <span class="t"><strong>Ask away</strong><span>"Where do we open the DuckDB connection?" or let the agent hunt for near-duplicate functions across the repo.</span></span>
+      <span class="t"><strong>Find and fix the slop</strong><span>Point your agent at <code>sai_find_duplicates</code> (it ships in the installed skill): it surfaces the repo's near-duplicate functions so the agent consolidates the copy-paste instead of arguing it's intentional.</span></span>
+    </div>
+    <div class="step">
+      <span class="n">04</span>
+      <span class="t"><strong>Ask away</strong><span><code>sai_search_code</code> answers "where do we open the DuckDB connection?" in plain English, and <code>sai_find_similar</code> pulls the nearest matches to any function.</span></span>
     </div>
   </section>
 

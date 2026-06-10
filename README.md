@@ -1,7 +1,7 @@
 # semanticastindexer
 
-Semantic code search and **near-duplicate function detection** for any codebase, exposed as
-a CLI **and** an MCP server. Index your source once, then ask "where do we create the Qdrant
+**Near-duplicate detection** and semantic code search for any codebase, exposed as a CLI
+**and** an MCP server. Index your source once, then ask "where do we create the Qdrant
 collection?" in plain English — or surface the functions that are near-copies of each other.
 
 - **Pluggable vector backend:** **Qdrant** (Cloud server-side inference) or **DuckDB**

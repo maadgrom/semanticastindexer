@@ -3,11 +3,11 @@ name = "semanticastindexer"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Semantic AST code indexer with pluggable vector backends (Qdrant/DuckDB), local/remote embedders (ort/Ollama), tree-sitter chunking, and an MCP server."
+description = "Near-duplicate detection and semantic code search for AI coding agents. MCP server + CLI. Local-first with embeddings (DuckDB + ONNX/Ollama) or Qdrant."
 license = "MIT"
 repository = "https://github.com/common/semanticastindexer"
 readme = "README.md"
-keywords = ["semantic-search", "code-search", "embeddings", "vector-search", "mcp"]
+keywords = ["near-duplicate", "deslop", "code-search", "mcp", "embeddings"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]

@@ -1,17 +1,18 @@
 ---
 name: semantic-code-search-mcp
-description: Installs and configures semanticastindexer as a powerful semantic code search MCP server for any agentic coding system (Claude, Cursor, Windsurf, Continue, etc.). Provides local, private, high-recall code search with optional AST awareness.
+description: Installs and configures semanticastindexer as a near-duplicate detector and semantic code search MCP server for any agentic coding system (Claude, Cursor, Windsurf, Continue, etc.). Provides local, private, high-precision duplication detection with optional AST awareness.
 version: "1.0.0"
 author: semanticastindexer project
-tags: [mcp, code-search, embeddings, semantic-search, setup, agentic]
+tags: [mcp, near-duplicate, deslop, code-search, embeddings, agentic]
 ---
 
 # Semantic Code Search MCP Setup Skill
 
-This skill turns the `semanticastindexer` binary into a first-class MCP server that any agentic coding tool can use for deep semantic understanding of a codebase.
+This skill turns the `semanticastindexer` binary into a first-class MCP server that any agentic coding tool can use to find near-duplicates and deeply understand a codebase.
 
 ## What You Get
 
+- High-precision near-duplicate detection across functions (`sai_find_duplicates`)
 - Local-first semantic search (DuckDB + Ollama or fully offline ONNX via ort)
 - Optional symbol-aware chunking with tree-sitter (AST)
 - Works great with Claude Code, Cursor, Windsurf/Cascade, Continue.dev, and any stdio MCP client

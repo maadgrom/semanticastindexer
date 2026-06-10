@@ -1,6 +1,6 @@
 # MCP server (`semanticastindexer mcp`)
 
-`semanticastindexer mcp` runs an MCP server over stdio (semantic code search for agentic
+`semanticastindexer mcp` runs an MCP server over stdio (near-duplicate detection + semantic code search for agentic
 coding tools), built on the official Rust MCP SDK (`rmcp`; feature `mcp`). Defaults to
 `--backend duckdb --embedder ollama`. **Read-only by default.**
 
