@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/sai-logo.png" alt="semanticastindexer (SAI) logo" width="200">
+</p>
+
 # Introduction
 
 **semanticastindexer** (SAI) is a Rust CLI and MCP server for **semantic code search** and **near-duplicate function detection** over any codebase. You index your source once, then you can do two things with it:

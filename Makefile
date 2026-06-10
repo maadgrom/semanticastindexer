@@ -128,6 +128,7 @@ site: book-build ## Build + serve the full static site (landing + /book/) at htt
 	rm -rf $(SITE_DIR)
 	mkdir -p $(SITE_DIR)/book
 	cp $(THIS_DIR)/docs/index.html $(THIS_DIR)/docs/install.sh $(THIS_DIR)/docs/uninstall.sh $(THIS_DIR)/docs/.nojekyll $(SITE_DIR)/
+	cp -R $(THIS_DIR)/assets $(SITE_DIR)/
 	cp -R $(THIS_DIR)/book/html/. $(SITE_DIR)/book/
 	@echo ""
 	@echo "  Static site assembled at $(SITE_DIR)"

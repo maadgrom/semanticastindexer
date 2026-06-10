@@ -48,7 +48,9 @@ CMD ["--help"]
 # =========================================================================================
 # glibc / debian  (full: --features all, includes the ort ONNX embedder)
 # =========================================================================================
-FROM rust:1-bookworm AS builder-full
+# trixie (not bookworm): ort 2.0.0-rc.12's prebuilt ONNX Runtime needs GCC 13+ libstdc++
+# symbols (__cxa_call_terminate); bookworm's GCC 12 toolchain fails at link.
+FROM rust:1-trixie AS builder-full
 # Cap parallel compile jobs to bound peak RAM (override with --build-arg CARGO_BUILD_JOBS=N).
 ARG CARGO_BUILD_JOBS=4
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
@@ -69,7 +71,7 @@ RUN cargo build --release --features all
 RUN mkdir -p /onnxlibs \
     && find / -name 'libonnxruntime*.so*' -exec cp -av {} /onnxlibs/ \; 2>/dev/null || true
 
-FROM debian:bookworm-slim AS full
+FROM debian:trixie-slim AS full
 LABEL org.opencontainers.image.source="https://github.com/maadgrom/semanticastindexer"
 LABEL org.opencontainers.image.description="Semantic code search and near-duplicate detection (full, glibc + ort)"
 LABEL org.opencontainers.image.licenses="MIT"

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/sai-logo.png" alt="semanticastindexer (SAI) logo" width="200">
+</p>
+
 # semanticastindexer
 
 **Near-duplicate detection** and semantic code search for any codebase, exposed as a CLI

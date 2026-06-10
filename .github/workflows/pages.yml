@@ -9,6 +9,7 @@ on:
     paths:
       - "docs/**"
       - "book/**"
+      - "assets/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -41,6 +42,8 @@ jobs:
           # Landing page + the install/uninstall one-liners + .nojekyll (served raw).
           cp docs/index.html docs/install.sh docs/uninstall.sh _site/
           cp docs/.nojekyll _site/.nojekyll
+          # Shared image assets (logo, favicon) served at /assets/.
+          cp -r assets _site/assets
           # Rendered mdBook under /book/.
           cp -r book/html/. _site/book/
 
