@@ -6,9 +6,9 @@
 #   alpine      (DEFAULT, :latest)      Alpine/musl, lean: qdrant + duckdb + ollama + ast + mcp.
 #                                       No local ONNX embedder. Tiny; for Qdrant/Ollama CI.
 #   full        (:*-full)               debian/glibc, --features all (adds the ort embedder).
-#   with-model  (:*-with-model)         full + the default ONNX model baked into the HF cache.
 #
-# `sync` shells out to git, so every runtime ships git.
+# The ort embedder downloads the model + tokenizer on first run (cache it across runs by
+# mounting a volume at HF_HOME). `sync` shells out to git, so every runtime ships git.
 
 # =========================================================================================
 # Alpine / musl  (lean: no ort)
@@ -23,6 +23,15 @@ RUN apk add --no-cache build-base cmake pkgconf perl linux-headers \
 # Statically link OpenSSL (native-tls) into the musl binary.
 ENV OPENSSL_STATIC=1 OPENSSL_NO_VENDOR=1 OPENSSL_DIR=/usr
 WORKDIR /src
+# Compile the dependency graph (dominated by DuckDB's bundled C++) against a stub
+# main.rs first: this layer is keyed on Cargo.toml/Cargo.lock alone, so the CI layer
+# cache reuses it across source-only changes instead of rebuilding every crate.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+    && cargo build --release --features "qdrant,duckdb,ollama,ast,mcp" \
+    && rm -rf src target/release/semanticastindexer* \
+              target/release/deps/semanticastindexer* \
+              target/release/.fingerprint/semanticastindexer*
 COPY . .
 RUN cargo build --release --features "qdrant,duckdb,ollama,ast,mcp"
 
@@ -47,6 +56,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake pkg-config libssl-dev ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
+# Same stub-build dependency layer as the Alpine builder (see comment there).
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+    && cargo build --release --features all \
+    && rm -rf src target/release/semanticastindexer* \
+              target/release/deps/semanticastindexer* \
+              target/release/.fingerprint/semanticastindexer*
 COPY . .
 RUN cargo build --release --features all
 # Carry the ONNX Runtime shared lib(s) ort downloaded (empty/harmless if it static-links).
@@ -62,29 +78,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 COPY --from=builder-full /src/target/release/semanticastindexer /usr/local/bin/semanticastindexer
 COPY --from=builder-full /onnxlibs/ /usr/local/lib/
 ENV LD_LIBRARY_PATH=/usr/local/lib
-WORKDIR /repo
-ENTRYPOINT ["semanticastindexer"]
-CMD ["--help"]
-
-# =========================================================================================
-# with-model  (full + the default ONNX model baked in for a network-free first run)
-# =========================================================================================
-# The pinned hf-hub (0.3) cannot fetch this repo's tokenizer.json from HF Xet storage, so we
-# stage it with curl between two index passes (the onnx/model.onnx download works on its own).
-FROM full AS with-model
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-ENV HF_HOME=/opt/hf-cache
-RUN mkdir -p /tmp/seed/src \
-    && printf 'export function seed(): number { return 1 }\n' > /tmp/seed/src/seed.ts \
-    && cd /tmp/seed \
-    && (semanticastindexer --root src --ext ts --backend duckdb --embedder ort --collection seed --silent || true) \
-    && SNAP=$(ls -d /opt/hf-cache/hub/models--jinaai--jina-embeddings-v2-base-code/snapshots/*/ 2>/dev/null | head -1) \
-    && if [ -n "$SNAP" ] && [ ! -f "${SNAP}tokenizer.json" ]; then \
-         curl -fsSL https://huggingface.co/jinaai/jina-embeddings-v2-base-code/resolve/main/tokenizer.json -o "${SNAP}tokenizer.json"; \
-       fi \
-    && semanticastindexer --root src --ext ts --backend duckdb --embedder ort --collection seed --silent \
-    && rm -rf /tmp/seed
 WORKDIR /repo
 ENTRYPOINT ["semanticastindexer"]
 CMD ["--help"]

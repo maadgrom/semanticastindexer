@@ -1,8 +1,13 @@
 name: Docker image (GHCR)
 
 # Builds the CI/CD images and publishes them to the GitHub Container Registry: a lean
-# Alpine default (:latest), a glibc `-full` (--features all), and a `-with-model` image
-# with the ONNX model baked in. Multi-arch (amd64 + arm64); pull requests build only.
+# Alpine default (:latest) and a glibc `-full` (--features all, includes the ort embedder).
+#
+# Speed notes:
+#   - Pushes build multi-arch (amd64 + arm64); pull requests build amd64 only, because
+#     arm64 runs under QEMU emulation and would dominate PR wall time.
+#   - The Dockerfile stub-builds dependencies into a layer keyed on Cargo.toml/Cargo.lock,
+#     so the GHA layer cache survives source-only changes.
 
 on:
   push:
@@ -21,6 +26,11 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+
+# Superseded PR pushes cancel the in-flight build; pushes to main/tags never cancel.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -41,9 +51,6 @@ jobs:
           - variant: full          # :*-full — glibc, --features all (adds ort)
             target: full
             suffix: "-full"
-          - variant: with-model    # :*-with-model — full + baked ONNX model
-            target: with-model
-            suffix: "-with-model"
     steps:
       - uses: actions/checkout@v4
 
@@ -76,7 +83,7 @@ jobs:
         with:
           context: .
           target: ${{ matrix.target }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

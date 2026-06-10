@@ -50,23 +50,22 @@ failed to download onnx/model.onnx from <repo> (check network or set duckdb.mode
 
 ## Q: The first run fails on `tokenizer.json` with "relative URL without a base". What's wrong?
 
-This is a known limitation of the pinned `hf-hub` 0.3 client when a repo stores
-`tokenizer.json` in Hugging Face **Xet** storage. The recommended code model
-`jinaai/jina-embeddings-v2-base-code` is affected: the `onnx/model.onnx` download
-succeeds, but fetching `tokenizer.json` errors with `relative URL without a base`.
+You are running a build older than the `hf-hub` 0.5 upgrade. The old pinned `hf-hub` 0.3
+client could not fetch files that Hugging Face stores in **Xet** storage — for the
+recommended code model `jinaai/jina-embeddings-v2-base-code`, `onnx/model.onnx` downloaded
+fine but `tokenizer.json` errored with `relative URL without a base`.
 
-**Workaround:** stage `tokenizer.json` into the model's HF cache snapshot once with
-`curl`, then run normally. After staging, ordinary runs hit the cache and no
-`HF_HUB_OFFLINE` is needed.
+**Fix:** upgrade to a current build; the first-run download of both files now works.
+If you must stay on an old build, stage `tokenizer.json` into the model's HF cache
+snapshot once with `curl`, then run normally:
 
 ```bash
-# Stage tokenizer.json into the cached snapshot for the jina code model
+# Old builds only: stage tokenizer.json into the cached snapshot for the jina code model
 SNAP=~/.cache/huggingface/hub/models--jinaai--jina-embeddings-v2-base-code/snapshots/*/
 curl -sL https://huggingface.co/jinaai/jina-embeddings-v2-base-code/resolve/main/tokenizer.json -o $SNAP/tokenizer.json
 ```
 
-Only `tokenizer.json` needs staging; the ONNX model download works on its own. See
-[Choosing a model](../guides/choosing-a-model.md) and
+See [Choosing a model](../guides/choosing-a-model.md) and
 [Backends and embedders](../reference/backends-and-embedders.md) for the full model
 recommendation.
 

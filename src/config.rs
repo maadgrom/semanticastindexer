@@ -453,7 +453,7 @@ fn load_config(args: &Args) -> Result<Config> {
     }
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config: {}", args.config))?;
-    serde_yaml::from_str(&raw).with_context(|| format!("failed to parse config: {}", args.config))
+    serde_yaml_ng::from_str(&raw).with_context(|| format!("failed to parse config: {}", args.config))
 }
 
 /// Test-only Plan builders shared across the crate's unit tests (e.g. the MCP helper
@@ -470,6 +470,7 @@ pub mod test_support {
             root: "src".to_string(),
             ext: vec!["ts".to_string()],
             backend: "mock".to_string(),
+            qdrant_url: None,
             embedder: "ort".to_string(),
             chunker: "lines".to_string(),
             max_chunk_chars: CAP_LARGE, // Jina code model default for ort

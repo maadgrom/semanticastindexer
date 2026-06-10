@@ -19,9 +19,9 @@ without compiling it:
   ollama + ast + mcp, no local ONNX embedder. Small; for the Qdrant (server-side inference)
   and Ollama CI paths.
 - `ghcr.io/maadgrom/semanticastindexer:latest-full` — **glibc, `--features all`**: adds the
-  `ort` on-device ONNX embedder (its model downloads on first use; cache it).
-- `ghcr.io/maadgrom/semanticastindexer:latest-with-model` — the full image with the default
-  ONNX model baked in, for a network-free first run.
+  `ort` on-device ONNX embedder. The model + tokenizer download on first use; persist them
+  across runs by mounting a volume (or restoring a CI cache) at `HF_HOME`, e.g.
+  `docker run -e HF_HOME=/hf-cache -v hf-cache:/hf-cache ...`.
 
 Use it as the job container:
 
@@ -50,8 +50,7 @@ docker run --rm -v "$PWD:/repo" -w /repo \
 ```
 
 Every image bundles `git`, so `sync --since` / `--staged` work inside it. Tags: `:X.Y.Z` and
-`:latest` (releases), `:edge` (main), `:sha-<short>`, each with `-full` and `-with-model`
-companions.
+`:latest` (releases), `:edge` (main), `:sha-<short>`, each with a `-full` companion.
 
 ## CI is non-interactive by design
 
