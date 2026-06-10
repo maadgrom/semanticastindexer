@@ -5,16 +5,17 @@
 //! ONCE at startup (defaults backend=duckdb, embedder=ollama) and shared across tool calls
 //! behind an `Arc<Mutex>` (DuckDB's connection is single-threaded).
 //!
-//! Tools (structured JSON output):
-//! - `search_code`     — embed query → nearest hits (+language/path_glob post-filter).
-//! - `find_similar`    — neighbours of a snippet (`code`) or an existing chunk (`path`+`line`).
-//! - `find_duplicates` — codebase-wide near-duplicate clusters via NN + union-find.
-//! - `index_status`    — backend/collection/model/dim/chunk_count/chunker.
+//! Tools (structured JSON output; all prefixed `sai_` to namespace them in the agent's
+//! tool list):
+//! - `sai_search_code`     — embed query → nearest hits (+language/path_glob post-filter).
+//! - `sai_find_similar`    — neighbours of a snippet (`code`) or an existing chunk (`path`+`line`).
+//! - `sai_find_duplicates` — codebase-wide near-duplicate clusters via NN + union-find.
+//! - `sai_index_status`    — backend/collection/model/dim/chunk_count/chunker.
 //!
 //! Embedding semantics (correctness-critical):
-//! - `search_code`            → embed as QUERY.
-//! - `find_similar { code }`  → embed as PASSAGE (code-vs-code space).
-//! - `find_similar {path,line}` / `find_duplicates` → STORED vectors, no re-embed.
+//! - `sai_search_code`            → embed as QUERY.
+//! - `sai_find_similar { code }`  → embed as PASSAGE (code-vs-code space).
+//! - `sai_find_similar {path,line}` / `sai_find_duplicates` → STORED vectors, no re-embed.
 //!
 //! Concurrency: the DuckDB backend is `!Send`/`!Sync`, but rmcp's tool-handler futures
 //! must be `Send`. The backend therefore lives on a dedicated worker thread ([`crate::worker`])
@@ -246,7 +247,7 @@ impl CodeSearchServer {
     #[tool(
         description = "Semantic code search. Embeds the query and returns the nearest indexed code chunks. Optional language/path_glob filters; snippet is capped unless include_text."
     )]
-    async fn search_code(
+    async fn sai_search_code(
         &self,
         Parameters(args): Parameters<SearchCodeArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -279,7 +280,7 @@ impl CodeSearchServer {
     #[tool(
         description = "Find code similar to a snippet (code) or to an existing indexed chunk (path+line, exact stored vector, self-excluded). Provide either code OR path+line. Optional min_score threshold."
     )]
-    async fn find_similar(
+    async fn sai_find_similar(
         &self,
         Parameters(args): Parameters<FindSimilarArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -289,7 +290,7 @@ impl CodeSearchServer {
             (Some(code), _, _) => {
                 if !self.inner.can_embed_locally {
                     return Err(McpError::invalid_params(
-                        "find_similar { code } requires a local embedder (duckdb backend)",
+                        "sai_find_similar { code } requires a local embedder (duckdb backend)",
                         None,
                     ));
                 }
@@ -317,7 +318,7 @@ impl CodeSearchServer {
             }
             _ => {
                 return Err(McpError::invalid_params(
-                    "find_similar requires either `code` or both `path` and `line`",
+                    "sai_find_similar requires either `code` or both `path` and `line`",
                     None,
                 ));
             }
@@ -340,7 +341,7 @@ impl CodeSearchServer {
     #[tool(
         description = "Find near-duplicate code clusters across the index. For each chunk, takes its top_k neighbours, keeps edges with similarity >= min_score, and unions them into clusters. Returns clusters with size >= min_cluster_size, largest first."
     )]
-    async fn find_duplicates(
+    async fn sai_find_duplicates(
         &self,
         Parameters(args): Parameters<FindDuplicatesArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -392,7 +393,7 @@ impl CodeSearchServer {
     #[tool(
         description = "Report index status: backend, collection, embedding model, vector dimension, total chunk count, and chunker."
     )]
-    async fn index_status(
+    async fn sai_index_status(
         &self,
         Parameters(_args): Parameters<IndexStatusArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -414,7 +415,7 @@ impl CodeSearchServer {
     #[tool(
         description = "Prepare or execute setup of semantic code search (MCP) for a project. Returns ready-to-run commands and MCP server configuration. Supports --allow-setup for actual execution."
     )]
-    async fn prepare_mcp_setup(
+    async fn sai_prepare_mcp_setup(
         &self,
         Parameters(args): Parameters<PrepareMcpSetupArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -517,7 +518,7 @@ impl CodeSearchServer {
     #[tool(
         description = "Re-index specific files: delete each path's existing points, then re-chunk + re-embed + upsert files that still exist and pass the index filters (ext, globs, not generated). Gone/excluded paths are just removed. Requires the server to be started with --allow-write."
     )]
-    async fn refresh(
+    async fn sai_refresh(
         &self,
         Parameters(args): Parameters<RefreshArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -572,9 +573,9 @@ impl ServerHandler for CodeSearchServer {
         let mut info = ServerInfo::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.instructions = Some(
-            "Semantic code search over the indexed repository. Tools: search_code, \
-             find_similar, find_duplicates, index_status (read-only), prepare_mcp_setup \
-             (setup helper; execution requires --allow-setup), and refresh \
+            "Semantic code search over the indexed repository. Tools: sai_search_code, \
+             sai_find_similar, sai_find_duplicates, sai_index_status (read-only), sai_prepare_mcp_setup \
+             (setup helper; execution requires --allow-setup), and sai_refresh \
              (re-index files; only usable when the server was started with --allow-write)."
                 .to_string(),
         );

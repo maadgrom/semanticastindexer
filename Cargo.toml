@@ -2,12 +2,13 @@
 name = "semanticastindexer"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
-description = "Semantic AST code indexer with pluggable vector backends (Qdrant/DuckDB), local/remote embedders (ort/Ollama), tree-sitter chunking, and an MCP server."
+# 1.88 is the floor imposed by ort 2.0.0-rc.12; also unlocks duckdb >= 1.5 (1.10503).
+rust-version = "1.88"
+description = "Near-duplicate detection and semantic code search for AI coding agents. MCP server + CLI. Local-first with embeddings (DuckDB + ONNX/Ollama) or Qdrant."
 license = "MIT"
 repository = "https://github.com/common/semanticastindexer"
 readme = "README.md"
-keywords = ["semantic-search", "code-search", "embeddings", "vector-search", "mcp"]
+keywords = ["near-duplicate", "deslop", "code-search", "mcp", "embeddings"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
@@ -40,22 +41,24 @@ mcp = ["dep:rmcp", "dep:schemars", "duckdb", "ollama"]
 all = ["qdrant", "ort", "ollama", "ast", "mcp"]
 
 [dependencies]
-qdrant-client = { version = "1.15", optional = true }
+qdrant-client = { version = "1.18", optional = true }
 # DuckDB backend (feature = "duckdb"): VSS/HNSW vector persistence.
 duckdb = { version = "1", features = ["bundled"], optional = true }
 # Local ONNX embedder (feature = "ort"): raw ONNX Runtime + tokenizer + HF model download.
 # ort is a 2.x prerelease; pin to the rc proven in this tree (download-binaries default).
-ort = { version = "=2.0.0-rc.9", optional = true }
-tokenizers = { version = "0.21", optional = true }
-ndarray = { version = "0.16", optional = true }
-hf-hub = { version = "0.3", optional = true }
+ort = { version = "=2.0.0-rc.12", optional = true }
+tokenizers = { version = "0.23", optional = true }
+ndarray = { version = "0.17", optional = true }
+# hf-hub >= 0.4 is required for HF's Xet-backed storage (0.3 cannot fetch tokenizer.json
+# for the default model repo).
+hf-hub = { version = "0.5", optional = true }
 # Remote Ollama HTTP embedder (feature = "ollama").
-reqwest = { version = "0.12", features = ["json"], optional = true }
-# AST chunker (feature = "ast"): tree-sitter 0.25 + grammars for TS/TSX (0.23), Rust (0.23),
-# and Go (0.25). Grammar crates target the tree-sitter 0.24/0.25 ABI, so these build together.
-tree-sitter = { version = "0.25", optional = true }
+reqwest = { version = "0.13", features = ["json"], optional = true }
+# AST chunker (feature = "ast"): tree-sitter + grammars for TS/TSX, Rust, and Go.
+# Grammar crates bind through the tree-sitter-language ABI shim, so these build together.
+tree-sitter = { version = "0.26", optional = true }
 tree-sitter-typescript = { version = "0.23", optional = true }
-tree-sitter-rust = { version = "0.23", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
 tree-sitter-go = { version = "0.25", optional = true }
 # MCP server (feature = "mcp"): official Rust MCP SDK + JSON-schema generation for tools.
 # Pinned to 1.7 (verified to build with cargo 1.96 / rustc 1.96 in this tree). Features:
@@ -69,15 +72,17 @@ rmcp = { version = "1.7", optional = true, default-features = false, features = 
 ] }
 schemars = { version = "1", optional = true }
 # twox-hash is NON-optional: point_id uses XxHash64 (seed 0) unconditionally so
-# Qdrant and DuckDB produce identical stable point IDs.
-twox-hash = "1"
+# Qdrant and DuckDB produce identical stable point IDs. (2.x changed the API, not
+# the algorithm — the pinned-value test in indexer.rs guards ID stability.)
+twox-hash = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 anyhow = "1"
 walkdir = "2"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+# serde_yaml is archived/unmaintained; serde_yaml_ng is the API-compatible fork.
+serde_yaml_ng = "0.10"
 globset = "0.4"
 
 [dev-dependencies]

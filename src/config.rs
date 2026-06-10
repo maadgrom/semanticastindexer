@@ -111,6 +111,9 @@ pub struct Config {
     pub duckdb: DuckDbConfig,
     /// Ollama embedder settings (url + model).
     pub ollama: OllamaConfig,
+    /// Qdrant-backend settings. Only the non-secret `url` is read from YAML; the API key
+    /// comes from the `QDRANT_API_KEY` environment variable.
+    pub qdrant: QdrantConfig,
     /// Similarity-threshold defaults for the MCP find_similar/find_duplicates tools.
     pub similarity: SimilarityConfig,
 }
@@ -155,6 +158,15 @@ pub struct OllamaConfig {
     pub model: Option<String>,
 }
 
+/// Qdrant-backend YAML sub-section. The API key is a SECRET and is read ONLY from the
+/// environment (`QDRANT_API_KEY`), never from YAML — only the non-secret `url` may live here.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct QdrantConfig {
+    /// Qdrant cluster gRPC URL (non-secret). The `QDRANT_URL` env var, if set, overrides this.
+    pub url: Option<String>,
+}
+
 /// Fully-resolved indexing plan (args + config merged).
 #[derive(Clone)]
 pub struct Plan {
@@ -178,6 +190,10 @@ pub struct Plan {
     pub collection: String,
     pub model: String,
     pub vector_dim: u64,
+    /// Qdrant cluster URL from YAML (`qdrant.url`); the `QDRANT_URL` env var overrides it.
+    /// Only used by the qdrant backend; the API key is read separately from the environment.
+    #[cfg_attr(not(feature = "qdrant"), allow(dead_code))]
+    pub qdrant_url: Option<String>,
     /// DuckDB file path (only used by the duckdb backend).
     #[cfg_attr(not(feature = "duckdb"), allow(dead_code))]
     pub duckdb_path: String,
@@ -348,6 +364,7 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
         } else {
             DEFAULT_VECTOR_DIM
         }),
+        qdrant_url: config.qdrant.url,
         duckdb_path: config
             .duckdb
             .path
@@ -436,7 +453,7 @@ fn load_config(args: &Args) -> Result<Config> {
     }
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config: {}", args.config))?;
-    serde_yaml::from_str(&raw).with_context(|| format!("failed to parse config: {}", args.config))
+    serde_yaml_ng::from_str(&raw).with_context(|| format!("failed to parse config: {}", args.config))
 }
 
 /// Test-only Plan builders shared across the crate's unit tests (e.g. the MCP helper
@@ -453,6 +470,7 @@ pub mod test_support {
             root: "src".to_string(),
             ext: vec!["ts".to_string()],
             backend: "mock".to_string(),
+            qdrant_url: None,
             embedder: "ort".to_string(),
             chunker: "lines".to_string(),
             max_chunk_chars: CAP_LARGE, // Jina code model default for ort

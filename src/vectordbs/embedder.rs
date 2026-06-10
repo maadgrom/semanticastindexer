@@ -99,6 +99,7 @@ pub mod ort_impl {
     use ort::session::Session;
     use ort::value::Tensor;
     use std::path::Path;
+    use std::sync::Mutex;
     use tokenizers::Tokenizer;
 
     /// Passages embedded per ONNX forward pass.
@@ -114,7 +115,9 @@ pub mod ort_impl {
     /// declares it) → run → `last_hidden_state` [batch, seq, dim] → MEAN-POOL over
     /// the attention mask → L2-NORMALIZE.
     pub struct OrtEmbedder {
-        session: Session,
+        /// Mutex because ort 2.0.0-rc.10+ requires `&mut Session` for `run()`; usage is
+        /// single-threaded (the worker owns the backend), so the lock is uncontended.
+        session: Mutex<Session>,
         tokenizer: Tokenizer,
         /// Whether the loaded model declares a `token_type_ids` input.
         needs_token_type_ids: bool,
@@ -130,7 +133,9 @@ pub mod ort_impl {
             model_cache: Option<&str>,
             prefix_style: PrefixStyle,
         ) -> Result<Self> {
-            let mut builder = ApiBuilder::new().with_progress(true);
+            // from_env (not new): honors HF_HOME/HF_TOKEN like hf-hub <= 0.3 did, which the
+            // Docker images and CI rely on to relocate the model cache.
+            let mut builder = ApiBuilder::from_env().with_progress(true);
             if let Some(dir) = model_cache {
                 builder = builder.with_cache_dir(dir.into());
             }
@@ -178,19 +183,24 @@ pub mod ort_impl {
             let intra_threads = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1);
+            // ort's builder errors are generic over the builder (for recovery) and don't
+            // satisfy anyhow's Context bounds, so stringify them via map_err.
             let session = Session::builder()
-                .context("failed to create ONNX session builder")?
+                .map_err(|e| anyhow::anyhow!("failed to create ONNX session builder: {e}"))?
                 .with_intra_threads(intra_threads)
-                .context("failed to set ONNX intra-op thread count")?
+                .map_err(|e| anyhow::anyhow!("failed to set ONNX intra-op thread count: {e}"))?
                 .commit_from_file(model_path)
-                .with_context(|| {
-                    format!("failed to load ONNX model from {}", model_path.display())
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to load ONNX model from {}: {e}",
+                        model_path.display()
+                    )
                 })?;
 
-            let needs_token_type_ids = session.inputs.iter().any(|i| i.name == "token_type_ids");
+            let needs_token_type_ids = session.inputs().iter().any(|i| i.name() == "token_type_ids");
 
             Ok(Self {
-                session,
+                session: Mutex::new(session),
                 tokenizer,
                 needs_token_type_ids,
                 prefix_style,
@@ -247,23 +257,27 @@ pub mod ort_impl {
             let mask_tensor = Tensor::from_array(mask_arr)
                 .context("failed to wrap attention_mask in a Tensor")?;
 
+            let mut session = self
+                .session
+                .lock()
+                .map_err(|e| anyhow::anyhow!("ONNX session lock poisoned: {e}"))?;
             let outputs = if self.needs_token_type_ids {
                 let tt_arr = Array2::<i64>::zeros((batch_size, seq_len));
                 let tt_tensor = Tensor::from_array(tt_arr)
                     .context("failed to wrap token_type_ids in a Tensor")?;
-                self.session
+                session
                     .run(ort::inputs![
                         "input_ids" => id_tensor,
                         "attention_mask" => mask_tensor,
                         "token_type_ids" => tt_tensor,
-                    ]?)
+                    ])
                     .context("ONNX inference failed")?
             } else {
-                self.session
+                session
                     .run(ort::inputs![
                         "input_ids" => id_tensor,
                         "attention_mask" => mask_tensor,
-                    ]?)
+                    ])
                     .context("ONNX inference failed")?
             };
 
@@ -274,7 +288,7 @@ pub mod ort_impl {
                 None => &outputs[0],
             };
             let (shape, data) = hidden
-                .try_extract_raw_tensor::<f32>()
+                .try_extract_tensor::<f32>()
                 .context("failed to extract last_hidden_state as f32")?;
             if shape.len() != 3 {
                 anyhow::bail!(

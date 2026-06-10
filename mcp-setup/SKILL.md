@@ -1,17 +1,18 @@
 ---
 name: semantic-code-search-mcp
-description: Installs and configures semanticastindexer as a powerful semantic code search MCP server for any agentic coding system (Claude, Cursor, Windsurf, Continue, etc.). Provides local, private, high-recall code search with optional AST awareness.
+description: Installs and configures semanticastindexer as a near-duplicate detector and semantic code search MCP server for any agentic coding system (Claude, Cursor, Windsurf, Continue, etc.). Provides local, private, high-precision duplication detection with optional AST awareness.
 version: "1.0.0"
 author: semanticastindexer project
-tags: [mcp, code-search, embeddings, semantic-search, setup, agentic]
+tags: [mcp, near-duplicate, deslop, code-search, embeddings, agentic]
 ---
 
 # Semantic Code Search MCP Setup Skill
 
-This skill turns the `semanticastindexer` binary into a first-class MCP server that any agentic coding tool can use for deep semantic understanding of a codebase.
+This skill turns the `semanticastindexer` binary into a first-class MCP server that any agentic coding tool can use to find near-duplicates and deeply understand a codebase.
 
 ## What You Get
 
+- High-precision near-duplicate detection across functions (`sai_find_duplicates`)
 - Local-first semantic search (DuckDB + Ollama or fully offline ONNX via ort)
 - Optional symbol-aware chunking with tree-sitter (AST)
 - Works great with Claude Code, Cursor, Windsurf/Cascade, Continue.dev, and any stdio MCP client
@@ -70,15 +71,16 @@ binary.
 1. The agent calls this skill/setup script.
 2. The agent runs the indexer on the user's current project (with `--dry-run` first).
 3. The agent (or user) adds the generated MCP server entry to their client config.
-4. The agent now has powerful tools:
-   - `search_code`
-   - `find_similar` (by code snippet or by existing function)
-   - `find_duplicates`
-   - `index_status`
-   - `prepare_mcp_setup` (can be called later to help set up semantic search in new projects)
-   - `refresh` (when started with `--allow-write`)
+4. The agent now has powerful tools (all `sai_`-prefixed so they stand apart from other
+   MCP servers' tools in the agent's tool list):
+   - `sai_search_code`
+   - `sai_find_similar` (by code snippet or by existing function)
+   - `sai_find_duplicates`
+   - `sai_index_status`
+   - `sai_prepare_mcp_setup` (can be called later to help set up semantic search in new projects)
+   - `sai_refresh` (when started with `--allow-write`)
 
-When the semanticastindexer MCP server is running with `--allow-setup`, the `prepare_mcp_setup` tool can actually execute the setup script on demand.
+When the semanticastindexer MCP server is running with `--allow-setup`, the `sai_prepare_mcp_setup` tool can actually execute the setup script on demand.
 
 ## Security & Privacy Notes
 
@@ -94,6 +96,9 @@ When the semanticastindexer MCP server is running with `--allow-setup`, the `pre
 
 ## Related Project Documentation
 
-See the main project README for deeper details on chunking strategies, similarity tuning, and advanced usage.
+- [Installation & per-platform setup](../docs/install.md)
+- [MCP server: tools, thresholds, wiring](../docs/mcp-server.md)
+- [Chunking strategies](../docs/chunking.md) and [similarity tuning](../docs/configuration.md)
+- Hosted install page: <https://maadgrom.github.io/semanticastindexer/>
 
 This skill is maintained as part of the semanticastindexer repository.

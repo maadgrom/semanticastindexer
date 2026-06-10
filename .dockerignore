@@ -1,0 +1,19 @@
+# Keep the build context small: the image build only needs Cargo.* + src/.
+# rust-toolchain.toml stays out: its `stable` pin doesn't match the rust:1 image's
+# version-named toolchain, so rustup would re-download the whole channel every build.
+rust-toolchain.toml
+target/
+.git/
+book/
+docs/
+mcp-setup/
+.site/
+.index/
+*.duckdb
+.fastembed_cache/
+.model_cache/
+.env
+.playwright-mcp/
+*.png
+*.md
+.github/

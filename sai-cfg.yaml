@@ -9,8 +9,9 @@
 # index any project fully offline out of the box (local ONNX embedder + DuckDB).
 
 # Vector backend: "qdrant" (default) or "duckdb". The CLI flag `--backend <name>`
-# overrides this value. Qdrant uses Cloud server-side inference (creds via env
-# QDRANT_URL / QDRANT_API_KEY — never put them here). DuckDB embeds locally (via the
+# overrides this value. Qdrant uses Cloud server-side inference: set its URL in the
+# `qdrant:` block below (or via the QDRANT_URL env var). The API KEY is a SECRET, read
+# ONLY from the QDRANT_API_KEY environment variable — never put it in YAML. DuckDB embeds locally (via the
 # `ort` or `ollama` embedder) and stores vectors in a DuckDB file with a VSS/HNSW
 # index; it needs the binary built with `--features ort` / `--features ollama`
 # (or `all`).
@@ -73,6 +74,12 @@ model: jinaai/jina-embeddings-v2-base-code
 vector_dim: 768
 
 # DuckDB backend settings (only used when backend: duckdb). Ignored by Qdrant.
+# Qdrant backend settings (only used when backend: qdrant). The API key is NOT here — it
+# is read only from the QDRANT_API_KEY environment variable (a secret).
+qdrant:
+  # Qdrant cluster gRPC URL. The QDRANT_URL env var, if set, overrides this.
+  # url: https://<cluster-id>.<region>.aws.cloud.qdrant.io:6334
+
 duckdb:
   # DuckDB database file. Created on first index; holds the table + HNSW index.
   path: .index/code.duckdb
@@ -164,7 +171,7 @@ strip_comments: true
 honor_noindex_marker: true
 honor_noduplicate_marker: true
 
-# Similarity-search thresholds for the `find_similar` / `find_duplicates` MCP tools AND
+# Similarity-search thresholds for the `sai_find_similar` / `sai_find_duplicates` MCP tools AND
 # the `similar` / `duplicates` CLI subcommands. Resolution per knob:
 #   CLI flag / MCP tool arg  >  this config value  >  built-in default.
 # These cutoffs are MODEL-SPECIFIC (a Qwen3 cosine of 0.85 is looser than e5's 0.85), so

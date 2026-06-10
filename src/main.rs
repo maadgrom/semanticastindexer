@@ -53,7 +53,8 @@ use vectordbs::{Access, Backend, Hit, factory};
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    about = "Index source files into Qdrant via E5-small server-side inference (Document API)"
+    about = "Near-duplicate detection and semantic code search: index source into Qdrant Cloud or local DuckDB, query in natural language, and serve over MCP",
+    long_about = "Index source files into a vector backend (Qdrant Cloud server-side inference, or local DuckDB with on-device ONNX/Ollama embeddings) for near-duplicate detection and semantic code search. Run as a CLI or as an MCP server for AI coding agents. Configured by indexer.yaml; flags override config."
 )]
 pub struct Args {
     /// Subcommand. Omitted = full index of --root (the default).
@@ -196,12 +197,12 @@ struct SimilarArgs {
 #[cfg(feature = "mcp")]
 #[derive(clap::Args, Debug, Clone)]
 struct McpArgs {
-    /// Open the index WRITABLE and register the `refresh` tool. Without this flag the
-    /// server is read-only and `refresh` returns a clear "restart with --allow-write" error.
+    /// Open the index WRITABLE and register the `sai_refresh` tool. Without this flag the
+    /// server is read-only and `sai_refresh` returns a clear "restart with --allow-write" error.
     #[arg(long, default_value_t = false)]
     allow_write: bool,
 
-    /// Allow the `prepare_mcp_setup` tool to actually execute the mcp-setup script
+    /// Allow the `sai_prepare_mcp_setup` tool to actually execute the mcp-setup script
     /// (can trigger long builds and file modifications). Use with caution.
     #[arg(long, default_value_t = false)]
     allow_setup: bool,

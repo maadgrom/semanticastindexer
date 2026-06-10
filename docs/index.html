@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>semanticastindexer - near-duplicate detection for your AI coding agent</title>
+<meta name="description" content="Index your codebase once, then surface near-duplicate functions or search it in plain English. A local-first MCP server and CLI. Symbol-aware for TypeScript, Rust, and Go; line-based for any other language. One-line install for macOS, Linux, and Windows." />
+<meta property="og:title" content="semanticastindexer" />
+<meta property="og:description" content="Near-duplicate detection and semantic code search as an MCP server + CLI. Symbol-aware for TypeScript, Rust, and Go. One-line install per OS." />
+<meta property="og:type" content="website" />
+<link rel="icon" type="image/jpeg" href="assets/sai-s-logo.jpg" />
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0c0e10;
+    --bg-raised: #14181b;
+    --bg-input: #0a0c0d;
+    --line: #232a2e;
+    --line-soft: #1b2125;
+    --text: #e7ecea;
+    --text-dim: #97a3a0;
+    --text-faint: #828d89;
+    --accent: #3fb950;
+    --accent-border: rgba(63,185,80,0.34);
+    --accent-tint: rgba(63,185,80,0.07);
+    --dot-ring: rgba(63,185,80,0.14);
+    --glow: rgba(63,185,80,0.08);
+    --hover-bg: rgba(255,255,255,0.03);
+    --tab-tint: rgba(255,255,255,0.015);
+    --radius: 12px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", "Consolas", monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f7f9f7;
+      --bg-raised: #ffffff;
+      --bg-input: #f1f4f1;
+      --line: #dde3de;
+      --line-soft: #e9ede9;
+      --text: #11201a;
+      --text-dim: #51605a;
+      --text-faint: #586762;
+      --accent: #1a7f37;
+      --accent-border: rgba(26,127,55,0.40);
+      --accent-tint: rgba(26,127,55,0.08);
+      --dot-ring: rgba(26,127,55,0.16);
+      --glow: rgba(26,127,55,0.05);
+      --hover-bg: rgba(0,0,0,0.045);
+      --tab-tint: rgba(0,0,0,0.018);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.55;
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0 0 auto 0;
+    height: 320px;
+    background: radial-gradient(60% 100% at 50% 0%, var(--glow), transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 20px; position: relative; z-index: 1; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a:focus-visible, .copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+  /* Nav */
+  header.nav { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 8px; font-family: var(--mono); color: var(--text); }
+  .brand .logo { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; object-fit: cover; box-shadow: 0 0 0 1px var(--line); }
+  .brand .sai { font-weight: 700; letter-spacing: 0.05em; font-size: 15px; }
+  .brand .full { font-size: 11.5px; color: var(--text-faint); letter-spacing: 0.01em; }
+  .brand .full u { color: var(--text-dim); text-decoration-color: var(--accent); text-underline-offset: 2px; text-decoration-thickness: 1.5px; }
+  .nav-links { display: flex; gap: 22px; font-size: 14px; }
+  .nav-links a { color: var(--text-dim); }
+  .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+  /* Hero */
+  .hero { padding: 56px 0 30px; }
+  .eyebrow { font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.04em; color: var(--accent); margin: 0 0 18px; }
+  h1 { font-size: clamp(32px, 6vw, 48px); line-height: 1.05; letter-spacing: -0.03em; margin: 0 0 18px; font-weight: 650; }
+  h1 .soft { color: var(--text-dim); }
+  .lede { font-size: 18px; color: var(--text-dim); max-width: 56ch; margin: 0; }
+
+  /* Language badges */
+  .langs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 24px; }
+  .lang-label { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin-right: 2px; }
+  .pill { font-family: var(--mono); font-size: 12.5px; color: var(--accent); border: 1px solid var(--accent-border); background: var(--accent-tint); padding: 3px 11px; border-radius: 999px; }
+  .lang-more { font-size: 13.5px; color: var(--text-faint); margin-left: 2px; }
+
+  /* Section header (terminal-comment motif) */
+  .sec-h { font-size: 15px; font-weight: 600; color: var(--text-faint); margin: 0 0 14px; font-family: var(--mono); }
+
+  /* Install card + OS tabs */
+  .install { padding: 8px 0 0; }
+  .card { background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--line-soft); background: linear-gradient(180deg, var(--tab-tint), transparent); }
+  .tab { appearance: none; border: 0; background: transparent; color: var(--text-dim); font-family: var(--sans); font-size: 13.5px; white-space: nowrap; cursor: pointer; padding: 9px 14px; border-radius: 8px 8px 0 0; position: relative; transition: color .15s ease; }
+  .tab:hover { color: var(--text); }
+  .tab[aria-selected="true"] { color: var(--text); }
+  .tab[aria-selected="true"]::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px; }
+  .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .panel { padding: 20px; }
+  .panel-note { font-size: 14px; color: var(--text-dim); margin: 0 0 14px; }
+  .panel-note code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+
+  /* Command box (shared) */
+  .cmd-label { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.04em; color: var(--text-faint); margin: 0 0 7px; text-transform: uppercase; }
+  .cmd { display: flex; align-items: stretch; background: var(--bg-input); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .cmd code { flex: 1; min-width: 0; font-family: var(--mono); font-size: 13px; color: var(--text); padding: 13px 14px; overflow-x: auto; white-space: nowrap; line-height: 1.5; }
+  .cmd code .prompt { color: var(--accent); user-select: none; }
+  .cmd code .flag { color: var(--text-dim); }
+  .copy { appearance: none; border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--text-dim); cursor: pointer; font-family: var(--sans); font-size: 13px; padding: 0 16px; flex-shrink: 0; display: inline-flex; align-items: center; gap: 7px; transition: color .15s ease, background .15s ease; }
+  .copy:hover { color: var(--text); background: var(--hover-bg); }
+  .copy:active { transform: translateY(1px); }
+  .copy.copied { color: var(--accent); }
+  .copy:focus-visible { outline-offset: -2px; }
+  .copy svg { width: 15px; height: 15px; }
+
+  /* Connect (reference block, no selector widget) */
+  .connect { padding: 44px 0 0; }
+  .connect p { font-size: 15px; color: var(--text-dim); margin: 0 0 14px; max-width: 62ch; }
+  .connect p code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .connect-foot { font-size: 13.5px; color: var(--text-faint); margin: 14px 0 0; max-width: 62ch; }
+  .connect-foot code { color: var(--text-dim); }
+
+  /* Proof (transcript log) */
+  .proof { padding: 48px 0 0; }
+  .proof-title { font-size: clamp(22px, 3.6vw, 28px); line-height: 1.12; letter-spacing: -0.02em; margin: 0 0 10px; font-weight: 640; }
+  .proof-sub { font-size: 16px; color: var(--text-dim); margin: 0 0 22px; max-width: 60ch; }
+  .proof-sub code { font-family: var(--mono); font-size: 0.86em; color: var(--accent); background: var(--accent-tint); border: 1px solid var(--accent-border); padding: 1px 6px; border-radius: 5px; }
+  .chat { background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line-soft); background: var(--bg-input); font-family: var(--mono); font-size: 12px; }
+  .chat-head .tool-call { display: inline-flex; align-items: center; gap: 8px; color: var(--accent); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-head .tool-call .tc-mark { width: 6px; height: 6px; background: var(--accent); transform: rotate(45deg); border-radius: 1px; flex-shrink: 0; }
+  .chat-head .turns { color: var(--text-faint); flex-shrink: 0; }
+  .chat-body { display: flex; flex-direction: column; gap: 18px; padding: 20px; }
+  .turn { display: flex; gap: 12px; max-width: 100%; }
+  .turn.cont { margin-top: -12px; }
+  .avatar { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; display: grid; place-items: center; background: var(--accent-tint); border: 1px solid var(--accent-border); }
+  .avatar::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .turn.cont .avatar { visibility: hidden; }
+  .turn .content { min-width: 0; flex: 1; }
+  .turn .name { font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--accent); margin: 2px 0 5px; }
+  .turn.cont .name { display: none; }
+  .turn .body { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--text-dim); }
+  .turn .body code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  /* user turn: right-aligned bubble, no avatar (modern-agent style) */
+  .turn.you { align-self: flex-end; max-width: 82%; }
+  .turn.you .avatar { display: none; }
+  .turn.you .content { flex: 0 1 auto; }
+  .turn.you .body { overflow-wrap: anywhere; }
+  .turn.you .name { display: none; }
+  .turn.you .body { color: var(--text); font-weight: 500; background: var(--bg-input); border: 1px solid var(--line); border-radius: 14px 14px 5px 14px; padding: 10px 14px; }
+  /* verdict: the agent's conclusion lands as an accent callout */
+  .turn.verdict .body { color: var(--text); font-weight: 500; background: var(--accent-tint); border: 1px solid var(--accent-border); border-left: 2px solid var(--accent); border-radius: 10px; padding: 11px 14px; }
+  /* thinking indicator (three pulsing dots) - kept for fallback */
+  .thinking { display: inline-flex; align-items: center; gap: 5px; padding: 12px 14px; background: var(--bg-input); border: 1px solid var(--line); border-radius: 12px; }
+  .thinking i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); animation: think 1.4s infinite ease-in-out both; }
+  .thinking i:nth-child(2) { animation-delay: .18s; }
+  .thinking i:nth-child(3) { animation-delay: .36s; }
+  @keyframes think { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+
+  /* agent thinking / reasoning trace before replies (deslop process made visible) */
+  .turn.agent-thinking {
+    opacity: 0.92;
+  }
+  .turn.agent-thinking .content {
+    max-width: 82%;
+  }
+  .turn.agent-thinking .reasoning {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.45;
+    background: var(--bg-input);
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    padding: 9px 11px;
+    color: var(--text-faint);
+  }
+  .turn.agent-thinking .reason-head {
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+  .turn.agent-thinking .reason-line {
+    display: block;
+    padding-left: 2px;
+  }
+  .turn.agent-thinking .verdict-reasoning {
+    border-color: var(--accent-border);
+    background: var(--accent-tint);
+  }
+  .turn.agent-thinking .verdict-reasoning .reason-head {
+    color: var(--text);
+  }
+  .turn.agent-thinking .verdict-reasoning .reason-line {
+    color: var(--text-dim);
+  }
+
+  /* verdict turn stands out as the objective conclusion */
+  .turn.verdict .body {
+    color: var(--text);
+    font-weight: 500;
+    background: var(--accent-tint);
+    border: 1px solid var(--accent-border);
+    border-left: 2px solid var(--accent);
+    border-radius: 10px;
+    padding: 11px 14px;
+  }
+
+  /* staggered reveal: the exchange unfolds in sequence (skipped under reduced motion) */
+  .chat-body.reveal-on .turn { opacity: 0; transform: translateY(10px); }
+  .chat-body.reveal-on.in .turn { opacity: 1; transform: none; transition: opacity .5s ease, transform .55s cubic-bezier(0.16,1,0.3,1); transition-delay: calc(var(--i, 0) * 80ms); }
+  .proof-foot { margin: 18px 0 0; font-size: 14px; color: var(--text-dim); }
+  .proof-foot strong { color: var(--text); font-weight: 600; }
+
+  /* Steps */
+  .steps { padding: 48px 0 0; display: grid; gap: 2px; }
+  .step { display: flex; gap: 14px; padding: 13px 0; border-top: 1px solid var(--line-soft); }
+  .step:first-of-type { border-top: 0; }
+  .step .n { font-family: var(--mono); color: var(--accent); font-size: 13px; padding-top: 2px; min-width: 22px; }
+  .step .t strong { display: block; font-weight: 600; font-size: 15px; margin-bottom: 2px; }
+  .step .t span { color: var(--text-dim); font-size: 14px; }
+  .step .t code { font-family: var(--mono); font-size: 13px; color: var(--text); background: var(--bg-raised); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-soft); }
+
+  /* Embeddings (2-up: on-device ONNX vs Ollama server) */
+  .embed { padding: 48px 0 0; }
+  .embed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line-soft); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .embed-cell { background: var(--bg-raised); padding: 18px 20px; }
+  .embed-cell .ec-h { font-family: var(--mono); font-size: 12.5px; color: var(--accent); margin: 0 0 9px; }
+  .embed-cell p { margin: 0; font-size: 14px; color: var(--text-dim); line-height: 1.55; }
+  .embed-cell p code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .embed-cell .ec-meta { margin-top: 11px; font-size: 12.5px; }
+
+  /* One config file (annotated YAML preview) */
+  .config { padding: 48px 0 0; }
+  .config > p { font-size: 15px; color: var(--text-dim); margin: 0 0 16px; max-width: 64ch; }
+  .config > p code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .yaml { margin: 0; background: var(--bg-input); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.7; color: var(--text-dim); }
+  .yaml .k { color: var(--accent); }
+  .yaml .c { color: var(--text-faint); }
+  .config-foot { font-size: 13.5px; color: var(--text-faint); margin: 14px 0 0; max-width: 64ch; }
+  .config-foot code { color: var(--text-dim); font-family: var(--mono); }
+
+  /* Footer */
+  footer { margin-top: 56px; border-top: 1px solid var(--line-soft); padding: 28px 0 60px; }
+  .foot-row { display: flex; flex-wrap: wrap; gap: 10px 24px; font-size: 14px; }
+  .foot-row a { color: var(--text-dim); }
+  .foot-row a:hover { color: var(--text); text-decoration: none; }
+  .foot-meta { margin-top: 18px; font-size: 13px; color: var(--text-faint); }
+  .foot-meta code { font-family: var(--mono); }
+
+  @media (max-width: 560px) {
+    .nav-links { gap: 16px; }
+    .brand .full { display: none; }
+    .embed-grid { grid-template-columns: 1fr; }
+    .yaml { font-size: 12px; }
+    .hero { padding: 40px 0 22px; }
+    .panel { padding: 16px; }
+    .copy span.lbl { display: none; }
+    .copy { padding: 0 13px; }
+    .chat-head { font-size: 11px; }
+    .chat-body { padding: 14px; gap: 16px; }
+    .turn.you { max-width: 90%; }
+    .avatar { width: 26px; height: 26px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+    .thinking i { opacity: .55; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="nav">
+    <span class="brand"><img class="logo" src="assets/sai-s-logo.jpg" alt="" aria-hidden="true" width="26" height="26" /><span class="sai">SAI</span><span class="full"><u>S</u>emantic<u>A</u>st<u>I</u>ndexer</span></span>
+    <nav class="nav-links">
+      <a href="#install">Install</a>
+      <a href="https://github.com/maadgrom/semanticastindexer">GitHub</a>
+      <a href="book/">Docs</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <p class="eyebrow">MCP server + CLI</p>
+    <h1>Near-duplicate detection<br><span class="soft">for your AI coding agent.</span></h1>
+    <p class="lede">Index your codebase once. Search in plain English, or surface the near-duplicate functions your agent keeps writing. Local-first, private, no API keys required.</p>
+    <div class="langs">
+      <span class="lang-label">symbol-aware</span>
+      <span class="pill">TypeScript</span>
+      <span class="pill">Rust</span>
+      <span class="pill">Go</span>
+      <span class="lang-more">JavaScript and every other language: line-based.</span>
+    </div>
+  </section>
+
+  <section class="install" id="install">
+    <h2 class="sec-h"># install</h2>
+    <div class="card">
+      <div class="tabs" id="os-tabs" role="tablist" aria-label="Choose your operating system"></div>
+      <div class="panel" id="os-panel" role="tabpanel"></div>
+    </div>
+  </section>
+
+  <section class="connect">
+    <h2 class="sec-h"># connect your agent</h2>
+    <p>On macOS and Linux the installer asks which client(s) to connect, so you can wire up all of them or just the one you use. To skip the prompt in a script, pass <code>--all</code> or <code>--platform &lt;id&gt;</code>:</p>
+    <div id="connect-cmd"></div>
+    <p class="connect-foot">Client ids: <code>claude-code</code>, <code>claude-desktop</code>, <code>cursor</code>, <code>windsurf</code>, <code>continue</code>, <code>codex</code>, <code>hermes</code>, <code>ollama</code>. On Windows, install the binary above, then paste the printed MCP block into your client. Per-client config paths live in the <a href="https://github.com/maadgrom/semanticastindexer/blob/main/docs/install.md">installation docs</a>.</p>
+  </section>
+
+  <section class="proof">
+    <h2 class="sec-h"># proof, not vibes</h2>
+    <h3 class="proof-title">Your agent will argue. The index won't.</h3>
+    <p class="proof-sub">Cosine similarity is not an opinion. <code>sai_find_duplicates</code> hands you the file and line, so "that delegation is intentional" turns into "fix the four copies." From a real deslop session:</p>
+    <div class="chat" aria-label="Transcript: an agent triaging duplicate-detector findings">
+      <div class="chat-head">
+        <span class="tool-call"><span class="tc-mark" aria-hidden="true"></span>sai_find_duplicates</span>
+        <span class="turns">49 clusters</span>
+      </div>
+      <div class="chat-body">
+        <div class="turn agent" style="--i:0">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content"><p class="name">agent</p><p class="body">Most of these 49 clusters are false positives. Intentional repository delegation, one-line constructors, layer-appropriate test helpers. I'll fix only genuine copy-paste.</p></div>
+        </div>
+        <div class="turn you" style="--i:1">
+          <div class="content"><p class="body">I don't believe you triaged them all. Give me a table.</p></div>
+        </div>
+        <div class="turn agent-thinking" style="--i:1.5">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content">
+            <p class="name">agent</p>
+            <div class="reasoning">
+              <div class="reason-head">triaging clusters</div>
+              <div class="reason-line">12 candidates above 0.90 similarity</div>
+              <div class="reason-line">focusing on symbol-level auth patterns</div>
+            </div>
+          </div>
+        </div>
+        <div class="turn agent" style="--i:2">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content"><p class="name">agent</p><p class="body">Ran a 9-agent parallel audit, opened the actual code at every cluster. 3 fixed, 7 real but deferred, 39 false positives.</p></div>
+        </div>
+        <div class="turn you" style="--i:3">
+          <div class="content"><p class="body">So you can say this is not slop?</p></div>
+        </div>
+        <div class="turn agent" style="--i:4">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content"><p class="name">agent</p><p class="body">Fair challenge. Let me read the lines instead of trusting my own summary.</p></div>
+        </div>
+        <div class="turn agent-thinking" style="--i:5">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content">
+            <p class="name">agent</p>
+            <div class="reasoning verdict-reasoning">
+              <div class="reason-head">reading the actual lines</div>
+              <div class="reason-line">auth-guard + try/catch envelope</div>
+              <div class="reason-line">identical across four project actions</div>
+              <div class="reason-line">no intentional delegation marker</div>
+            </div>
+          </div>
+        </div>
+        <div class="turn agent cont verdict" style="--i:6">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="content"><p class="body">No. I was wrong. It is slop. The auth-guard, try, catch envelope is duplicated verbatim across four project actions.</p></div>
+        </div>
+      </div>
+    </div>
+    <p class="proof-foot"><strong>sai_find_duplicates flagged it on the first pass.</strong> The agent argued for three rounds. The index was right the whole time.</p>
+  </section>
+
+  <section class="steps">
+    <h2 class="sec-h"># after installing</h2>
+    <div class="step">
+      <span class="n">01</span>
+      <span class="t"><strong>Index your project</strong><span>Run <code>semanticastindexer --root src --ext ts,tsx --dry-run</code> to preview, then drop <code>--dry-run</code> to build the index.</span></span>
+    </div>
+    <div class="step">
+      <span class="n">02</span>
+      <span class="t"><strong>Restart your client</strong><span>It picks up the MCP server and its tools: <code>sai_search_code</code> for plain-English search, <code>sai_find_similar</code> for the nearest matches to one function, and <code>sai_find_duplicates</code> for repo-wide clusters.</span></span>
+    </div>
+    <div class="step">
+      <span class="n">03</span>
+      <span class="t"><strong>Find and fix the slop</strong><span>Point your agent at <code>sai_find_duplicates</code> (it ships in the installed skill): it surfaces the repo's near-duplicate functions so the agent consolidates the copy-paste instead of arguing it's intentional.</span></span>
+    </div>
+    <div class="step">
+      <span class="n">04</span>
+      <span class="t"><strong>Ask away</strong><span><code>sai_search_code</code> answers "where do we open the DuckDB connection?" in plain English, and <code>sai_find_similar</code> pulls the nearest matches to any function.</span></span>
+    </div>
+  </section>
+
+  <section class="embed">
+    <h2 class="sec-h"># embeddings</h2>
+    <div class="embed-grid">
+      <div class="embed-cell">
+        <p class="ec-h">ort · on-device ONNX</p>
+        <p>Embeds locally with ONNX Runtime. No server, no API keys. The model is pulled from Hugging Face on first run: the code-trained <code>jina-embeddings-v2-base-code</code> (161M params, 768-dim), or <code>e5-small</code> (118M, 384-dim) as the zero-config text default.</p>
+        <p class="ec-meta"><a href="https://huggingface.co/models?pipeline_tag=feature-extraction&amp;library=onnx">Browse ONNX embedding models on Hugging Face →</a></p>
+      </div>
+      <div class="embed-cell">
+        <p class="ec-h">ollama · embedding server</p>
+        <p>Or point at an Ollama server over HTTP, local or remote. Handy in CI/CD where an embedding service already runs: pull a model (e.g. <code>mxbai-embed-large</code>), set its url, and index.</p>
+        <p class="ec-meta"><a href="https://ollama.com/search?c=embedding">Browse embedding models on Ollama →</a></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="config">
+    <h2 class="sec-h"># one config file</h2>
+    <p>One <code>indexer.yaml</code> is the whole control surface. It picks the backend, embedder, and chunker, sets the model, and defines exactly what leaves the repo: tests, generated files, shadcn primitives, comments. The CLI and the MCP server both read it.</p>
+    <pre class="yaml"><span class="k">backend</span>: duckdb          <span class="c"># qdrant | duckdb</span>
+<span class="k">embedder</span>: ort            <span class="c"># ort (offline ONNX) | ollama</span>
+<span class="k">chunker</span>: ast             <span class="c"># lines | ast (symbol-aware)</span>
+<span class="k">collection</span>: source_code
+<span class="k">model</span>: jinaai/jina-embeddings-v2-base-code
+<span class="k">vector_dim</span>: 768
+
+<span class="k">exclude</span>:                 <span class="c"># what never leaves the repo</span>
+  - "**/*.test.*"
+  - "**/components/ui/**"
+  - "**/*.gen.*"
+<span class="k">strip_comments</span>: true
+
+<span class="k">similarity</span>:              <span class="c"># sai_find_* cutoffs, tuned per model</span>
+  <span class="k">duplicate_min_score</span>: 0.88</pre>
+    <p class="config-foot">Full reference in the <a href="https://github.com/maadgrom/semanticastindexer/blob/main/docs/configuration.md">configuration guide</a>. Opt out per function with <code>sai-noindexing</code> and <code>sai-noduplicate</code> comment markers.</p>
+  </section>
+
+  <footer>
+    <div class="foot-row">
+      <a href="book/getting-started.html">Getting started</a>
+      <a href="book/installation.html">Installation</a>
+      <a href="book/concepts/how-it-works.html">How it works</a>
+      <a href="book/reference/cli.html">CLI</a>
+      <a href="book/reference/configuration.html">Configuration</a>
+      <a href="book/reference/mcp-server.html">MCP server</a>
+      <a href="book/operations/troubleshooting.html">Troubleshooting</a>
+      <a href="book/installation.html#uninstall">Uninstall</a>
+    </div>
+    <p class="foot-meta"><a href="https://github.com/maadgrom/semanticastindexer/blob/main/LICENSE">MIT licensed</a>. Build from source: <code>cargo build --release --features all</code></p>
+  </footer>
+
+</div>
+
+<p id="sr-status" class="sr-only" role="status" aria-live="polite"></p>
+
+<script>
+  var PAGES = "https://maadgrom.github.io/semanticastindexer/install.sh";
+  var PS1 = "https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.ps1";
+
+  var OSES = [
+    { id: "macos",   label: "macOS",   cmd: "curl -fsSL " + PAGES + " | bash" },
+    { id: "linux",   label: "Linux",   cmd: "curl -fsSL " + PAGES + " | bash" },
+    { id: "windows", label: "Windows", cmd: 'powershell -c "irm ' + PS1 + ' | iex"' }
+  ];
+  var OS_NOTE = {
+    macos:   "Downloads the prebuilt binary (no Rust needed), then asks which agent(s) to connect.",
+    linux:   "Downloads the prebuilt binary (no Rust needed), then asks which agent(s) to connect.",
+    windows: "Installs the prebuilt binary via PowerShell. Connect your client from the section below."
+  };
+  var CONNECT_CMD = "curl -fsSL " + PAGES + " | bash -s -- --all";
+
+  var COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  var CHECK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+  var srStatus = document.getElementById("sr-status");
+
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;"); }
+
+  // Render a command box: leading "$ " prompt, the command, a copy button.
+  // highlight is matched as a literal substring (function replacer avoids $-pattern issues).
+  function cmdBox(raw, highlight, label) {
+    var shown = esc(raw);
+    if (highlight) {
+      var needle = esc(highlight);
+      if (shown.indexOf(needle) !== -1) {
+        shown = shown.replace(needle, function (m) { return '<span class="flag">' + m + "</span>"; });
+      }
+    }
+    return '<div class="cmd">' +
+      '<code><span class="prompt">$ </span>' + shown + "</code>" +
+      '<button class="copy" type="button" data-copy="' + esc(raw) + '" aria-label="' + esc(label || "Copy command") + '">' +
+        COPY_ICON + '<span class="lbl">Copy</span>' +
+      "</button></div>";
+  }
+
+  /* ---- OS install tabs (WAI-ARIA tabs pattern) ---- */
+  var osTabs = document.getElementById("os-tabs");
+  var osPanel = document.getElementById("os-panel");
+  var osCurrent = 0;
+
+  function renderOs(i) {
+    var o = OSES[i];
+    osPanel.innerHTML = '<p class="panel-note">' + OS_NOTE[o.id] + "</p>" +
+      '<p class="cmd-label">install</p>' + cmdBox(o.cmd, null, "Copy install command");
+  }
+  function selectOs(i) {
+    osCurrent = i;
+    osTabs.querySelectorAll(".tab").forEach(function (t, j) {
+      t.setAttribute("aria-selected", j === i ? "true" : "false");
+      t.tabIndex = j === i ? 0 : -1;
+    });
+    osPanel.setAttribute("aria-labelledby", "os-" + OSES[i].id);
+    renderOs(i);
+  }
+  OSES.forEach(function (o, i) {
+    var b = document.createElement("button");
+    b.className = "tab"; b.id = "os-" + o.id; b.type = "button";
+    b.setAttribute("role", "tab"); b.setAttribute("aria-controls", "os-panel"); b.textContent = o.label;
+    b.addEventListener("click", function () { selectOs(i); });
+    b.addEventListener("keydown", function (e) {
+      var n = null;
+      if (e.key === "ArrowRight") n = (osCurrent + 1) % OSES.length;
+      else if (e.key === "ArrowLeft") n = (osCurrent - 1 + OSES.length) % OSES.length;
+      else if (e.key === "Home") n = 0;
+      else if (e.key === "End") n = OSES.length - 1;
+      if (n !== null) { e.preventDefault(); selectOs(n); osTabs.querySelectorAll(".tab")[n].focus(); }
+    });
+    osTabs.appendChild(b);
+  });
+
+  // Default the OS tab to the visitor's platform (Mac explicit, Windows explicit, else Linux).
+  (function () {
+    var ua = (navigator.userAgent || "") + " " + (navigator.platform || "");
+    var guess = 1;
+    if (/Win/i.test(ua)) guess = 2;
+    else if (/Mac/i.test(ua) && !/iPhone|iPad|iPod/i.test(ua)) guess = 0;
+    selectOs(guess);
+  })();
+
+  /* ---- Connect command (static reference, not a selector) ---- */
+  document.getElementById("connect-cmd").innerHTML = cmdBox(CONNECT_CMD, "--all", "Copy connect command");
+
+  /* ---- Proof chat: staggered reveal on first enter (skipped under reduced motion) ---- */
+  (function () {
+    var body = document.querySelector(".chat-body");
+    if (!body || !("IntersectionObserver" in window)) return;
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    body.classList.add("reveal-on");
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) { body.classList.add("in"); io.disconnect(); } });
+    }, { threshold: 0.2 });
+    io.observe(body);
+  })();
+
+  /* ---- Clipboard (delegated, survives re-render) ---- */
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest(".copy");
+    if (!btn) return;
+    var text = btn.getAttribute("data-copy");
+    function flash(label, announce) {
+      btn.classList.add("copied");
+      btn.innerHTML = CHECK_ICON + '<span class="lbl">' + label + "</span>";
+      if (srStatus) srStatus.textContent = announce;
+      setTimeout(function () { btn.classList.remove("copied"); btn.innerHTML = COPY_ICON + '<span class="lbl">Copy</span>'; }, 1700);
+    }
+    function failed() {
+      btn.innerHTML = COPY_ICON + '<span class="lbl">Press Ctrl+C</span>';
+      if (srStatus) srStatus.textContent = "Copy failed, select and copy manually";
+      setTimeout(function () { btn.innerHTML = COPY_ICON + '<span class="lbl">Copy</span>'; }, 2200);
+    }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) { flash("Copied", "Copied to clipboard"); } else { failed(); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { flash("Copied", "Copied to clipboard"); }).catch(fallback);
+    } else { fallback(); }
+  });
+</script>
+</body>
+</html>

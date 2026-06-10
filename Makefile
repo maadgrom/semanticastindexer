@@ -24,6 +24,8 @@
 #   make duplicates DUP_ARGS="--min-score 0.85 --path-glob 'src/utils/**'"
 #   make similar SIM_ARGS="--code 'function f(){}'"            # neighbours of a snippet
 #   make similar SIM_ARGS="--path src/utils/x.ts --line 12"    # neighbours of a chunk
+#   make docs                           # live-preview the docs (mdbook serve, auto-reload)
+#   make site                           # build + serve the full static site (landing page + /book/)
 #   make test / check-all               # test / clippy with --features all (already the default)
 #
 # All capabilities (MCP server, duplicates/similar, AST chunking, both backends)
@@ -54,7 +56,14 @@ ARGS       ?= --root $(ROOT) --ext $(EXT) --language $(LANGUAGE) --collection $(
 DUP_ARGS   ?=
 SIM_ARGS   ?= --code "function example() { return 1 }"
 
-.PHONY: build build-ort build-ollama build-ast run prod dry-run sync flush query duplicates similar test test-all fmt clippy check-all clean help
+# Docs site (mdBook). `make docs` live-previews; `make site` serves the full
+# deployed layout (landing page at /, book at /book/) just like GitHub Pages.
+MDBOOK     ?= mdbook
+DOCS_PORT  ?= 3000
+SITE_PORT  ?= 8000
+SITE_DIR   := $(THIS_DIR)/.site
+
+.PHONY: build build-ort build-ollama build-ast run prod dry-run sync flush query duplicates similar test test-all fmt clippy check-all clean help require-mdbook book-build docs site static
 
 build: ## Compile the optimized release binary with ALL features (recommended)
 	cargo build --release --manifest-path $(MANIFEST) --features all
@@ -105,6 +114,30 @@ check-all: ## Lint with all backends, warnings as errors (--features all)
 
 clean: ## Remove build artifacts
 	cargo clean --manifest-path $(MANIFEST)
+
+require-mdbook:
+	@command -v $(MDBOOK) >/dev/null 2>&1 || { echo "mdbook not found on PATH. Install it with: cargo install mdbook"; exit 1; }
+
+book-build: require-mdbook ## Build the mdBook docs (output: book/html)
+	$(MDBOOK) build $(THIS_DIR)/book
+
+docs: require-mdbook ## Live-preview the docs (auto-reload) at http://localhost:$(DOCS_PORT)
+	$(MDBOOK) serve $(THIS_DIR)/book --open --port $(DOCS_PORT)
+
+site: book-build ## Build + serve the full static site (landing + /book/) at http://localhost:$(SITE_PORT)
+	rm -rf $(SITE_DIR)
+	mkdir -p $(SITE_DIR)/book
+	cp $(THIS_DIR)/docs/index.html $(THIS_DIR)/docs/install.sh $(THIS_DIR)/docs/uninstall.sh $(THIS_DIR)/docs/.nojekyll $(SITE_DIR)/
+	cp -R $(THIS_DIR)/assets $(SITE_DIR)/
+	cp -R $(THIS_DIR)/book/html/. $(SITE_DIR)/book/
+	@echo ""
+	@echo "  Static site assembled at $(SITE_DIR)"
+	@echo "  Open http://localhost:$(SITE_PORT)  — landing page at /, docs at /book/ (what GitHub Pages serves)."
+	@echo "  Press Ctrl+C to stop."
+	@echo ""
+	cd $(SITE_DIR) && python3 -m http.server $(SITE_PORT)
+
+static: site ## (alias) Build + serve the full static site
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
