@@ -9,8 +9,8 @@ invariants it must preserve.
 
 ## Toolchain
 
-- **MSRV 1.85**, **edition 2024** (declared in `Cargo.toml` as `rust-version =
-  "1.85"` / `edition = "2024"`).
+- **MSRV 1.88**, **edition 2024** (declared in `Cargo.toml` as `rust-version =
+  "1.88"` / `edition = "2024"`). The floor is imposed by `ort` 2.0.0-rc.12.
 - The repo ships a `rust-toolchain.toml` that pins the **stable** channel and
   installs the `rustfmt` and `clippy` components. `rustup` activates it
   automatically when you build inside the repo.

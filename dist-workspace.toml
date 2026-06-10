@@ -5,6 +5,10 @@ members = ["cargo:."]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.32.0"
+# Don't fail the release when release.yml differs from dist's generated output —
+# local YAML formatters reformat the file (whitespace only), which would otherwise
+# trip dist's byte-exact consistency check in the plan job.
+allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
@@ -23,3 +27,10 @@ targets = [
 features = ["all"]
 default-features = false
 all-features = false
+
+# Linux runner overrides. ort 2.0.0-rc.12's prebuilt ONNX Runtime needs GCC 13+ libstdc++
+# (__cxa_call_terminate); dist's default ubuntu-22.04 runners (GCC 12) fail at link.
+# ubuntu-24.04-arm also builds aarch64 natively instead of under emulation/cross.
+[dist.github-custom-runners]
+x86_64-unknown-linux-gnu = "ubuntu-24.04"
+aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"

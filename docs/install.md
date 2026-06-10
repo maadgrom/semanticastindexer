@@ -81,7 +81,7 @@ The binary lands at `./target/release/semanticastindexer`. The first build is sl
 `--features all` pulls in native dependencies (bundled DuckDB + ONNX Runtime via `ort`).
 Subsequent builds are fast thanks to cargo's incremental compilation.
 
-**Requirements:** Rust **stable** toolchain (edition 2024, MSRV 1.85). A `rust-toolchain.toml`
+**Requirements:** Rust **stable** toolchain (edition 2024, MSRV 1.88). A `rust-toolchain.toml`
 pins `stable` so `rustup` auto-activates the latest stable when you build here.
 
 Then run the [one-command setup script](mcp-server.md#one-command-setup-script):
