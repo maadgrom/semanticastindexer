@@ -41,13 +41,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Variants are the Dockerfile stage names: alpine = default :latest (musl,
+        # lean, no ort); full = :*-full (glibc, --features all).
         variant: [alpine, full]
         arch: [amd64, arm64]
         include:
-          - variant: alpine # default :latest — musl, lean (no ort)
-            target: alpine
-          - variant: full # :*-full — glibc, --features all (adds ort)
-            target: full
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
@@ -69,7 +67,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          target: ${{ matrix.target }}
+          target: ${{ matrix.variant }}
           platforms: linux/${{ matrix.arch }}
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, env.IMAGE_NAME) || '' }}
           cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.arch }}
