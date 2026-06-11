@@ -82,10 +82,20 @@ jobs:
       # release build (opt-level 3 + thin LTO over bundled DuckDB's C++) took >2h on
       # the Windows runner. Release codegen is exercised where it ships: the
       # cargo-dist release builds and the Docker workflow.
-      - shell: bash
+      - if: runner.os != 'Windows'
+        shell: bash
         run: |
           set -o pipefail
           cargo test --locked --features all 2>&1 | tee test-output.log
+      # Windows runs single-threaded: the DuckDB tests each INSTALL the vss
+      # extension on first use, and concurrent installs race on the extension
+      # file (rename-over-existing fails on Windows; fine on POSIX). The suite
+      # takes ~2s, so serializing costs nothing.
+      - if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --features all -- --test-threads=1 2>&1 | tee test-output.log
       # Surface the failing tests as check-run annotations so the failure is
       # diagnosable from the PR checks UI (and the public API) without opening logs.
       # NOTE: strip ANSI color first (CARGO_TERM_COLOR=always) or nothing matches,
