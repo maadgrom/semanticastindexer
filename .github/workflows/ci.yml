@@ -75,14 +75,20 @@ jobs:
       # esaxx-rs (C++ dep of tokenizers, via the ort feature) hardcodes
       # .static_crt(true), emitting /MT objects that MSVC refuses to link against
       # the /MD CRT every other C++ dep (bundled DuckDB) and Rust itself use
-      # (LNK2038 RuntimeLibrary mismatch). cc-rs appends CXXFLAGS last and cl
-      # honors the final /M flag, so /MD here overrides the hardcoded /MT.
+      # (LNK2038 RuntimeLibrary mismatch). CXXFLAGS cannot fix this — cc-rs gives
+      # builder flags precedence over env flags, so the hardcoded /MT still wins.
+      # _CL_ is appended by cl.exe AFTER the entire command line (last /M flag
+      # wins), forcing every C/C++ object onto the dynamic CRT.
       - name: force dynamic CRT for C++ deps (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: echo 'CXXFLAGS=/MD' >> "$GITHUB_ENV"
+        run: echo '_CL_=/MD' >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # v2 bump: cc-rs does not reliably rerun C++ build scripts when only
+          # _CL_/CXXFLAGS change, so restored caches could replay stale /MT objects.
+          prefix-key: v2-rust
       # Default (debug) profile: the suite is mock-based and runs in seconds, while a
       # release build (opt-level 3 + thin LTO over bundled DuckDB's C++) took >2h on
       # the Windows runner. Release codegen is exercised where it ships: the
