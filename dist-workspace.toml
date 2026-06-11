@@ -28,6 +28,10 @@ targets = [
 features = ["all"]
 default-features = false
 all-features = false
+# Link the dynamic MSVC CRT (/MD). dist defaults to +crt-static, but ort's prebuilt
+# ONNX Runtime static libs are built against the dynamic CRT (__imp_*-prefixed CRT
+# imports), and the two cannot mix — linking fails with LNK2019 unresolved externals.
+msvc-crt-static = false
 
 # Linux runner overrides. ort 2.0.0-rc.12's prebuilt ONNX Runtime needs GCC 13+ libstdc++
 # (__cxa_call_terminate); dist's default ubuntu-22.04 runners (GCC 12) fail at link.
