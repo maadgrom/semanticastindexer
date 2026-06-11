@@ -23,6 +23,7 @@ jobs:
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -33,6 +34,7 @@ jobs:
   clippy:
     name: clippy (--features all)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -50,17 +52,21 @@ jobs:
         # ONNX Runtime (same constraint as the dist runners in release.yml).
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Release profile matches the documented workflow (README / Makefile): the
-      # embedder's mean-pool / L2-normalize loops are exercised at the shipped opt level.
-      - run: cargo test --locked --release --features all
+      # Default (debug) profile: the suite is mock-based and runs in seconds, while a
+      # release build (opt-level 3 + thin LTO over bundled DuckDB's C++) took >2h on
+      # the Windows runner. Release codegen is exercised where it ships: the
+      # cargo-dist release builds and the Docker workflow.
+      - run: cargo test --locked --features all
 
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       # Overrides rust-toolchain.toml (channel = "stable") so the declared
       # rust-version in Cargo.toml is actually verified.
@@ -76,6 +82,7 @@ jobs:
   features:
     name: feature matrix (cargo hack)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
