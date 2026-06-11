@@ -61,7 +61,19 @@ jobs:
       # release build (opt-level 3 + thin LTO over bundled DuckDB's C++) took >2h on
       # the Windows runner. Release codegen is exercised where it ships: the
       # cargo-dist release builds and the Docker workflow.
-      - run: cargo test --locked --features all
+      - shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --features all 2>&1 | tee test-output.log
+      # Surface the failing tests as check-run annotations so the failure is
+      # diagnosable from the PR checks UI (and the public API) without opening logs.
+      - name: Annotate test failures
+        if: failure()
+        shell: bash
+        run: |
+          { grep -E "^test .* \.\.\. FAILED|panicked at|^error(\[|:)" test-output.log | head -8
+            sed -n '/^failures:$/,/^test result/p' test-output.log | head -20; } |
+          while IFS= read -r line; do echo "::error title=test failure::${line}"; done
 
   msrv:
     name: MSRV (1.88)
@@ -88,6 +100,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-hack
       - uses: Swatinem/rust-cache@v2
+        with:
+          # v2 bump: the cache entry saved by this job's first (43-min) run wedged the
+          # restore step on two consecutive runs — a fresh key namespace dodges it.
+          prefix-key: v2-rust
       # Every feature gate must compile on its own, so feature-gated breakage can't
       # ship. Backend-less builds (--no-default-features alone, and `ast` alone) are
       # intentionally invalid — a compile_error! in lib.rs rejects them — so they are
