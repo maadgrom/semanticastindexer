@@ -58,7 +58,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
+      # Same prelude as the dist-generated release.yml build jobs: Windows needs
+      # long-path support, and bundled DuckDB's build (tar extraction + cl.exe over
+      # the amalgamation) lives in deep target paths that can exceed MAX_PATH —
+      # a short CARGO_TARGET_DIR keeps every build path well under 260 chars.
+      - name: enable windows longpaths
+        if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
       - uses: actions/checkout@v4
+      - name: shorten target dir (Windows MAX_PATH)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'CARGO_TARGET_DIR=C:\ct' >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Default (debug) profile: the suite is mock-based and runs in seconds, while a
@@ -79,12 +90,14 @@ jobs:
         shell: bash
         run: |
           sed 's/\x1b\[[0-9;]*[mK]//g' test-output.log > plain.log || true
-          # Build-script failures dump their stderr in an indented block after the
-          # headline — capture that block, then any test failures.
-          { grep -A40 -i "failed to run custom build command" plain.log | grep -v "^\s*$" | head -10 || true
-            grep -E "FAILED|panicked at" plain.log | head -5 || true
-            sed -n '/^failures:$/,/^test result/p' plain.log | head -15 || true; } |
-          while IFS= read -r line; do echo "::error title=test failure::${line}"; done
+          # Build-script failures put the actual error in the LAST '--- stderr'
+          # block — capture that (the stdout/env-probe lines above it are noise),
+          # then any test failures. Annotations cap at 10 per step.
+          { grep -i -m1 "failed to run custom build command" plain.log || true
+            awk '/--- stderr/{n=NR} {l[NR]=$0} END{if(n)for(i=n;i<=NR&&i<n+8;i++)print l[i]}' plain.log || true
+            grep -E "FAILED|panicked at" plain.log | head -4 || true
+            sed -n '/^failures:$/,/^test result/p' plain.log | head -10 || true; } |
+          grep -v "^\s*$" | while IFS= read -r line; do echo "::error title=test failure::${line}"; done
           exit 0
 
   msrv:
