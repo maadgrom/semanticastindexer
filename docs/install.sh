@@ -101,7 +101,7 @@ install_binary() {
     log "Downloading the latest prebuilt ${BINARY_NAME} binary..."
     if ! curl -fsSL "$RELEASE_INSTALLER" | sh; then
         error "Could not run the release installer."
-        error "No release yet? Build from source instead — see ${RAW_BASE}/docs/install.md"
+        error "No release yet? Build from source instead — see https://maadgrom.github.io/semanticastindexer/book/installation.html"
         exit 1
     fi
     success "Binary installed."
