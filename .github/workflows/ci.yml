@@ -50,11 +50,13 @@ jobs:
       matrix:
         # ubuntu-latest (24.04) ships GCC 13, required by ort 2.0.0-rc.12's prebuilt
         # ONNX Runtime (same constraint as the dist runners in release.yml).
-        # windows-2025 is pinned EXPLICITLY: windows-latest is being redirected to a
-        # windows-2025-vs2026 image whose preview MSVC toolset fails to compile
-        # bundled DuckDB's C++ amalgamation (libduckdb-sys build-script failure).
-        # The release pipeline ships Windows binaries from the VS2022 toolset.
-        os: [ubuntu-latest, macos-latest, windows-2025]
+        # windows-2022 is pinned EXPLICITLY: both windows-latest and windows-2025 now
+        # ship the VS2026 toolset (MSVC 14.51), and cl.exe fails to compile bundled
+        # DuckDB 1.5's amalgamation under it (ub_src_storage_compression_chimp.cpp,
+        # via the libduckdb-sys build script). VS2022 (cl 14.4x) is the toolset the
+        # v0.1.0 release binaries were built with and compiles DuckDB fine. Revisit
+        # when the duckdb crate supports VS2026 or windows-2022 is retired.
+        os: [ubuntu-latest, macos-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
