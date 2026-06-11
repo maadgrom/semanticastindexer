@@ -92,6 +92,15 @@ globset = "0.4"
 # Temp source trees for the mocked happy-path flow tests (no network, no real backend).
 tempfile = "3"
 
+# Bundled DuckDB is a single giant C++ amalgamation; compiling it WITH debug info
+# breaks MSVC on the GitHub windows runners ("failed to run custom build command for
+# libduckdb-sys"), while release builds (no debug info) are proven to work there
+# (cargo-dist ships Windows binaries). Nobody debugs DuckDB internals from this repo,
+# so drop debug info for just this crate in dev/test builds — fixes Windows CI and
+# shrinks every local debug build.
+[profile.dev.package.libduckdb-sys]
+debug = false
+
 [profile.release]
 # opt-level 3 + thin LTO: the embedder's hand-written mean-pool / L2-normalize loops
 # and the tokenizer are hot, CPU-bound numeric code during indexing. The extra
