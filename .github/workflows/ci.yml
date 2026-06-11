@@ -72,6 +72,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: echo 'CARGO_TARGET_DIR=C:\ct' >> "$GITHUB_ENV"
+      # esaxx-rs (C++ dep of tokenizers, via the ort feature) hardcodes
+      # .static_crt(true), emitting /MT objects that MSVC refuses to link against
+      # the /MD CRT every other C++ dep (bundled DuckDB) and Rust itself use
+      # (LNK2038 RuntimeLibrary mismatch). cc-rs appends CXXFLAGS last and cl
+      # honors the final /M flag, so /MD here overrides the hardcoded /MT.
+      - name: force dynamic CRT for C++ deps (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'CXXFLAGS=/MD' >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Default (debug) profile: the suite is mock-based and runs in seconds, while a
@@ -97,9 +106,10 @@ jobs:
           # then any test failures. Annotations cap at 10 per step.
           { grep -i -m1 "failed to run custom build command" plain.log || true
             awk '/--- stderr/{n=NR} {l[NR]=$0} END{if(n)for(i=n;i<=NR&&i<n+8;i++)print l[i]}' plain.log || true
+            grep -E "error: linking with|LNK[0-9]+|error\[E[0-9]+" plain.log | head -4 || true
             grep -E "FAILED|panicked at" plain.log | head -4 || true
             sed -n '/^failures:$/,/^test result/p' plain.log | head -10 || true; } |
-          grep -v "^\s*$" | while IFS= read -r line; do echo "::error title=test failure::${line}"; done
+          { grep -v "^\s*$" || true; } | while IFS= read -r line; do echo "::error title=test failure::${line}"; done
           exit 0
 
   msrv:
