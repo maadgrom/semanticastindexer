@@ -1,0 +1,90 @@
+name: CI
+
+# Test / lint / format gate for every PR and push to main. Release builds live in
+# release.yml (cargo-dist); Docker validation in docker.yml. This workflow is the
+# only place `cargo test` runs in CI.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (--features all)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --features all --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-latest (24.04) ships GCC 13, required by ort 2.0.0-rc.12's prebuilt
+        # ONNX Runtime (same constraint as the dist runners in release.yml).
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Release profile matches the documented workflow (README / Makefile): the
+      # embedder's mean-pool / L2-normalize loops are exercised at the shipped opt level.
+      - run: cargo test --locked --release --features all
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    env:
+      # Overrides rust-toolchain.toml (channel = "stable") so the declared
+      # rust-version in Cargo.toml is actually verified.
+      RUSTUP_TOOLCHAIN: "1.88"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --features all --all-targets
+
+  features:
+    name: feature matrix (cargo hack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-hack
+      - uses: Swatinem/rust-cache@v2
+      # Every feature gate must compile on its own, so feature-gated breakage can't
+      # ship. Dev-deps are skipped: this checks the shipped library/binary surface,
+      # not the test harness. Backend-less builds (--no-default-features alone, and
+      # `ast` alone) are intentionally invalid — a compile_error! in lib.rs rejects
+      # them — so they are excluded here; `ast` is still covered via `all` in the
+      # clippy/test jobs.
+      - run: cargo hack check --locked --each-feature --exclude-no-default-features --skip ast --no-dev-deps
