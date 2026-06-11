@@ -82,9 +82,9 @@ jobs:
       - uses: taiki-e/install-action@cargo-hack
       - uses: Swatinem/rust-cache@v2
       # Every feature gate must compile on its own, so feature-gated breakage can't
-      # ship. Dev-deps are skipped: this checks the shipped library/binary surface,
-      # not the test harness. Backend-less builds (--no-default-features alone, and
-      # `ast` alone) are intentionally invalid — a compile_error! in lib.rs rejects
-      # them — so they are excluded here; `ast` is still covered via `all` in the
-      # clippy/test jobs.
-      - run: cargo hack check --locked --each-feature --exclude-no-default-features --skip ast --no-dev-deps
+      # ship. Backend-less builds (--no-default-features alone, and `ast` alone) are
+      # intentionally invalid — a compile_error! in lib.rs rejects them — so they are
+      # excluded here; `ast` is still covered via `all` in the clippy/test jobs.
+      # NOTE: no --no-dev-deps — it strips dev-deps from the manifest, which --locked
+      # then rejects (the lockfile no longer matches). --locked wins: reproducible CI.
+      - run: cargo hack check --locked --each-feature --exclude-no-default-features --skip ast
