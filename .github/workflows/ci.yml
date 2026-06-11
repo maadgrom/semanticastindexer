@@ -50,7 +50,11 @@ jobs:
       matrix:
         # ubuntu-latest (24.04) ships GCC 13, required by ort 2.0.0-rc.12's prebuilt
         # ONNX Runtime (same constraint as the dist runners in release.yml).
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # windows-2025 is pinned EXPLICITLY: windows-latest is being redirected to a
+        # windows-2025-vs2026 image whose preview MSVC toolset fails to compile
+        # bundled DuckDB's C++ amalgamation (libduckdb-sys build-script failure).
+        # The release pipeline ships Windows binaries from the VS2022 toolset.
+        os: [ubuntu-latest, macos-latest, windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -75,8 +79,11 @@ jobs:
         shell: bash
         run: |
           sed 's/\x1b\[[0-9;]*[mK]//g' test-output.log > plain.log || true
-          { grep -E "FAILED|panicked at|error\[|^error|caused by|fatal error|warning: build failed|C1[0-9]{3}|LNK[0-9]{4}|out of (heap|memory)" plain.log | head -10 || true
-            sed -n '/^failures:$/,/^test result/p' plain.log | head -25 || true; } |
+          # Build-script failures dump their stderr in an indented block after the
+          # headline — capture that block, then any test failures.
+          { grep -A40 -i "failed to run custom build command" plain.log | grep -v "^\s*$" | head -10 || true
+            grep -E "FAILED|panicked at" plain.log | head -5 || true
+            sed -n '/^failures:$/,/^test result/p' plain.log | head -15 || true; } |
           while IFS= read -r line; do echo "::error title=test failure::${line}"; done
           exit 0
 
