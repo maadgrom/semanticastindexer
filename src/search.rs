@@ -1,27 +1,24 @@
 //! Shared similarity-search core used by BOTH the CLI (`similar` / `duplicates`
-//! subcommands in `main.rs`) AND the MCP server (`mcp.rs`).
+//! subcommands) AND the MCP server (`mcp.rs`).
 //!
 //! This module is **not** gated behind the `mcp` feature: the `duplicates` / `similar`
 //! CLI subcommands must work with just a vector backend + embedder (e.g.
-//! `--features "ollama,ast"` or `--features ort`). It is compiled whenever a vector
-//! backend (`duckdb` or `qdrant`) is available.
+//! `--features "ollama,ast"` or `--features ort`).
 //!
 //! What lives here (single source of truth — never duplicated):
 //! - [`UnionFind`] — disjoint-set used to cluster near-duplicate chunks.
 //! - [`DupMember`] / [`DupCluster`] — the cluster result shape.
 //! - [`cluster_duplicates`] — the PURE clustering algorithm (union-find over
-//!   per-chunk neighbour lists + edge bookkeeping + sort/truncate). Both callers
-//!   fetch the chunks + neighbours their own way (the MCP server through its `!Send`
-//!   backend worker handle, the CLI directly off the `Backend` enum) and then hand
-//!   the gathered data to this one function.
-//! - [`SimilarTarget`] / [`find_similar`] — the `find_similar` input resolution
-//!   (a `code` snippet embedded as a PASSAGE vs an existing `path`+`line` whose stored
-//!   vector is reused, self-excluded) for the CLI, off the `Backend` enum directly.
+//!   per-chunk neighbour lists + edge bookkeeping + sort/truncate).
+//! - [`find_duplicates`] / [`find_similar`] — the orchestration over a [`Backend`]
+//!   (fetch chunks/vectors, gather neighbours, resolve a [`SimilarTarget`]).
 //!
-//! The MCP server cannot call the `Backend` enum directly (its DuckDB backend is
-//! `!Send` and rmcp tool futures must be `Send`), so it routes reads through its worker
-//! thread — but it shares the PURE clustering core ([`cluster_duplicates`]) and the
-//! result types here, so the union-find logic exists in exactly one place.
+//! These functions take `&Backend` and therefore run ON the backend worker thread
+//! ([`crate::worker`]): both the CLI subcommands and the MCP tools send a
+//! `FindDuplicates` / `FindSimilar` request through the `Send`+`Sync`
+//! [`crate::worker::BackendHandle`], and the worker calls into this module. The
+//! backend's sync DuckDB I/O thus never blocks the main runtime, and the
+//! orchestration exists in exactly one place.
 
 #![cfg_attr(not(any(feature = "duckdb", feature = "qdrant")), allow(dead_code))]
 
@@ -170,14 +167,14 @@ fn build_cluster(
     }
 }
 
-/// Run the full codebase-wide near-duplicate scan directly off the [`Backend`] enum
-/// (the CLI `duplicates` path). Fetches every stored chunk (optionally path-glob
-/// filtered), gathers each chunk's `top_k` nearest neighbours (self-excluded, stored
-/// vectors — no re-embed), then defers to the shared [`cluster_duplicates`].
+/// Run the full codebase-wide near-duplicate scan off the [`Backend`] enum. Fetches
+/// every stored chunk (optionally path-glob filtered), gathers each chunk's `top_k`
+/// nearest neighbours (self-excluded, stored vectors — no re-embed), then defers to
+/// the shared [`cluster_duplicates`].
 ///
-/// The MCP server does NOT call this (it must route the same reads through its `!Send`
-/// backend worker) — but it calls the same [`cluster_duplicates`] core, so the
-/// clustering algorithm is shared, not duplicated.
+/// Runs on the backend worker thread: BOTH the CLI `duplicates` subcommand and the
+/// MCP `sai_find_duplicates` tool reach this through a `FindDuplicates` request on
+/// [`crate::worker::BackendHandle`].
 pub async fn find_duplicates(
     backend: &Backend,
     min_score: f32,
@@ -186,7 +183,6 @@ pub async fn find_duplicates(
     max_clusters: usize,
     path_glob: Option<&str>,
 ) -> Result<Vec<DupCluster>> {
-    // sai-noduplicate: CLI orchestration twin of mcp::find_duplicates; calls the Backend enum directly; shares the cluster_duplicates core
     let chunks = backend.all_chunks_with_vectors(path_glob).await?;
     let mut neighbours: Vec<Vec<Hit>> = Vec::with_capacity(chunks.len());
     for (hit, vec) in &chunks {
@@ -205,15 +201,19 @@ pub async fn find_duplicates(
 /// What `find_similar` searches for: a code snippet (embedded as a PASSAGE) or an
 /// existing indexed chunk located by `path` + 1-based `line` (its stored vector is
 /// reused — no re-embed — and the chunk itself is excluded from its own results).
-pub enum SimilarTarget<'a> {
+///
+/// Owned (no borrows) so it can be sent to the backend worker thread as part of a
+/// [`crate::worker::Request`].
+pub enum SimilarTarget {
     /// A code snippet to embed as a passage (code-vs-code space).
-    Code(&'a str),
+    Code(String),
     /// An existing indexed chunk's location.
-    Location { path: &'a str, line: usize },
+    Location { path: String, line: usize },
 }
 
-/// Resolve a `find_similar` request directly off the [`Backend`] enum (the CLI `similar`
-/// path) into ranked neighbours, applying `min_score`.
+/// Resolve a `find_similar` request off the [`Backend`] enum into ranked neighbours,
+/// applying `min_score`. Runs on the backend worker thread (the CLI `similar`
+/// subcommand sends a `FindSimilar` request through [`crate::worker::BackendHandle`]).
 ///
 /// - [`SimilarTarget::Code`] embeds the snippet as a PASSAGE then NN-searches by it.
 /// - [`SimilarTarget::Location`] looks up the stored chunk + its exact vector and
@@ -223,17 +223,17 @@ pub enum SimilarTarget<'a> {
 /// distribution). Returns the ranked, filtered hits.
 pub async fn find_similar(
     backend: &Backend,
-    target: SimilarTarget<'_>,
+    target: SimilarTarget,
     limit: u64,
     min_score: f32,
 ) -> Result<Vec<Hit>> {
     let hits = match target {
         SimilarTarget::Code(code) => {
-            let vec = backend.embed_passage(code).await?;
+            let vec = backend.embed_passage(&code).await?;
             backend.query_by_vector(&vec, limit, None).await?
         }
         SimilarTarget::Location { path, line } => {
-            let located = backend.get_by_location(path, line).await?;
+            let located = backend.get_by_location(&path, line).await?;
             let (hit, vec) =
                 located.ok_or_else(|| anyhow::anyhow!("no indexed chunk at {path}:{line}"))?;
             backend.query_by_vector(&vec, limit, Some(hit.id)).await?
@@ -343,7 +343,7 @@ mod tests {
             MockRow::new(2, "src/b.ts", 1, vec![0.0, 1.0, 0.0, 0.0]),
         ]);
         // min_score 0.0 → no filtering; just assert it resolves + ranks.
-        let hits = find_similar(&b, SimilarTarget::Code("anything"), 8, 0.0)
+        let hits = find_similar(&b, SimilarTarget::Code("anything".to_string()), 8, 0.0)
             .await
             .unwrap();
         assert!(!hits.is_empty(), "code path returns neighbours");
@@ -363,7 +363,7 @@ mod tests {
         let hits = find_similar(
             &b,
             SimilarTarget::Location {
-                path: "src/a.ts",
+                path: "src/a.ts".to_string(),
                 line: 10,
             },
             8,
@@ -389,7 +389,7 @@ mod tests {
         let res = find_similar(
             &b,
             SimilarTarget::Location {
-                path: "src/a.ts",
+                path: "src/a.ts".to_string(),
                 line: 999,
             },
             8,
@@ -412,7 +412,7 @@ mod tests {
         let hits = find_similar(
             &b,
             SimilarTarget::Location {
-                path: "src/a.ts",
+                path: "src/a.ts".to_string(),
                 line: 1,
             },
             8,

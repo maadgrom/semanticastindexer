@@ -1,41 +1,73 @@
-//! Backend worker thread (the actor that owns the `!Send` DuckDB resources).
+//! Backend worker thread: the actor that owns the [`Backend`] and the ONLY place
+//! its methods are called.
 //!
-//! WHY THIS EXISTS: rmcp's tool-handler futures must be `Send` (the `ToolRoute`
-//! bound). The DuckDB [`Backend`] embeds a `duckdb::Connection` (and, for the ort
-//! embedder, an ONNX session) that are `!Send`/`!Sync`, so holding one across an
-//! `.await` inside a `#[tool]` handler makes the handler future non-`Send` and the
-//! crate fails to compile under the `mcp` feature.
+//! WHY THIS EXISTS — two reasons, one mechanism:
 //!
-//! THE FIX (actor / worker-thread pattern): move the `!Send` [`Backend`] OFF the
-//! async handler path onto a dedicated OS thread that OWNS it. That thread runs its
-//! own **current-thread** Tokio runtime so it can drive the backend's async methods
-//! (the Ollama embedder issues `reqwest` calls) locally. The MCP server (on the main
-//! multi-thread runtime) holds only a [`BackendHandle`] wrapping an
-//! `mpsc::Sender<Request>` — channels ARE `Send`+`Sync`, so each handler future
-//! captures only `Send` types and compiles. Every tool call builds a [`Request`] +
-//! a `oneshot` reply channel, sends it, and `.await`s the oneshot.
+//! 1. **MCP (`Send` bound):** rmcp's tool-handler futures must be `Send` (the
+//!    `ToolRoute` bound). The DuckDB [`Backend`] embeds a `duckdb::Connection` (and,
+//!    for the ort embedder, an ONNX session) that cannot be shared across threads, so
+//!    holding one across an `.await` inside a `#[tool]` handler makes the handler
+//!    future non-`Send` and the crate fails to compile under the `mcp` feature.
+//! 2. **CLI (no blocking the runtime):** the DuckDB backend's `async fn`s perform
+//!    synchronous DuckDB I/O. Calling them on the main multi-thread Tokio runtime
+//!    blocks runtime worker threads. Confining the backend to its own OS thread
+//!    keeps the main runtime free.
 //!
-//! This is backend-agnostic: Qdrant's backend is already `Send`, but routing every
-//! backend uniformly through the one worker keeps the MCP handler code identical.
+//! THE MECHANISM (actor / worker-thread pattern): the [`Backend`] moves onto a
+//! dedicated OS thread that OWNS it. That thread runs its own **current-thread**
+//! Tokio runtime so it can drive the backend's async methods (the Ollama embedder
+//! issues `reqwest` calls) locally. Callers — the CLI orchestration in
+//! [`crate::app`] and the MCP server in [`crate::mcp`] — hold only a
+//! [`BackendHandle`] wrapping an `mpsc::Sender<Request>` (channels ARE
+//! `Send`+`Sync`). Every operation builds a [`Request`] + a `oneshot` reply
+//! channel, sends it, and `.await`s the oneshot.
+//!
+//! This is backend-agnostic: Qdrant's backend has no blocking I/O, but routing every
+//! backend uniformly through the one worker keeps both call sites identical.
 
 use anyhow::Result;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::Plan;
-use crate::vectordbs::{Backend, Hit};
+use crate::indexer::ReindexOutcome;
+use crate::search::{DupCluster, SimilarTarget};
+use crate::vectordbs::{Backend, CodeChunk, Hit};
 
-/// A stored chunk paired with its embedding vector (the `get_by_location` /
-/// `all_chunks` shape). Aliased to keep the channel reply types readable
-/// (and below clippy's `type_complexity` bar).
+/// A stored chunk paired with its embedding vector (the `get_by_location` shape).
+/// Aliased to keep the channel reply types readable (and below clippy's
+/// `type_complexity` bar).
 type ChunkWithVector = (Hit, Vec<f32>);
 
 /// A request sent to the backend worker thread. Each variant carries a `oneshot`
-/// sender for its typed reply, so the caller can `.await` the result. Read variants
-/// mirror the [`Backend`] methods the MCP tools use; `Refresh` is the single write
-/// path (gated by `--allow-write` at the call site).
+/// sender for its typed reply, so the caller can `.await` the result. Variants mirror
+/// the [`Backend`] methods (plus the shared `crate::search` orchestration) that the
+/// CLI commands and MCP tools need; `EnsureReady`, `Upsert`, `Flush`, and `Refresh`
+/// are the write paths (the backend must have been opened writable).
 pub enum Request {
+    /// Prepare storage (create collection/table + indexes) if missing.
+    EnsureReady {
+        recreate: bool,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// Begin a bulk insert window (DuckDB: drop the HNSW index). No-op for Qdrant.
+    BeginBulk { reply: oneshot::Sender<Result<()>> },
+    /// End a bulk insert window (DuckDB: rebuild the HNSW index). No-op for Qdrant.
+    EndBulk { reply: oneshot::Sender<Result<()>> },
+    /// Embed + upsert one batch of chunks.
+    Upsert {
+        chunks: Vec<CodeChunk>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// Drop all stored vectors (delete collection/table).
+    Flush { reply: oneshot::Sender<Result<()>> },
+    /// Text query: embed locally (DuckDB) or server-side (Qdrant), return nearest hits.
+    Query {
+        query: String,
+        limit: u64,
+        reply: oneshot::Sender<Result<Vec<Hit>>>,
+    },
     /// Embed a query, NN-search by the resulting vector, return hits (over-fetched).
-    /// `text` is embedded as a QUERY; `can_embed_locally=false` (Qdrant) falls back to
+    /// `query` is embedded as a QUERY; `can_embed_locally=false` (Qdrant) falls back to
     /// the server-side text `query()` path inside the worker.
     SearchByQuery {
         query: String,
@@ -61,40 +93,58 @@ pub enum Request {
         line: usize,
         reply: oneshot::Sender<Result<Option<ChunkWithVector>>>,
     },
-    /// Every stored chunk paired with its vector (optionally path-glob filtered).
-    AllChunks {
-        path_glob: Option<String>,
-        reply: oneshot::Sender<Result<Vec<ChunkWithVector>>>,
-    },
     /// Total stored chunk count.
     ChunkCount { reply: oneshot::Sender<Result<u64>> },
+    /// Quick check for any dirty-stamped chunks (pre-`duplicates` warning).
+    HasDirty {
+        reply: oneshot::Sender<Result<bool>>,
+    },
+    /// Codebase-wide near-duplicate scan (the shared `crate::search::find_duplicates`
+    /// orchestration: all chunks → per-chunk NN → union-find clustering).
+    FindDuplicates {
+        min_score: f32,
+        min_cluster_size: usize,
+        top_k: u64,
+        max_clusters: usize,
+        path_glob: Option<String>,
+        reply: oneshot::Sender<Result<Vec<DupCluster>>>,
+    },
+    /// Neighbours of a snippet or an existing chunk (the shared
+    /// `crate::search::find_similar` resolution), `min_score`-filtered.
+    FindSimilar {
+        target: SimilarTarget,
+        limit: u64,
+        min_score: f32,
+        reply: oneshot::Sender<Result<Vec<Hit>>>,
+    },
     /// Re-index the given paths in place (delete + re-chunk + re-embed + upsert),
     /// wrapped in a single begin_bulk/end_bulk window. Write path (requires the
-    /// backend to have been opened writable).
+    /// backend to have been opened writable). Used by CLI `sync` and MCP `refresh`.
     Refresh {
         paths: Vec<String>,
         reply: oneshot::Sender<Result<RefreshReport>>,
     },
 }
 
-/// Outcome of a `Refresh` batch: the paths re-indexed (with fresh chunk counts) and
-/// the paths removed (gone/excluded). Mirrors the structured `refresh` tool result.
+/// Outcome of a `Refresh` batch: one [`ReindexOutcome`] per input path (leading `./`
+/// stripped), in input order — so the CLI can render the exact per-file lines and the
+/// MCP tool can split refreshed/removed.
 pub struct RefreshReport {
-    /// `(path, chunks)` for each re-indexed file.
-    pub refreshed: Vec<(String, usize)>,
-    /// Paths that were removed (gone, excluded, or empty).
-    pub removed: Vec<String>,
+    /// `(path, outcome)` for each requested path, in request order.
+    pub entries: Vec<(String, ReindexOutcome)>,
 }
 
-/// `Send`+`Sync` handle the MCP server holds. Cloning shares the same worker. Dropping
-/// every clone closes the channel, which ends the worker loop (and the thread).
+/// `Send`+`Sync` handle the CLI orchestration and the MCP server hold. Cloning shares
+/// the same worker. Dropping every clone closes the channel, which ends the worker
+/// loop — join the thread handle returned by [`spawn`] to wait for the backend to be
+/// dropped cleanly.
 #[derive(Clone)]
 pub struct BackendHandle {
     tx: mpsc::Sender<Request>,
 }
 
 /// The error returned when the worker thread is gone (channel closed). Surfaced to the
-/// MCP layer as an internal error.
+/// caller as an internal error.
 fn worker_gone() -> anyhow::Error {
     anyhow::anyhow!("backend worker thread is no longer running")
 }
@@ -109,6 +159,42 @@ impl BackendHandle {
             .await
             .map_err(|_| worker_gone())?;
         reply_rx.await.map_err(|_| worker_gone())?
+    }
+
+    /// Prepare storage (create collection/table + indexes) if missing.
+    pub async fn ensure_ready(&self, recreate: bool) -> Result<()> {
+        self.call(|reply| Request::EnsureReady { recreate, reply })
+            .await
+    }
+
+    /// Begin a bulk insert window (see [`Request::BeginBulk`]).
+    pub async fn begin_bulk(&self) -> Result<()> {
+        self.call(|reply| Request::BeginBulk { reply }).await
+    }
+
+    /// End a bulk insert window (see [`Request::EndBulk`]).
+    pub async fn end_bulk(&self) -> Result<()> {
+        self.call(|reply| Request::EndBulk { reply }).await
+    }
+
+    /// Embed + upsert one batch of chunks.
+    pub async fn upsert(&self, chunks: Vec<CodeChunk>) -> Result<()> {
+        self.call(|reply| Request::Upsert { chunks, reply }).await
+    }
+
+    /// Drop all stored vectors (delete collection/table).
+    pub async fn flush(&self) -> Result<()> {
+        self.call(|reply| Request::Flush { reply }).await
+    }
+
+    /// Text query (the CLI `--query` path): nearest hits for `query`.
+    pub async fn query(&self, query: String, limit: u64) -> Result<Vec<Hit>> {
+        self.call(|reply| Request::Query {
+            query,
+            limit,
+            reply,
+        })
+        .await
     }
 
     /// Embed `query` and NN-search; `fetch` over-fetches for post-filtering.
@@ -153,15 +239,50 @@ impl BackendHandle {
             .await
     }
 
-    /// Every stored chunk + vector, optionally path-glob filtered.
-    pub async fn all_chunks(&self, path_glob: Option<String>) -> Result<Vec<ChunkWithVector>> {
-        self.call(|reply| Request::AllChunks { path_glob, reply })
-            .await
-    }
-
     /// Total stored chunk count.
     pub async fn chunk_count(&self) -> Result<u64> {
         self.call(|reply| Request::ChunkCount { reply }).await
+    }
+
+    /// Quick check for any dirty-stamped chunks (best-effort; see `Backend::has_dirty`).
+    pub async fn has_dirty(&self) -> Result<bool> {
+        self.call(|reply| Request::HasDirty { reply }).await
+    }
+
+    /// Codebase-wide near-duplicate scan (shared CLI + MCP orchestration).
+    pub async fn find_duplicates(
+        &self,
+        min_score: f32,
+        min_cluster_size: usize,
+        top_k: u64,
+        max_clusters: usize,
+        path_glob: Option<String>,
+    ) -> Result<Vec<DupCluster>> {
+        self.call(|reply| Request::FindDuplicates {
+            min_score,
+            min_cluster_size,
+            top_k,
+            max_clusters,
+            path_glob,
+            reply,
+        })
+        .await
+    }
+
+    /// Neighbours of a snippet or an existing chunk, `min_score`-filtered.
+    pub async fn find_similar(
+        &self,
+        target: SimilarTarget,
+        limit: u64,
+        min_score: f32,
+    ) -> Result<Vec<Hit>> {
+        self.call(|reply| Request::FindSimilar {
+            target,
+            limit,
+            min_score,
+            reply,
+        })
+        .await
     }
 
     /// Re-index `paths` in place (write path).
@@ -171,19 +292,27 @@ impl BackendHandle {
 }
 
 /// Spawn the backend worker thread. It OWNS `backend` + `plan` and serves [`Request`]s
-/// until the channel closes (every [`BackendHandle`] dropped). Returns the `Send`+`Sync`
-/// handle for the MCP server. `can_embed_locally` selects the query embedding path
-/// (DuckDB embeds locally; Qdrant falls back to its server-side text query).
+/// until the channel closes (every [`BackendHandle`] dropped). `can_embed_locally`
+/// selects the query embedding path (DuckDB embeds locally; Qdrant falls back to its
+/// server-side text query).
+///
+/// Returns the `Send`+`Sync` handle plus the thread's `JoinHandle`: after dropping the
+/// last handle clone, `join()` waits for the worker to drop the backend — so e.g. the
+/// DuckDB connection checkpoints its WAL before the process exits.
 ///
 /// The thread builds a **current-thread** Tokio runtime so the backend's async methods
-/// (the Ollama embedder's `reqwest` calls) run locally — the `!Send` backend never
-/// crosses a thread boundary.
-pub fn spawn(backend: Backend, plan: Plan, can_embed_locally: bool) -> Result<BackendHandle> {
+/// (the Ollama embedder's `reqwest` calls) run locally — the backend never leaves the
+/// thread that owns it.
+pub fn spawn(
+    backend: Backend,
+    plan: Plan,
+    can_embed_locally: bool,
+) -> Result<(BackendHandle, std::thread::JoinHandle<()>)> {
     // Bounded channel: requests are processed sequentially by the single worker, so a
     // small buffer is plenty and bounds memory under a burst of tool calls.
     let (tx, rx) = mpsc::channel::<Request>(32);
 
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("semanticastindexer-backend".to_string())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
@@ -200,7 +329,7 @@ pub fn spawn(backend: Backend, plan: Plan, can_embed_locally: bool) -> Result<Ba
         })
         .map_err(|e| anyhow::anyhow!("failed to spawn backend worker thread: {e}"))?;
 
-    Ok(BackendHandle { tx })
+    Ok((BackendHandle { tx }, thread))
 }
 
 /// The worker loop: own the backend, serve requests one at a time. Each request is
@@ -215,6 +344,28 @@ async fn worker_loop(
 ) {
     while let Some(req) = rx.recv().await {
         match req {
+            Request::EnsureReady { recreate, reply } => {
+                let _ = reply.send(backend.ensure_ready(recreate).await);
+            }
+            Request::BeginBulk { reply } => {
+                let _ = reply.send(backend.begin_bulk().await);
+            }
+            Request::EndBulk { reply } => {
+                let _ = reply.send(backend.end_bulk().await);
+            }
+            Request::Upsert { chunks, reply } => {
+                let _ = reply.send(backend.upsert(&chunks).await);
+            }
+            Request::Flush { reply } => {
+                let _ = reply.send(backend.flush().await);
+            }
+            Request::Query {
+                query,
+                limit,
+                reply,
+            } => {
+                let _ = reply.send(backend.query(&query, limit).await);
+            }
             Request::SearchByQuery {
                 query,
                 fetch,
@@ -251,12 +402,38 @@ async fn worker_loop(
                 let res = backend.get_by_location(&path, line).await;
                 let _ = reply.send(res);
             }
-            Request::AllChunks { path_glob, reply } => {
-                let res = backend.all_chunks_with_vectors(path_glob.as_deref()).await;
+            Request::ChunkCount { reply } => {
+                let _ = reply.send(backend.chunk_count().await);
+            }
+            Request::HasDirty { reply } => {
+                let _ = reply.send(backend.has_dirty().await);
+            }
+            Request::FindDuplicates {
+                min_score,
+                min_cluster_size,
+                top_k,
+                max_clusters,
+                path_glob,
+                reply,
+            } => {
+                let res = crate::search::find_duplicates(
+                    &backend,
+                    min_score,
+                    min_cluster_size,
+                    top_k,
+                    max_clusters,
+                    path_glob.as_deref(),
+                )
+                .await;
                 let _ = reply.send(res);
             }
-            Request::ChunkCount { reply } => {
-                let res = backend.chunk_count().await;
+            Request::FindSimilar {
+                target,
+                limit,
+                min_score,
+                reply,
+            } => {
+                let res = crate::search::find_similar(&backend, target, limit, min_score).await;
                 let _ = reply.send(res);
             }
             Request::Refresh { paths, reply } => {
@@ -267,27 +444,24 @@ async fn worker_loop(
     }
 }
 
-/// Re-index a batch of paths in one bulk window. Mirrors `sync`'s correctness contract:
-/// begin_bulk (drop HNSW) → per-path delete + re-chunk + re-embed + upsert → end_bulk
-/// (rebuild HNSW), rebuilding the index even when a path fails. Runs entirely on the
-/// worker thread (owns the backend), so no `!Send` value crosses a thread boundary.
+/// Re-index a batch of paths in one bulk window: begin_bulk (drop HNSW) → per-path
+/// delete + re-chunk + re-embed + upsert → end_bulk (rebuild HNSW), rebuilding the
+/// index even when a path fails. Runs entirely on the worker thread (owns the
+/// backend). Shared by CLI `sync` and the MCP `refresh` tool.
 ///
 /// LOGICAL INVARIANT: end_bulk is *always* called (even on error) so the HNSW index
 /// is never left dropped after a refresh operation.
 async fn handle_refresh(backend: &Backend, plan: &Plan, paths: &[String]) -> Result<RefreshReport> {
     backend.begin_bulk().await?;
-    let mut refreshed: Vec<(String, usize)> = Vec::new();
-    let mut removed: Vec<String> = Vec::new();
+    let mut entries: Vec<(String, ReindexOutcome)> = Vec::with_capacity(paths.len());
     let mut first_err = None;
     for rel in paths {
-        // MCP refresh: capture fresh git ctx for accurate dirty/commit stamp (long-lived server).
+        // Capture fresh git ctx per path for an accurate dirty/commit stamp (the MCP
+        // server is long-lived, so a startup-time capture would go stale).
         let ctx = crate::git::capture();
         match crate::indexer::reindex_file(backend, plan, rel, &ctx).await {
-            Ok(crate::indexer::ReindexOutcome::Reindexed { chunks }) => {
-                refreshed.push((rel.trim_start_matches("./").to_string(), chunks));
-            }
-            Ok(crate::indexer::ReindexOutcome::Removed { .. }) => {
-                removed.push(rel.trim_start_matches("./").to_string());
+            Ok(outcome) => {
+                entries.push((rel.trim_start_matches("./").to_string(), outcome));
             }
             Err(e) => {
                 first_err = Some(e);
@@ -301,5 +475,5 @@ async fn handle_refresh(backend: &Backend, plan: &Plan, paths: &[String]) -> Res
         return Err(e);
     }
     end?;
-    Ok(RefreshReport { refreshed, removed })
+    Ok(RefreshReport { entries })
 }

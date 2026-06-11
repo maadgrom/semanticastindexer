@@ -75,7 +75,10 @@ schemars = { version = "1", optional = true }
 # Qdrant and DuckDB produce identical stable point IDs. (2.x changed the API, not
 # the algorithm — the pinned-value test in indexer.rs guards ID stability.)
 twox-hash = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# sync: the backend worker channel (worker.rs) uses tokio::sync::{mpsc, oneshot} in
+# every build — declare it explicitly instead of relying on other deps' feature
+# unification to turn it on.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 anyhow = "1"
 walkdir = "2"
 clap = { version = "4", features = ["derive"] }

@@ -26,11 +26,10 @@ pub mod git;
 pub mod indexer;
 #[cfg(feature = "mcp")]
 pub mod mcp;
-// Shared similarity-search core (union-find clustering + find_similar resolution) used by
-// BOTH the `similar`/`duplicates` CLI subcommands and the MCP server. Compiled whenever a
-// vector backend is available — NOT gated on `mcp`.
-#[cfg(any(feature = "duckdb", feature = "qdrant"))]
+// Shared similarity-search core (union-find clustering + find_similar resolution) and
+// the backend worker thread: both are used by EVERY command (the CLI orchestration and
+// the MCP server all talk to the backend through `worker::BackendHandle`), so neither
+// is feature-gated.
 pub mod search;
 pub mod vectordbs;
-#[cfg(feature = "mcp")]
 pub mod worker;

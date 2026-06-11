@@ -20,6 +20,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- All CLI commands now route backend access through the dedicated worker thread
+  (previously MCP-only), so the DuckDB backend's synchronous I/O never blocks the
+  main Tokio runtime; the worker thread is joined on exit so the DuckDB connection
+  checkpoints its WAL cleanly. The `find_similar`/`find_duplicates` orchestration
+  is now shared between the CLI and MCP (one code path in `search`).
 - mdBook (`book/`) is now the single documentation source; the legacy `docs/*.md`
   pages were removed and all links repointed at the book.
 - `indexer.yaml` is the single example config (`sai-cfg.yaml` removed); its chunker
@@ -27,6 +32,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- CLI `sync` no longer leaves the DuckDB HNSW index dropped when a file fails
+  mid-batch — it now uses the same always-rebuild refresh path as the MCP
+  `sai_refresh` tool.
 - `Cargo.toml` `repository` URL now points at the actual GitHub repo.
 - The Makefile no longer passes a nonexistent `--language` flag to the binary
   (it broke `make run`/`make prod`; extensions are selected with `--ext`).

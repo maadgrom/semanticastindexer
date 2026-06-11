@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::Plan;
-use crate::search::{DupCluster, cluster_duplicates};
+use crate::indexer::ReindexOutcome;
 use crate::vectordbs::Hit;
 use crate::worker::BackendHandle;
 
@@ -345,7 +345,6 @@ impl CodeSearchServer {
         &self,
         Parameters(args): Parameters<FindDuplicatesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // sai-noduplicate: MCP orchestration twin of search::find_duplicates; routes reads through the !Send backend worker; shares the cluster_duplicates core
         // Resolution per knob: tool arg > config value (stored at startup) > built-in default.
         let top_k = clamp_limit(args.top_k.unwrap_or(self.inner.duplicate_top_k));
         let min_cluster_size = args
@@ -356,35 +355,21 @@ impl CodeSearchServer {
         let max_clusters = args.max_clusters.unwrap_or(DEFAULT_DUP_MAX_CLUSTERS);
         compile_glob_opt(args.path_glob.as_deref())?; // validate early
 
-        // Gather every chunk + its top_k neighbours through the !Send backend worker
-        // handle (the MCP server can't touch the backend directly), then defer to the
-        // SHARED clustering core (`crate::search::cluster_duplicates`) — the same
-        // union-find the CLI `duplicates` subcommand uses.
-        let chunks = self
+        // One worker request runs the SHARED `crate::search::find_duplicates`
+        // orchestration (all chunks → per-chunk NN → union-find) on the backend
+        // thread — the same code path the CLI `duplicates` subcommand uses.
+        let clusters = self
             .inner
             .backend
-            .all_chunks(args.path_glob.clone())
+            .find_duplicates(
+                min_score,
+                min_cluster_size,
+                top_k,
+                max_clusters,
+                args.path_glob.clone(),
+            )
             .await
             .map_err(internal)?;
-
-        let mut neighbours: Vec<Vec<Hit>> = Vec::with_capacity(chunks.len());
-        for (hit, vec) in &chunks {
-            let nbrs = self
-                .inner
-                .backend
-                .query_by_vector(vec.clone(), top_k, Some(hit.id))
-                .await
-                .map_err(internal)?;
-            neighbours.push(nbrs);
-        }
-
-        let clusters: Vec<DupCluster> = cluster_duplicates(
-            &chunks,
-            &neighbours,
-            min_score,
-            min_cluster_size,
-            max_clusters,
-        );
 
         Ok(CallToolResult::structured(json!({ "clusters": clusters })))
     }
@@ -551,15 +536,20 @@ impl CodeSearchServer {
             .await
             .map_err(internal)?;
 
-        let refreshed: Vec<serde_json::Value> = report
-            .refreshed
-            .into_iter()
-            .map(|(path, chunks)| json!({ "path": path, "chunks": chunks }))
-            .collect();
+        let mut refreshed: Vec<serde_json::Value> = Vec::new();
+        let mut removed: Vec<String> = Vec::new();
+        for (path, outcome) in report.entries {
+            match outcome {
+                ReindexOutcome::Reindexed { chunks } => {
+                    refreshed.push(json!({ "path": path, "chunks": chunks }));
+                }
+                ReindexOutcome::Removed { .. } => removed.push(path),
+            }
+        }
 
         Ok(CallToolResult::structured(json!({
             "refreshed": refreshed,
-            "removed": report.removed,
+            "removed": removed,
         })))
     }
 }

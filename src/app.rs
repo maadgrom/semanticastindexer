@@ -1,9 +1,12 @@
-//! Command orchestration: turns parsed [`Args`] into backend calls.
+//! Command orchestration: turns parsed [`Args`] into backend-worker requests.
 //!
 //! This is the layer the binary entrypoint (`main.rs`) dispatches into. It owns the
 //! per-command flows (index, sync, flush, query, duplicates, similar, mcp) and the
-//! interactive prompts; the pure walk/chunk logic lives in [`crate::indexer`] and the
-//! similarity core in [`crate::search`].
+//! interactive prompts. The [`crate::vectordbs::Backend`] itself is never called
+//! here: every command moves it onto the dedicated worker thread ([`crate::worker`])
+//! and talks to it through a [`BackendHandle`], so the backend's synchronous DuckDB
+//! I/O never blocks the main Tokio runtime. The pure walk/chunk logic lives in
+//! [`crate::indexer`] and the similarity core in [`crate::search`].
 
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
@@ -13,7 +16,8 @@ use crate::cli::{Args, Cmd, SyncArgs};
 use crate::config::{Plan, build_plan};
 use crate::git;
 use crate::indexer;
-use crate::vectordbs::{self, Access, Backend, Hit, factory};
+use crate::vectordbs::{self, Access, Backend, CodeChunk, Hit, factory};
+use crate::worker::{self, BackendHandle};
 
 /// Run one parsed CLI invocation to completion. The single entrypoint `main` calls.
 pub async fn run(args: Args) -> Result<()> {
@@ -29,15 +33,18 @@ pub async fn run(args: Args) -> Result<()> {
         Some(Cmd::Flush) => {
             run_timed(t0, &args, &git_ctx, "", async {
                 let backend = factory(&plan, Access::ReadWrite)?;
-                backend.flush().await
+                with_worker(backend, &plan, async |h| h.flush().await).await
             })
             .await
         }
         Some(Cmd::Sync(sync_args)) => {
             run_timed(t0, &args, &git_ctx, "", async {
                 let backend = factory(&plan, Access::ReadWrite)?;
-                backend.ensure_ready(false).await?;
-                sync(&backend, &plan, sync_args, &git_ctx).await
+                with_worker(backend, &plan, async |h| {
+                    h.ensure_ready(false).await?;
+                    sync(h, sync_args).await
+                })
+                .await
             })
             .await
         }
@@ -51,14 +58,22 @@ pub async fn run(args: Args) -> Result<()> {
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
         Some(Cmd::Duplicates(dup_args)) => {
             run_timed(t0, &args, &git_ctx, "", async {
-                run_duplicates(&plan, dup_args, args.silent).await
+                let backend = factory(&plan, Access::ReadOnly)?;
+                with_worker(backend, &plan, async |h| {
+                    run_duplicates(h, &plan, dup_args, args.silent).await
+                })
+                .await
             })
             .await
         }
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
         Some(Cmd::Similar(sim_args)) => {
             run_timed(t0, &args, &git_ctx, "", async {
-                run_similar(&plan, sim_args).await
+                let backend = factory(&plan, Access::ReadOnly)?;
+                with_worker(backend, &plan, async |h| {
+                    run_similar(h, &plan, sim_args).await
+                })
+                .await
             })
             .await
         }
@@ -78,18 +93,38 @@ pub async fn run(args: Args) -> Result<()> {
                 } else {
                     open_index_backend(&plan)?
                 };
-                backend.ensure_ready(args.recreate).await?;
-                if !args.query_only {
-                    index_sources(&backend, &plan, &git_ctx).await?;
-                }
-                if let Some(q) = args.query.as_deref() {
-                    run_query(&backend, &plan, q).await?;
-                }
-                Ok(())
+                with_worker(backend, &plan, async |h| {
+                    h.ensure_ready(args.recreate).await?;
+                    if !args.query_only {
+                        index_sources(h, &plan, &git_ctx).await?;
+                    }
+                    if let Some(q) = args.query.as_deref() {
+                        run_query(h, &plan, q).await?;
+                    }
+                    Ok(())
+                })
+                .await
             })
             .await
         }
     }
+}
+
+/// Move `backend` onto the worker thread, run `f` against the handle, then shut the
+/// worker down CLEANLY: drop the handle (closes the channel, ends the worker loop)
+/// and join the thread so the backend is dropped before we return — the DuckDB
+/// connection checkpoints its WAL on drop, which a bare process exit would skip.
+async fn with_worker<T, F>(backend: Backend, plan: &Plan, f: F) -> Result<T>
+where
+    F: AsyncFnOnce(&BackendHandle) -> Result<T>,
+{
+    let (handle, thread) = worker::spawn(backend, plan.clone(), plan.backend == "duckdb")?;
+    let result = f(&handle).await;
+    drop(handle);
+    if thread.join().is_err() {
+        eprintln!("warning: backend worker thread panicked during shutdown");
+    }
+    result
 }
 
 fn finish(t0: std::time::Instant, args: &Args, ctx: &git::GitContext, extra: &str) {
@@ -175,12 +210,12 @@ fn confirm_default_no(question: &str) -> Result<bool> {
 /// so the user appreciates they may be looking at uncommitted work. Returns `true` if the
 /// caller should abort.
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
-async fn warn_on_dirty(backend: &Backend, silent: bool) -> Result<bool> {
+async fn warn_on_dirty(handle: &BackendHandle, silent: bool) -> Result<bool> {
     if silent {
         return Ok(false);
     }
     // Best-effort (column may be absent on indexes created before the stamping feature).
-    if !backend.has_dirty().await.unwrap_or(false) {
+    if !handle.has_dirty().await.unwrap_or(false) {
         return Ok(false);
     }
     let msg = "warning: index contains dirty chunks (uncommitted changes). duplicates may reflect a dirty working tree.";
@@ -209,7 +244,7 @@ const UPSERT_BATCH: usize = 64;
 
 /// Walk the root, collect chunks, and upsert them in batches (wrapped in begin/end_bulk),
 /// printing a single updating progress line to stderr while embedding.
-async fn index_sources(backend: &Backend, plan: &Plan, ctx: &git::GitContext) -> Result<()> {
+async fn index_sources(handle: &BackendHandle, plan: &Plan, ctx: &git::GitContext) -> Result<()> {
     let (mut chunks, files, skipped) = indexer::collect_chunks(plan);
     for c in &mut chunks {
         c.commit_sha = ctx.sha.clone();
@@ -217,27 +252,31 @@ async fn index_sources(backend: &Backend, plan: &Plan, ctx: &git::GitContext) ->
     }
     let chunks_total = chunks.len();
 
-    backend.begin_bulk().await?;
+    handle.begin_bulk().await?;
     let mut done = 0usize;
     let mut files_done = 0usize;
-    let mut last_path: Option<&str> = None;
-    for batch in chunks.chunks(UPSERT_BATCH) {
+    let mut last_path: Option<String> = None;
+    let mut remaining = chunks.into_iter().peekable();
+    while remaining.peek().is_some() {
+        // Owned batch: the chunks are sent to the worker thread for embed+upsert.
+        let batch: Vec<CodeChunk> = remaining.by_ref().take(UPSERT_BATCH).collect();
         // Announce every distinct file as we cross into its chunks. A single batch can
         // span many files, so scan all chunks — not just batch.first() — or the counter
         // degenerates into a batch index and most files are never reported.
-        for c in batch {
-            if last_path != Some(c.path.as_str()) {
+        for c in &batch {
+            if last_path.as_deref() != Some(c.path.as_str()) {
                 files_done += 1;
                 // Clear the in-progress "embedded …" line before the permanent file line.
                 eprintln!(
                     "\r\x1b[K  [ {}/{} files ] indexing {}",
                     files_done, files, c.path
                 );
-                last_path = Some(c.path.as_str());
+                last_path = Some(c.path.clone());
             }
         }
-        backend.upsert(batch).await?;
-        done += batch.len();
+        let n = batch.len();
+        handle.upsert(batch).await?;
+        done += n;
         // Single updating line on stderr (carriage return, no newline until the end).
         eprint!("\rembedded {done}/{chunks_total} chunks");
         let _ = std::io::Write::flush(&mut std::io::stderr());
@@ -245,7 +284,7 @@ async fn index_sources(backend: &Backend, plan: &Plan, ctx: &git::GitContext) ->
     if chunks_total > 0 {
         eprintln!();
     }
-    backend.end_bulk().await?;
+    handle.end_bulk().await?;
 
     println!(
         "indexed {} chunks from {} {} file(s) into '{}' ({} file(s) skipped by config)",
@@ -260,42 +299,33 @@ async fn index_sources(backend: &Backend, plan: &Plan, ctx: &git::GitContext) ->
 
 /// Re-index only changed files: delete each file's existing points, then upload the current
 /// content fresh. Deleted/now-excluded files are removed from the collection.
-async fn sync(
-    backend: &Backend,
-    plan: &Plan,
-    sync_args: &SyncArgs,
-    ctx: &git::GitContext,
-) -> Result<()> {
+///
+/// Delegates to the worker's `Refresh` batch — the same path the MCP `refresh` tool
+/// uses: one begin/end_bulk window around per-path delete + re-chunk + re-embed +
+/// upsert, with the HNSW index rebuilt even when a path fails mid-batch.
+async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
     let changed = changed_files(sync_args)?;
     if changed.is_empty() {
         println!("sync: no changed files");
         return Ok(());
     }
 
-    // Always wrap the loop in a bulk window. Qdrant's begin/end_bulk are no-ops, so
-    // this is free there. For DuckDB it is REQUIRED for correctness: every sync does a
-    // `delete_by_path`, and DuckDB's experimental HNSW index returns too few candidates
-    // after in-place deletes (recall degrades — `hnsw_compact_index` does not fix it).
-    // begin_bulk drops the index and end_bulk recreates it, restoring full recall.
-    backend.begin_bulk().await?;
+    let report = handle.refresh(changed).await?;
 
     let (mut reindexed, mut deleted, mut chunks) = (0usize, 0usize, 0usize);
-    for rel in &changed {
-        let key = rel.trim_start_matches("./");
-        match indexer::reindex_file(backend, plan, rel, ctx).await? {
+    for (path, outcome) in &report.entries {
+        match outcome {
             indexer::ReindexOutcome::Removed { reason } => {
                 deleted += 1;
-                println!("  - {key} ({reason})");
+                println!("  - {path} ({reason})");
             }
             indexer::ReindexOutcome::Reindexed { chunks: n } => {
                 chunks += n;
                 reindexed += 1;
-                println!("  + {key} ({n} chunks)");
+                println!("  + {path} ({n} chunks)");
             }
         }
     }
-
-    backend.end_bulk().await?;
 
     println!("sync: {reindexed} file(s) re-indexed ({chunks} chunks), {deleted} file(s) removed");
     Ok(())
@@ -356,18 +386,18 @@ async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()
     } else {
         vectordbs::factory(&plan, Access::ReadOnly)?
     };
-    // The DuckDB backend is `!Send`/`!Sync` (its connection + ort session), so it cannot
-    // be held across an `.await` inside an rmcp `#[tool]` handler (those futures must be
-    // `Send`). Move it onto a dedicated worker thread that owns it; the MCP server holds
-    // only a `Send`+`Sync` channel handle. See `worker.rs` for the full rationale.
+    // Move the backend onto the worker thread (rmcp handler futures must be `Send`; the
+    // DuckDB backend is not). Unlike the CLI paths we do NOT join the worker thread on
+    // shutdown: the rmcp service owns handle clones, and a leaked clone must not be able
+    // to wedge server exit after stdio EOF — process exit reaps the thread instead.
     let can_embed_locally = plan.backend == "duckdb";
-    let handle = crate::worker::spawn(backend, plan.clone(), can_embed_locally)?;
+    let (handle, _thread) = worker::spawn(backend, plan.clone(), can_embed_locally)?;
     crate::mcp::serve_inner(handle, &plan, allow_write, allow_setup).await
 }
 
 /// Run a semantic query and print the hits exactly as before.
-async fn run_query(backend: &Backend, plan: &Plan, q: &str) -> Result<()> {
-    let hits = backend.query(q, plan.limit).await?;
+async fn run_query(handle: &BackendHandle, plan: &Plan, q: &str) -> Result<()> {
+    let hits = handle.query(q.to_string(), plan.limit).await?;
     println!("\ntop {} for: {q}", hits.len());
     for h in &hits {
         print_hit(h);
@@ -387,17 +417,16 @@ fn print_hit(h: &Hit) {
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
 const DEFAULT_DUP_MAX_CLUSTERS: usize = 50;
 
-/// `duplicates` handler: resolve each knob (CLI flag > config > built-in default), open the
-/// index read-only, run the shared codebase-wide near-duplicate scan, and print the clusters
+/// `duplicates` handler: resolve each knob (CLI flag > config > built-in default), then
+/// run the shared codebase-wide near-duplicate scan on the worker and print the clusters
 /// human-readably.
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
 async fn run_duplicates(
+    handle: &BackendHandle,
     plan: &Plan,
     args: &crate::cli::DuplicatesArgs,
     silent: bool,
 ) -> Result<()> {
-    use crate::search;
-
     // Knob resolution: CLI flag > config (similarity.*) > built-in default.
     let min_score = args.min_score.unwrap_or_else(|| plan.duplicate_min_score());
     let min_cluster_size = args
@@ -407,19 +436,18 @@ async fn run_duplicates(
     let top_k = args.top_k.unwrap_or_else(|| plan.top_k() as u64);
     let max_clusters = args.max_clusters.unwrap_or(DEFAULT_DUP_MAX_CLUSTERS);
 
-    let backend = vectordbs::factory(plan, Access::ReadOnly)?;
-    if warn_on_dirty(&backend, silent).await? {
+    if warn_on_dirty(handle, silent).await? {
         return Ok(());
     }
-    let clusters = search::find_duplicates(
-        &backend,
-        min_score,
-        min_cluster_size,
-        top_k,
-        max_clusters,
-        args.path_glob.as_deref(),
-    )
-    .await?;
+    let clusters = handle
+        .find_duplicates(
+            min_score,
+            min_cluster_size,
+            top_k,
+            max_clusters,
+            args.path_glob.clone(),
+        )
+        .await?;
 
     if clusters.is_empty() {
         println!(
@@ -445,19 +473,26 @@ async fn run_duplicates(
 }
 
 /// `similar` handler: require EXACTLY ONE of --code or (--path & --line), resolve min_score
-/// (flag > config.find_similar_min_score > default), open the index read-only, run the shared
-/// nearest-neighbour resolution, and print `score  path:start-end  symbol`.
+/// (flag > config.find_similar_min_score > default), run the shared nearest-neighbour
+/// resolution on the worker, and print `score  path:start-end  symbol`.
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
-async fn run_similar(plan: &Plan, args: &crate::cli::SimilarArgs) -> Result<()> {
-    use crate::search::{self, SimilarTarget};
+async fn run_similar(
+    handle: &BackendHandle,
+    plan: &Plan,
+    args: &crate::cli::SimilarArgs,
+) -> Result<()> {
+    use crate::search::SimilarTarget;
 
     // Require exactly one of --code or (--path AND --line).
     let target = match (args.code.as_deref(), args.path.as_deref(), args.line) {
         (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
             anyhow::bail!("similar: provide EITHER --code OR (--path and --line), not both");
         }
-        (Some(code), None, None) => SimilarTarget::Code(code),
-        (None, Some(path), Some(line)) => SimilarTarget::Location { path, line },
+        (Some(code), None, None) => SimilarTarget::Code(code.to_string()),
+        (None, Some(path), Some(line)) => SimilarTarget::Location {
+            path: path.to_string(),
+            line,
+        },
         (None, Some(_), None) | (None, None, Some(_)) => {
             anyhow::bail!("similar: --path and --line must be given together");
         }
@@ -470,8 +505,7 @@ async fn run_similar(plan: &Plan, args: &crate::cli::SimilarArgs) -> Result<()> 
         .min_score
         .unwrap_or_else(|| plan.find_similar_min_score());
 
-    let backend = vectordbs::factory(plan, Access::ReadOnly)?;
-    let hits = search::find_similar(&backend, target, args.limit, min_score).await?;
+    let hits = handle.find_similar(target, args.limit, min_score).await?;
 
     println!("{} similar (min_score {min_score}):", hits.len());
     for h in &hits {
@@ -487,26 +521,33 @@ async fn run_similar(plan: &Plan, args: &crate::cli::SimilarArgs) -> Result<()> 
 #[cfg(test)]
 mod tests {
     //! Happy-path flow tests driving the REAL orchestration fns (`index_sources`,
-    //! `sync`, `run_query`, `flush`) against the in-memory [`MockBackend`]. No
-    //! network, no real Qdrant/DuckDB: every call is recorded by the mock and
-    //! asserted here. Source trees are built under a `tempdir`.
+    //! `sync`, `run_query`, `flush`) against the in-memory [`MockBackend`] — routed
+    //! through a real worker thread, exactly like production. No network, no real
+    //! Qdrant/DuckDB: every call is recorded by the mock and asserted here. Source
+    //! trees are built under a `tempdir`.
 
     use super::*;
     use crate::config::Plan;
     use crate::vectordbs::mock::{MockBackend, MockCalls};
     use globset::GlobSetBuilder;
     use std::fs;
-    use std::sync::MutexGuard;
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
-    /// Lock and return the recorded calls of a `Backend::Mock`. Every flow test
-    /// here builds a `Mock` backend, so any other variant is a test-harness bug.
-    fn mock_calls(backend: &Backend) -> MutexGuard<'_, MockCalls> {
-        match backend {
-            Backend::Mock(m) => m.calls.lock().unwrap(),
-            #[allow(unreachable_patterns)]
-            _ => unreachable!("flow tests only use Backend::Mock"),
-        }
+    /// Spawn a worker around a fresh `MockBackend` for `plan`, returning the handle,
+    /// the thread (join it after dropping the handle), and the shared call recorder.
+    fn mock_worker(
+        plan: &Plan,
+    ) -> (
+        BackendHandle,
+        std::thread::JoinHandle<()>,
+        Arc<Mutex<MockCalls>>,
+    ) {
+        let mock = MockBackend::new();
+        let calls = mock.calls.clone();
+        let (handle, thread) =
+            worker::spawn(Backend::Mock(mock), plan.clone(), true).expect("spawn worker");
+        (handle, thread, calls)
     }
 
     /// Build a minimal `Plan` rooted at `root` with `ext` = ts and no globs. Mirrors
@@ -557,12 +598,14 @@ mod tests {
         let expected = expected_chunks.len();
         assert!(expected > 0, "fixture must produce chunks");
 
-        let backend = Backend::Mock(MockBackend::new());
-        index_sources(&backend, &plan, &git::GitContext::default())
+        let (handle, thread, calls) = mock_worker(&plan);
+        index_sources(&handle, &plan, &git::GitContext::default())
             .await
             .unwrap();
+        drop(handle);
+        thread.join().unwrap();
 
-        let calls = mock_calls(&backend);
+        let calls = calls.lock().unwrap();
         assert_eq!(calls.begin_bulk, 1, "exactly one begin_bulk");
         assert_eq!(calls.end_bulk, 1, "exactly one end_bulk");
         assert_eq!(calls.upserts.len(), 1, "one upsert batch");
@@ -598,12 +641,12 @@ mod tests {
             ],
         };
 
-        let backend = Backend::Mock(MockBackend::new());
-        sync(&backend, &plan, &sync_args, &git::GitContext::default())
-            .await
-            .unwrap();
+        let (handle, thread, calls) = mock_worker(&plan);
+        sync(&handle, &sync_args).await.unwrap();
+        drop(handle);
+        thread.join().unwrap();
 
-        let calls = mock_calls(&backend);
+        let calls = calls.lock().unwrap();
         // delete_by_path called once per changed path (3).
         assert_eq!(calls.deletes.len(), 3, "delete fired for each changed path");
         // begin/end_bulk wrap the loop.
@@ -614,18 +657,22 @@ mod tests {
         assert!(calls.upserts[0].count > 0, "indexable file produced chunks");
     }
 
-    /// flush: orchestration invokes backend.flush().
+    /// flush: orchestration invokes backend.flush() through the worker.
     #[tokio::test]
     async fn flush_invokes_backend_flush() {
-        let backend = Backend::Mock(MockBackend::new());
-        backend.flush().await.unwrap();
-        let calls = mock_calls(&backend);
+        let plan = crate::config::test_support::minimal_plan();
+        let (handle, thread, calls) = mock_worker(&plan);
+        handle.flush().await.unwrap();
+        drop(handle);
+        thread.join().unwrap();
+        let calls = calls.lock().unwrap();
         assert_eq!(calls.flush, 1, "flush called exactly once");
     }
 
-    /// reindex_file (the shared helper used by both `sync` and the MCP `refresh` tool):
-    /// an existing indexable file deletes-then-upserts and reports its chunk count; a
-    /// gone/excluded path deletes-only and reports Removed.
+    /// reindex_file (the shared helper the worker's `Refresh` batch applies per path,
+    /// for both CLI `sync` and the MCP `refresh` tool): an existing indexable file
+    /// deletes-then-upserts and reports its chunk count; a gone/excluded path
+    /// deletes-only and reports Removed.
     #[tokio::test]
     async fn reindex_file_reindexes_existing_and_removes_gone() {
         let dir = TempDir::new().unwrap();
@@ -656,7 +703,11 @@ mod tests {
             indexer::ReindexOutcome::Reindexed { .. } => panic!("gone file must be removed"),
         }
 
-        let calls = mock_calls(&backend);
+        let calls = match &backend {
+            Backend::Mock(m) => m.calls.lock().unwrap(),
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("test uses Backend::Mock"),
+        };
         // delete fired for BOTH paths; only the existing file produced an upsert.
         assert_eq!(calls.deletes.len(), 2, "delete fires per path");
         assert_eq!(calls.upserts.len(), 1, "only the existing file upserts");
@@ -674,19 +725,24 @@ mod tests {
         assert_eq!(plan.top_k(), 10);
     }
 
-    /// query: run_query issues the query and renders the canned hits.
+    /// query: run_query issues the query through the worker and renders the canned hits.
     #[tokio::test]
     async fn query_runs_and_returns_canned_hits() {
         let dir = TempDir::new().unwrap();
         let plan = test_plan(&dir.path().to_string_lossy());
-        let backend = Backend::Mock(MockBackend::new());
+        let (handle, thread, calls) = mock_worker(&plan);
 
         // run_query renders to stdout; assert it completes and recorded the query.
-        run_query(&backend, &plan, "where is alpha").await.unwrap();
+        run_query(&handle, &plan, "where is alpha").await.unwrap();
         // Independently confirm the canned result set is deterministic.
-        let hits = backend.query("where is alpha", plan.limit).await.unwrap();
+        let hits = handle
+            .query("where is alpha".to_string(), plan.limit)
+            .await
+            .unwrap();
+        drop(handle);
+        thread.join().unwrap();
 
-        let calls = mock_calls(&backend);
+        let calls = calls.lock().unwrap();
         assert_eq!(calls.queries.len(), 2, "run_query + direct query");
         assert_eq!(calls.queries[0], "where is alpha");
         assert_eq!(hits.len(), 2, "canned hits returned");
