@@ -371,10 +371,10 @@ impl QdrantBackend {
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false),
                 };
-                if let Some(m) = &matcher {
-                    if !m.is_match(&hit.path) {
-                        continue;
-                    }
+                if let Some(m) = &matcher
+                    && !m.is_match(&hit.path)
+                {
+                    continue;
                 }
                 let vec = extract_vector(p.vectors.clone())?;
                 out.push((hit, vec));
