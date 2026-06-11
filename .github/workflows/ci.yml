@@ -67,13 +67,18 @@ jobs:
           cargo test --locked --features all 2>&1 | tee test-output.log
       # Surface the failing tests as check-run annotations so the failure is
       # diagnosable from the PR checks UI (and the public API) without opening logs.
+      # NOTE: strip ANSI color first (CARGO_TERM_COLOR=always) or nothing matches,
+      # and guard every grep/sed — GitHub's `shell: bash` runs with -e -o pipefail,
+      # so an unguarded no-match grep kills the step before it emits anything.
       - name: Annotate test failures
         if: failure()
         shell: bash
         run: |
-          { grep -E "^test .* \.\.\. FAILED|panicked at|^error(\[|:)" test-output.log | head -8
-            sed -n '/^failures:$/,/^test result/p' test-output.log | head -20; } |
+          sed 's/\x1b\[[0-9;]*[mK]//g' test-output.log > plain.log || true
+          { grep -E "FAILED|panicked at|error\[|^error" plain.log | head -10 || true
+            sed -n '/^failures:$/,/^test result/p' plain.log | head -25 || true; } |
           while IFS= read -r line; do echo "::error title=test failure::${line}"; done
+          exit 0
 
   msrv:
     name: MSRV (1.88)
