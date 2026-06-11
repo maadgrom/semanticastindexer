@@ -47,7 +47,15 @@ duckdb = { version = "1", features = ["bundled"], optional = true }
 # Local ONNX embedder (feature = "ort"): raw ONNX Runtime + tokenizer + HF model download.
 # ort is a 2.x prerelease; pin to the rc proven in this tree (download-binaries default).
 ort = { version = "=2.0.0-rc.12", optional = true }
-tokenizers = { version = "0.23", optional = true }
+# default-features off to drop `esaxx_fast`: it pulls esaxx-rs's C++ build, whose
+# hardcoded static CRT (/MT) cannot link against the /MD CRT of bundled DuckDB on
+# Windows (LNK2038). esaxx only accelerates unigram TRAINING — we only load and run
+# tokenizers — and without `esaxx-rs/cpp` the crate is pure Rust. `onig` keeps the
+# standard regex backend; `progressbar` matches the previous default behavior.
+tokenizers = { version = "0.23", default-features = false, features = [
+    "onig",
+    "progressbar",
+], optional = true }
 ndarray = { version = "0.17", optional = true }
 # hf-hub >= 0.4 is required for HF's Xet-backed storage (0.3 cannot fetch tokenizer.json
 # for the default model repo).

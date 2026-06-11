@@ -72,17 +72,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: echo 'CARGO_TARGET_DIR=C:\ct' >> "$GITHUB_ENV"
-      # esaxx-rs (C++ dep of tokenizers, via the ort feature) hardcodes
-      # .static_crt(true), emitting /MT objects that MSVC refuses to link against
-      # the /MD CRT every other C++ dep (bundled DuckDB) and Rust itself use
-      # (LNK2038 RuntimeLibrary mismatch). CXXFLAGS cannot fix this — cc-rs gives
-      # builder flags precedence over env flags, so the hardcoded /MT still wins.
-      # _CL_ is appended by cl.exe AFTER the entire command line (last /M flag
-      # wins), forcing every C/C++ object onto the dynamic CRT.
-      - name: force dynamic CRT for C++ deps (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: echo '_CL_=/MD' >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

@@ -32,6 +32,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Windows builds with `--features all` no longer fail to link (LNK2038 runtime-
+  library mismatch): tokenizers' `esaxx_fast` feature is dropped, removing the
+  esaxx-rs C++ object whose hardcoded static CRT conflicted with bundled DuckDB's
+  dynamic CRT. esaxx only accelerates unigram training, which this project never
+  does; tokenizer loading/encoding is unaffected.
 - CLI `sync` no longer leaves the DuckDB HNSW index dropped when a file fails
   mid-batch — it now uses the same always-rebuild refresh path as the MCP
   `sai_refresh` tool.
