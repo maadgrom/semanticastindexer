@@ -107,8 +107,9 @@ install_binary() {
     success "Binary installed."
 }
 
-# Resolve the absolute path to the installed binary (cargo-dist installs to ~/.cargo/bin
-# or ~/.local/bin); fall back to a bare name on PATH.
+# Resolve the absolute path to the installed binary: PATH lookup first, then the
+# cargo-dist install dirs (~/.cargo/bin, ~/.local/bin). If nothing exists on disk,
+# warn and default to the ~/.cargo/bin path.
 resolve_binary() {
     local candidates=(
         "$(command -v "$BINARY_NAME" 2>/dev/null || true)"

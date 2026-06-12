@@ -90,8 +90,9 @@ function Install-Binary {
     Success "Binary installed."
 }
 
-# Resolve the absolute path to the installed binary (cargo-dist installs to
-# %CARGO_HOME%\bin, default %USERPROFILE%\.cargo\bin); fall back to PATH.
+# Resolve the absolute path to the installed binary: PATH lookup first, then the
+# cargo-dist install dirs (%CARGO_HOME%\bin, ~\.cargo\bin, ~\.local\bin). If nothing
+# exists on disk, warn and default to the ~\.cargo\bin path.
 function Resolve-Binary {
     $candidates = @()
     $onPath = Get-Command $BinaryName -ErrorAction SilentlyContinue
