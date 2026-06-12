@@ -45,10 +45,9 @@ fn is_dirty() -> bool {
     if staged {
         return true;
     }
-    let unstaged = Command::new("git")
+    Command::new("git")
         .args(["diff", "--quiet"])
         .status()
         .map(|s| !s.success())
-        .unwrap_or(true);
-    unstaged
+        .unwrap_or(true)
 }

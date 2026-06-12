@@ -1,0 +1,155 @@
+name: CI
+
+# Test / lint / format gate for every PR and push to main. Release builds live in
+# release.yml (cargo-dist); Docker validation in docker.yml. This workflow is the
+# only place `cargo test` runs in CI.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (--features all)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --features all --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-latest (24.04) ships GCC 13, required by ort 2.0.0-rc.12's prebuilt
+        # ONNX Runtime (same constraint as the dist runners in release.yml).
+        # windows-2022 is pinned EXPLICITLY: both windows-latest and windows-2025 now
+        # ship the VS2026 toolset (MSVC 14.51), and cl.exe fails to compile bundled
+        # DuckDB 1.5's amalgamation under it (ub_src_storage_compression_chimp.cpp,
+        # via the libduckdb-sys build script). VS2022 (cl 14.4x) is the toolset the
+        # v0.1.0 release binaries were built with and compiles DuckDB fine. Revisit
+        # when the duckdb crate supports VS2026 or windows-2022 is retired.
+        os: [ubuntu-latest, macos-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      # Same prelude as the dist-generated release.yml build jobs: Windows needs
+      # long-path support, and bundled DuckDB's build (tar extraction + cl.exe over
+      # the amalgamation) lives in deep target paths that can exceed MAX_PATH —
+      # a short CARGO_TARGET_DIR keeps every build path well under 260 chars.
+      - name: enable windows longpaths
+        if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+      - name: shorten target dir (Windows MAX_PATH)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'CARGO_TARGET_DIR=C:\ct' >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # v2 bump: cc-rs does not reliably rerun C++ build scripts when only
+          # _CL_/CXXFLAGS change, so restored caches could replay stale /MT objects.
+          prefix-key: v2-rust
+      # Default (debug) profile: the suite is mock-based and runs in seconds, while a
+      # release build (opt-level 3 + thin LTO over bundled DuckDB's C++) took >2h on
+      # the Windows runner. Release codegen is exercised where it ships: the
+      # cargo-dist release builds and the Docker workflow.
+      - if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --features all 2>&1 | tee test-output.log
+      # Windows runs single-threaded: the DuckDB tests each INSTALL the vss
+      # extension on first use, and concurrent installs race on the extension
+      # file (rename-over-existing fails on Windows; fine on POSIX). The suite
+      # takes ~2s, so serializing costs nothing.
+      - if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --features all -- --test-threads=1 2>&1 | tee test-output.log
+      # Surface the failing tests as check-run annotations so the failure is
+      # diagnosable from the PR checks UI (and the public API) without opening logs.
+      # NOTE: strip ANSI color first (CARGO_TERM_COLOR=always) or nothing matches,
+      # and guard every grep/sed — GitHub's `shell: bash` runs with -e -o pipefail,
+      # so an unguarded no-match grep kills the step before it emits anything.
+      - name: Annotate test failures
+        if: failure()
+        shell: bash
+        run: |
+          sed 's/\x1b\[[0-9;]*[mK]//g' test-output.log > plain.log || true
+          # Build-script failures put the actual error in the LAST '--- stderr'
+          # block — capture that (the stdout/env-probe lines above it are noise),
+          # then any test failures. Annotations cap at 10 per step.
+          { grep -i -m1 "failed to run custom build command" plain.log || true
+            awk '/--- stderr/{n=NR} {l[NR]=$0} END{if(n)for(i=n;i<=NR&&i<n+8;i++)print l[i]}' plain.log || true
+            grep -E "error: linking with|LNK[0-9]+|error\[E[0-9]+" plain.log | head -4 || true
+            grep -E "FAILED|panicked at" plain.log | head -4 || true
+            sed -n '/^failures:$/,/^test result/p' plain.log | head -10 || true; } |
+          { grep -v "^\s*$" || true; } | while IFS= read -r line; do echo "::error title=test failure::${line}"; done
+          exit 0
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Overrides rust-toolchain.toml (channel = "stable") so the declared
+      # rust-version in Cargo.toml is actually verified.
+      RUSTUP_TOOLCHAIN: "1.88"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --features all --all-targets
+
+  features:
+    name: feature matrix (cargo hack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-hack
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # v2 bump: the cache entry saved by this job's first (43-min) run wedged the
+          # restore step on two consecutive runs — a fresh key namespace dodges it.
+          prefix-key: v2-rust
+      # Every feature gate must compile on its own, so feature-gated breakage can't
+      # ship. Backend-less builds (--no-default-features alone, and `ast` alone) are
+      # intentionally invalid — a compile_error! in lib.rs rejects them — so they are
+      # excluded here; `ast` is still covered via `all` in the clippy/test jobs.
+      # NOTE: no --no-dev-deps — it strips dev-deps from the manifest, which --locked
+      # then rejects (the lockfile no longer matches). --locked wins: reproducible CI.
+      - run: cargo hack check --locked --each-feature --exclude-no-default-features --skip ast

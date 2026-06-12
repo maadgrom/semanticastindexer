@@ -96,9 +96,9 @@ When the semanticastindexer MCP server is running with `--allow-setup`, the `sai
 
 ## Related Project Documentation
 
-- [Installation & per-platform setup](../docs/install.md)
-- [MCP server: tools, thresholds, wiring](../docs/mcp-server.md)
-- [Chunking strategies](../docs/chunking.md) and [similarity tuning](../docs/configuration.md)
+- [Installation & per-platform setup](../book/src/installation.md)
+- [MCP server: tools, thresholds, wiring](../book/src/reference/mcp-server.md)
+- [Chunking strategies](../book/src/reference/chunking.md) and [similarity tuning](../book/src/reference/configuration.md)
 - Hosted install page: <https://maadgrom.github.io/semanticastindexer/>
 
 This skill is maintained as part of the semanticastindexer repository.

@@ -197,7 +197,10 @@ pub mod ort_impl {
                     )
                 })?;
 
-            let needs_token_type_ids = session.inputs().iter().any(|i| i.name() == "token_type_ids");
+            let needs_token_type_ids = session
+                .inputs()
+                .iter()
+                .any(|i| i.name() == "token_type_ids");
 
             Ok(Self {
                 session: Mutex::new(session),

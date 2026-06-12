@@ -3,7 +3,7 @@
 //! `sync`, `run_query`, `flush`) with NO network and NO real Qdrant/DuckDB, and
 //! RECORDS every backend call so tests can assert ordering, balance, and args.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
@@ -105,8 +105,12 @@ impl MockCalls {
 }
 
 /// In-memory recording backend. Returns deterministic canned hits from `query`.
+///
+/// `calls` is behind an `Arc` so a test can keep a recorder handle while the backend
+/// itself moves onto the worker thread (the flow tests drive the real orchestration,
+/// which routes every backend call through [`crate::worker`]).
 pub struct MockBackend {
-    pub calls: Mutex<MockCalls>,
+    pub calls: Arc<Mutex<MockCalls>>,
     canned: Vec<Hit>,
     /// Optional stored rows-with-vectors for the MCP-path methods. Empty unless a test
     /// seeds them via [`MockBackend::with_rows`].
@@ -125,7 +129,7 @@ impl MockBackend {
     /// New Mock whose `query` returns a fixed two-row result set.
     pub fn new() -> Self {
         Self {
-            calls: Mutex::new(MockCalls::default()),
+            calls: Arc::new(Mutex::new(MockCalls::default())),
             rows: Vec::new(),
             canned: vec![
                 Hit {

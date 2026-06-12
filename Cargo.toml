@@ -6,7 +6,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Near-duplicate detection and semantic code search for AI coding agents. MCP server + CLI. Local-first with embeddings (DuckDB + ONNX/Ollama) or Qdrant."
 license = "MIT"
-repository = "https://github.com/common/semanticastindexer"
+repository = "https://github.com/maadgrom/semanticastindexer"
 readme = "README.md"
 keywords = ["near-duplicate", "deslop", "code-search", "mcp", "embeddings"]
 categories = ["command-line-utilities", "development-tools"]
@@ -47,7 +47,15 @@ duckdb = { version = "1", features = ["bundled"], optional = true }
 # Local ONNX embedder (feature = "ort"): raw ONNX Runtime + tokenizer + HF model download.
 # ort is a 2.x prerelease; pin to the rc proven in this tree (download-binaries default).
 ort = { version = "=2.0.0-rc.12", optional = true }
-tokenizers = { version = "0.23", optional = true }
+# default-features off to drop `esaxx_fast`: it pulls esaxx-rs's C++ build, whose
+# hardcoded static CRT (/MT) cannot link against the /MD CRT of bundled DuckDB on
+# Windows (LNK2038). esaxx only accelerates unigram TRAINING — we only load and run
+# tokenizers — and without `esaxx-rs/cpp` the crate is pure Rust. `onig` keeps the
+# standard regex backend; `progressbar` matches the previous default behavior.
+tokenizers = { version = "0.23", default-features = false, features = [
+    "onig",
+    "progressbar",
+], optional = true }
 ndarray = { version = "0.17", optional = true }
 # hf-hub >= 0.4 is required for HF's Xet-backed storage (0.3 cannot fetch tokenizer.json
 # for the default model repo).
@@ -75,7 +83,10 @@ schemars = { version = "1", optional = true }
 # Qdrant and DuckDB produce identical stable point IDs. (2.x changed the API, not
 # the algorithm — the pinned-value test in indexer.rs guards ID stability.)
 twox-hash = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# sync: the backend worker channel (worker.rs) uses tokio::sync::{mpsc, oneshot} in
+# every build — declare it explicitly instead of relying on other deps' feature
+# unification to turn it on.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 anyhow = "1"
 walkdir = "2"
 clap = { version = "4", features = ["derive"] }
@@ -88,6 +99,15 @@ globset = "0.4"
 [dev-dependencies]
 # Temp source trees for the mocked happy-path flow tests (no network, no real backend).
 tempfile = "3"
+
+# Bundled DuckDB is a single giant C++ amalgamation; compiling it WITH debug info
+# breaks MSVC on the GitHub windows runners ("failed to run custom build command for
+# libduckdb-sys"), while release builds (no debug info) are proven to work there
+# (cargo-dist ships Windows binaries). Nobody debugs DuckDB internals from this repo,
+# so drop debug info for just this crate in dev/test builds — fixes Windows CI and
+# shrinks every local debug build.
+[profile.dev.package.libduckdb-sys]
+debug = false
 
 [profile.release]
 # opt-level 3 + thin LTO: the embedder's hand-written mean-pool / L2-normalize loops

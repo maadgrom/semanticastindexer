@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::Args;
+use crate::cli::Args;
 use crate::vectordbs::PrefixStyle;
 
 pub const DEFAULT_CONFIG: &str = "indexer.yaml";
@@ -453,7 +453,8 @@ fn load_config(args: &Args) -> Result<Config> {
     }
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config: {}", args.config))?;
-    serde_yaml_ng::from_str(&raw).with_context(|| format!("failed to parse config: {}", args.config))
+    serde_yaml_ng::from_str(&raw)
+        .with_context(|| format!("failed to parse config: {}", args.config))
 }
 
 /// Test-only Plan builders shared across the crate's unit tests (e.g. the MCP helper

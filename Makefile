@@ -44,14 +44,13 @@ export
 TARGET     ?= .
 ROOT       ?= src
 EXT        ?= ts,tsx
-LANGUAGE   ?= ts
 COLLECTION ?= source_code
 BACKEND    ?= qdrant
 # Embedder for the duckdb backend: ort (default) or ollama. Ignored by qdrant.
 EMBEDDER   ?= ort
 SINCE      ?= HEAD~1
 # Default args for `run` — safe (no upload) unless overridden.
-ARGS       ?= --root $(ROOT) --ext $(EXT) --language $(LANGUAGE) --collection $(COLLECTION) --backend $(BACKEND) --embedder $(EMBEDDER) --dry-run
+ARGS       ?= --root $(ROOT) --ext $(EXT) --collection $(COLLECTION) --backend $(BACKEND) --embedder $(EMBEDDER) --dry-run
 # Extra args for the similarity subcommands (override per invocation).
 DUP_ARGS   ?=
 SIM_ARGS   ?= --code "function example() { return 1 }"
@@ -77,7 +76,7 @@ run: build ## Dev run (default: safe --dry-run over TARGET/src). Override with A
 	cd $(TARGET) && $(BIN) $(ARGS)
 
 prod: build ## Index $(ROOT) under TARGET into $(BACKEND) (qdrant needs QDRANT_URL/API_KEY)
-	cd $(TARGET) && $(BIN) --root $(ROOT) --ext $(EXT) --language $(LANGUAGE) --collection $(COLLECTION) --backend $(BACKEND) --embedder $(EMBEDDER)
+	cd $(TARGET) && $(BIN) --root $(ROOT) --ext $(EXT) --collection $(COLLECTION) --backend $(BACKEND) --embedder $(EMBEDDER)
 
 dry-run: build ## Report what would be indexed/skipped under TARGET (no network)
 	cd $(TARGET) && $(BIN) --root $(ROOT) --ext $(EXT) --dry-run

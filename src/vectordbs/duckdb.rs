@@ -57,11 +57,11 @@ impl DuckDbBackend {
     /// persistence, and attach the embedder built by the factory.
     pub fn connect(plan: &Plan, embedder: Embedder) -> Result<Self> {
         let path = PathBuf::from(&plan.duckdb_path);
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("failed to create dir for {}", path.display()))?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create dir for {}", path.display()))?;
         }
 
         let conn = Connection::open(&path)
@@ -637,10 +637,10 @@ impl DuckDbBackend {
         let mut out = Vec::new();
         for r in rows {
             let (hit, vec) = r.context("failed to read all_chunks_with_vectors row")?;
-            if let Some(m) = &matcher {
-                if !m.is_match(&hit.path) {
-                    continue;
-                }
+            if let Some(m) = &matcher
+                && !m.is_match(&hit.path)
+            {
+                continue;
             }
             out.push((hit, vec));
         }
