@@ -107,8 +107,9 @@ install_binary() {
     success "Binary installed."
 }
 
-# Resolve the absolute path to the installed binary (cargo-dist installs to ~/.cargo/bin
-# or ~/.local/bin); fall back to a bare name on PATH.
+# Resolve the absolute path to the installed binary: PATH lookup first, then the
+# cargo-dist install dirs (~/.cargo/bin, ~/.local/bin). If nothing exists on disk,
+# warn and default to the ~/.cargo/bin path.
 resolve_binary() {
     local candidates=(
         "$(command -v "$BINARY_NAME" 2>/dev/null || true)"
@@ -118,6 +119,9 @@ resolve_binary() {
     for c in "${candidates[@]}"; do
         if [ -n "$c" ] && [ -x "$c" ]; then printf '%s' "$c"; return; fi
     done
+    # Nothing found on disk — warn instead of silently printing a dead path (the MCP
+    # config would point at a binary that does not exist).
+    error "could not locate the installed binary; defaulting to ~/.cargo/bin/$BINARY_NAME"
     printf '%s' "$HOME/.cargo/bin/$BINARY_NAME"
 }
 
@@ -323,10 +327,21 @@ main() {
 
     echo
     success "Done. Next steps:"
-    echo "  1. cd into the project you want to search"
-    echo "  2. $BIN --root src --ext ts,tsx --dry-run   # preview what gets indexed"
-    echo "  3. $BIN --root src --ext ts,tsx             # index it"
-    echo "  4. Restart your client so it picks up the MCP server"
+    # Human-facing commands use the bare name — the absolute path only belongs in the
+    # MCP config snippets. If the install dir is not on this shell's PATH yet (the
+    # installer edits your shell rc), say so first instead of printing a long path.
+    local step=1
+    if ! command -v "$BINARY_NAME" >/dev/null 2>&1; then
+        echo "  $step. Open a new terminal (or source your shell rc) so '$BINARY_NAME' is on your PATH ($(dirname "$BIN"))"
+        step=$((step + 1))
+    fi
+    echo "  $step. cd into the project you want to search"
+    step=$((step + 1))
+    echo "  $step. $BINARY_NAME --root src --ext ts,tsx --dry-run   # preview what gets indexed"
+    step=$((step + 1))
+    echo "  $step. $BINARY_NAME --root src --ext ts,tsx             # index it"
+    step=$((step + 1))
+    echo "  $step. Restart your client so it picks up the MCP server"
     echo
     echo "  Docs: ${PAGES_URL}"
 }

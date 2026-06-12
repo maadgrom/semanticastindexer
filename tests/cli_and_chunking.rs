@@ -7,7 +7,7 @@ use clap::Parser;
 use std::fs;
 use tempfile::TempDir;
 
-use semanticastindexer::cli::Args;
+use semanticastindexer::cli::{Args, Cmd};
 use semanticastindexer::config::build_plan;
 use semanticastindexer::indexer;
 
@@ -22,6 +22,14 @@ fn parse(argv: &[&str]) -> Args {
 fn unknown_flags_are_rejected() {
     let res = Args::try_parse_from(["semanticastindexer", "--language", "ts"]);
     assert!(res.is_err(), "--language is not a real flag");
+}
+
+/// `update` parses as a bare, config-independent subcommand (it must work from any
+/// directory, before any config is read).
+#[test]
+fn update_subcommand_parses() {
+    let args = parse(&["semanticastindexer", "update"]);
+    assert!(matches!(args.command, Some(Cmd::Update)));
 }
 
 /// Precedence: CLI flag > YAML config > built-in default.

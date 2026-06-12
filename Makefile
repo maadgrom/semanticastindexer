@@ -126,7 +126,7 @@ docs: require-mdbook ## Live-preview the docs (auto-reload) at http://localhost:
 site: book-build ## Build + serve the full static site (landing + /book/) at http://localhost:$(SITE_PORT)
 	rm -rf $(SITE_DIR)
 	mkdir -p $(SITE_DIR)/book
-	cp $(THIS_DIR)/docs/index.html $(THIS_DIR)/docs/install.sh $(THIS_DIR)/docs/uninstall.sh $(THIS_DIR)/docs/.nojekyll $(SITE_DIR)/
+	cp $(THIS_DIR)/docs/index.html $(THIS_DIR)/docs/install.sh $(THIS_DIR)/docs/install.ps1 $(THIS_DIR)/docs/uninstall.sh $(THIS_DIR)/docs/.nojekyll $(SITE_DIR)/
 	cp -R $(THIS_DIR)/assets $(SITE_DIR)/
 	cp -R $(THIS_DIR)/book/html/. $(SITE_DIR)/book/
 	@echo ""
@@ -141,3 +141,10 @@ static: site ## (alias) Build + serve the full static site
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+
+.PHONY: scan
+scan: ## Run security scanning (gitleaks, syft, grype, osv-scanner)
+	-gitleaks -v dir ./
+	-syft . -o json | grype -
+	-osv-scanner scan .

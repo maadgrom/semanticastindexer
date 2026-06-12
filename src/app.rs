@@ -21,6 +21,11 @@ use crate::worker::{self, BackendHandle};
 
 /// Run one parsed CLI invocation to completion. The single entrypoint `main` calls.
 pub async fn run(args: Args) -> Result<()> {
+    // `update` is config-independent (no plan, no backend) — handle it before any
+    // config loading so it works from any directory.
+    if matches!(args.command, Some(Cmd::Update)) {
+        return run_update();
+    }
     let t0 = std::time::Instant::now();
     let git_ctx = git::capture();
     let plan = build_plan(&args)?;
@@ -30,6 +35,8 @@ pub async fn run(args: Args) -> Result<()> {
     indexer::ensure_chunker_available(&plan)?;
 
     match &args.command {
+        // Dispatched before config loading at the top of this function.
+        Some(Cmd::Update) => unreachable!("update is handled before config loading"),
         Some(Cmd::Flush) => {
             run_timed(t0, &args, &git_ctx, "", async {
                 let backend = factory(&plan, Access::ReadWrite)?;
@@ -125,6 +132,47 @@ where
         eprintln!("warning: backend worker thread panicked during shutdown");
     }
     result
+}
+
+/// The official cargo-dist release installers — `update` reuses them so binary
+/// replacement, PATH handling, and install location stay identical to first install.
+#[cfg(not(windows))]
+const UPDATE_INSTALLER_SH: &str = "https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.sh";
+#[cfg(windows)]
+const UPDATE_INSTALLER_PS1: &str = "https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.ps1";
+
+/// `update` subcommand (unix): pipe the official release installer through `sh`.
+/// POSIX allows replacing a running binary's file, so the new version simply takes
+/// effect on the next invocation.
+#[cfg(not(windows))]
+fn run_update() -> Result<()> {
+    println!(
+        "{} {} — updating to the latest release…",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION")
+    );
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!("curl -fsSL {UPDATE_INSTALLER_SH} | sh"))
+        .status()
+        .context("failed to run the release installer (are sh and curl on PATH?)")?;
+    anyhow::ensure!(status.success(), "release installer exited with {status}");
+    println!("update complete — restart any running MCP servers to pick up the new binary");
+    Ok(())
+}
+
+/// `update` subcommand (windows): a running executable cannot overwrite itself, so
+/// print the exact PowerShell one-liner to run after this process exits.
+#[cfg(windows)]
+fn run_update() -> Result<()> {
+    println!(
+        "{} {} — a running executable cannot replace itself on Windows.\n\
+         Run this in PowerShell to update:\n\n  \
+         powershell -c \"irm {UPDATE_INSTALLER_PS1} | iex\"\n",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION")
+    );
+    Ok(())
 }
 
 fn finish(t0: std::time::Instant, args: &Args, ctx: &git::GitContext, extra: &str) {

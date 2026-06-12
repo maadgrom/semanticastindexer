@@ -19,7 +19,7 @@ Release and puts `semanticastindexer` on your `PATH`):
 curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash
 
 # Windows (PowerShell)
-powershell -c "irm https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.ps1 | iex"
+powershell -c "irm https://maadgrom.github.io/semanticastindexer/install.ps1 | iex"
 ```
 
 Prefer to build it yourself? Build with all features enabled so the offline default
@@ -141,11 +141,18 @@ with `--min-score`, `--top-k`, and friends. See
 ## 7. Connect a coding agent (optional)
 
 The binary is a complete CLI on its own, but you can also expose it to a coding agent over
-MCP. On macOS/Linux, re-run the installer with `--platform claude-code` and it wires up the
-project's `.mcp.json` (and installs the Claude Code skill):
+MCP. Re-run the installer with `--platform claude-code` (macOS/Linux) or
+`-Platform claude-code` (Windows) and it wires up the project's `.mcp.json` (and installs
+the Claude Code skill):
 
 ```bash
+# macOS / Linux
 curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash -s -- --platform claude-code
+```
+
+```powershell
+# Windows (the scriptblock form is how flags pass through irm)
+powershell -c "& ([scriptblock]::Create((irm https://maadgrom.github.io/semanticastindexer/install.ps1))) -Platform claude-code"
 ```
 
 Other supported ids include `claude-desktop`, `cursor`, `windsurf`, `continue`, `codex`,
