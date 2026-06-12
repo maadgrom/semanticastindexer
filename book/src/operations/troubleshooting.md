@@ -24,7 +24,7 @@ later runs reuse the cache.
   at it instead of the default location and run offline.
 
 ```yaml
-# indexer.yaml — reuse a pre-populated HF cache (no network on subsequent runs)
+# sai-cfg.yml — reuse a pre-populated HF cache (no network on subsequent runs)
 duckdb:
   model_cache: /path/to/huggingface/cache
 ```
@@ -206,7 +206,7 @@ A handful of wiring issues account for almost every "the server doesn't appear" 
   not resolve.
 - **Set the working directory to the indexed project.** The server resolves the index and
   config relative to its cwd, so the client must launch it with `cwd` = the project you
-  indexed (where `.index/code.duckdb` / `indexer.yaml` live).
+  indexed (where `.index/code.duckdb` / `sai-cfg.yml` live).
 - **Restart the client.** Most MCP clients only read server config at startup; after
   editing the config, fully restart the client so it spawns the server again.
 - **The server is read-only by default.** It runs with `--backend duckdb --embedder

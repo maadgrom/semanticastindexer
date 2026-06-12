@@ -9,15 +9,22 @@ use std::path::Path;
 use crate::cli::Args;
 use crate::vectordbs::PrefixStyle;
 
-pub const DEFAULT_CONFIG: &str = "indexer.yaml";
-const DEFAULT_COLLECTION: &str = "source_code";
-const DEFAULT_MODEL: &str = "intfloat/multilingual-e5-small";
+/// Standard config filename: what `init` generates and the first name sought when
+/// `--config` is omitted.
+pub const DEFAULT_CONFIG: &str = "sai-cfg.yml";
+/// Default config filenames sought (in order) in the working directory when `--config`
+/// is omitted: the standard name, its `.yaml` spelling, then the legacy pre-rename name.
+pub const DEFAULT_CONFIG_LOOKUP: &[&str] = &["sai-cfg.yml", "sai-cfg.yaml", "indexer.yaml"];
+pub(crate) const DEFAULT_COLLECTION: &str = "source_code";
+/// Default model for the Qdrant (server-side inference) path. Crate-visible so the
+/// `init` generator stays aligned with the runtime defaults by construction.
+pub(crate) const DEFAULT_MODEL: &str = "intfloat/multilingual-e5-small";
 /// Recommended default for the `ort` embedder (local ONNX + DuckDB). A code-trained
 /// model that produces much better separation for near-duplicate detection than
-/// general text models like e5-small.
-const DEFAULT_ORT_MODEL: &str = "jinaai/jina-embeddings-v2-base-code";
+/// general text models like e5-small. Crate-visible for the `init` generator.
+pub(crate) const DEFAULT_ORT_MODEL: &str = "jinaai/jina-embeddings-v2-base-code";
 const DEFAULT_VECTOR_DIM: u64 = 384;
-const DEFAULT_ORT_VECTOR_DIM: u64 = 768;
+pub(crate) const DEFAULT_ORT_VECTOR_DIM: u64 = 768;
 const DEFAULT_BACKEND: &str = "qdrant";
 const DEFAULT_EMBEDDER: &str = "ort";
 const DEFAULT_CHUNKER: &str = "lines";
@@ -39,13 +46,14 @@ fn ast_preferred_for_exts(exts: &[String]) -> bool {
             .any(|&p| p.eq_ignore_ascii_case(e))
     })
 }
-const DEFAULT_DUCKDB_PATH: &str = ".index/code.duckdb";
-const DEFAULT_MODEL_REPO: &str = "Xenova/multilingual-e5-small";
+pub(crate) const DEFAULT_DUCKDB_PATH: &str = ".index/code.duckdb";
+pub(crate) const DEFAULT_MODEL_REPO: &str = "Xenova/multilingual-e5-small";
 /// Matches `DEFAULT_ORT_MODEL`. The ort embedder downloads from this HF repo.
 const DEFAULT_ORT_MODEL_REPO: &str = "jinaai/jina-embeddings-v2-base-code";
-const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
-// Default Ollama embedding model. mxbai-embed-large is 1024-d → use vector_dim: 1024.
-const DEFAULT_OLLAMA_MODEL: &str = "mxbai-embed-large";
+pub(crate) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+/// Default Ollama embedding model. mxbai-embed-large is 1024-d → use vector_dim: 1024.
+/// Crate-visible for the `init` generator.
+pub(crate) const DEFAULT_OLLAMA_MODEL: &str = "mxbai-embed-large";
 // Similarity-threshold built-in defaults. These are MODEL-SPECIFIC cutoffs (Qwen ≠ e5);
 // tune them in the YAML `similarity:` block per model. Resolution for every knob is
 // MCP tool arg > config value > these defaults.
@@ -438,23 +446,86 @@ fn build_globset(patterns: &[String], label: &str) -> Result<GlobSet> {
         .with_context(|| format!("failed to compile {label} globs"))
 }
 
-/// Load YAML config. Missing default file → built-in defaults; missing explicit file → error.
+/// First default config filename (see [`DEFAULT_CONFIG_LOOKUP`]) that exists in `dir`,
+/// or `None` when the directory has no config. `sai-cfg.yml` is the standard and wins
+/// over the `.yaml` spelling and the legacy `indexer.yaml`.
+pub fn resolve_default_config(dir: &Path) -> Option<std::path::PathBuf> {
+    DEFAULT_CONFIG_LOOKUP
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Load YAML config. No `--config` + no default file → built-in defaults; an explicit
+/// `--config` path that does not exist → error.
 fn load_config(args: &Args) -> Result<Config> {
-    let path = Path::new(&args.config);
-    if !path.exists() {
-        if args.config == DEFAULT_CONFIG {
-            eprintln!(
-                "note: no config at {} — using built-in defaults (only hard dirs pruned)",
-                DEFAULT_CONFIG
-            );
-            return Ok(Config::default());
+    let path = match &args.config {
+        Some(p) => {
+            let path = std::path::PathBuf::from(p);
+            if !path.exists() {
+                anyhow::bail!("config file not found: {p}");
+            }
+            path
         }
-        anyhow::bail!("config file not found: {}", args.config);
+        None => match resolve_default_config(Path::new(".")) {
+            Some(path) => path,
+            None => {
+                eprintln!(
+                    "note: no config at {} — using built-in defaults (only hard dirs pruned). \
+                     Run `semanticastindexer init` to generate one.",
+                    DEFAULT_CONFIG
+                );
+                return Ok(Config::default());
+            }
+        },
+    };
+    let display = path.display();
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read config: {display}"))?;
+    serde_yaml_ng::from_str(&raw).with_context(|| format!("failed to parse config: {display}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Resolution order: the standard `sai-cfg.yml` wins over `sai-cfg.yaml`, which
+    /// wins over the legacy `indexer.yaml`; an empty directory resolves to None.
+    #[test]
+    fn default_config_resolution_order() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(resolve_default_config(dir.path()), None, "empty dir");
+
+        std::fs::write(dir.path().join("indexer.yaml"), "{}\n").unwrap();
+        assert_eq!(
+            resolve_default_config(dir.path()).unwrap(),
+            dir.path().join("indexer.yaml"),
+            "legacy name is honored when alone"
+        );
+
+        std::fs::write(dir.path().join("sai-cfg.yaml"), "{}\n").unwrap();
+        assert_eq!(
+            resolve_default_config(dir.path()).unwrap(),
+            dir.path().join("sai-cfg.yaml"),
+            ".yaml spelling beats the legacy name"
+        );
+
+        std::fs::write(dir.path().join("sai-cfg.yml"), "{}\n").unwrap();
+        assert_eq!(
+            resolve_default_config(dir.path()).unwrap(),
+            dir.path().join("sai-cfg.yml"),
+            "the standard sai-cfg.yml wins over everything"
+        );
     }
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read config: {}", args.config))?;
-    serde_yaml_ng::from_str(&raw)
-        .with_context(|| format!("failed to parse config: {}", args.config))
+
+    /// A directory named like a config file must not satisfy the lookup.
+    #[test]
+    fn default_config_resolution_ignores_directories() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("sai-cfg.yml")).unwrap();
+        assert_eq!(resolve_default_config(dir.path()), None);
+    }
 }
 
 /// Test-only Plan builders shared across the crate's unit tests (e.g. the MCP helper

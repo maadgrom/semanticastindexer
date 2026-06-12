@@ -1,16 +1,16 @@
 # Configuration reference
 
-SAI reads a single YAML file, `indexer.yaml`, to decide what gets chunked, embedded, and stored. It is loaded by default from `indexer.yaml` in the current directory, or from a path you pass with `--config <path>`. Every value here is resolved in `src/config.rs` (`build_plan`), and every key in this page maps to a real field — nothing else is read.
+SAI reads a single YAML file, `sai-cfg.yml`, to decide what gets chunked, embedded, and stored. When `--config <path>` is not passed, SAI looks in the current directory for `sai-cfg.yml`, then `sai-cfg.yaml`, then the legacy `indexer.yaml` — the first one found wins. Generate a fully-commented starter file with `semanticastindexer init` (interactive; `--yes` accepts every default). Every value here is resolved in `src/config.rs` (`build_plan`), and every key in this page maps to a real field — nothing else is read.
 
 The resolution order for most knobs is:
 
 ```
-CLI flag  >  indexer.yaml value  >  built-in default
+CLI flag  >  sai-cfg.yml value  >  built-in default
 ```
 
 The Qdrant **API key** is the exception — it is a secret read only from the `QDRANT_API_KEY` environment variable, never from YAML (see [Environment variables](#environment-variables) below). The Qdrant URL is a normal setting: `qdrant.url` in YAML, overridable by `QDRANT_URL`.
 
-> If no `indexer.yaml` exists at the default path, SAI prints `note: no config at indexer.yaml — using built-in defaults (only hard dirs pruned)` and continues with the defaults below. If you pass an explicit `--config` to a missing file, it is a hard error instead.
+> If none of the default files (`sai-cfg.yml`, `sai-cfg.yaml`, legacy `indexer.yaml`) exists, SAI prints `note: no config at sai-cfg.yml — using built-in defaults (only hard dirs pruned)` and continues with the defaults below. If you pass an explicit `--config` to a missing file, it is a hard error instead.
 
 For how `honor_noindex_marker` / `honor_noduplicate_marker` interact with in-source `sai-noindexing` / `sai-noduplicate` comments, see [opt-out markers](../guides/opt-out-markers.md). For the CLI flags that override these keys, see the [CLI reference](cli.md).
 
@@ -146,7 +146,7 @@ For each file under the root, after directory pruning and the extension filter:
 
 ## skip_generated_marker (defaults to false)
 
-`skip_generated_marker` is a **plain bool** — unlike most toggles it has no "absent = true" fallback. When the key is **omitted, it defaults to `false`** (generated-marker scanning is off). The shipped `indexer.yaml` sets it to `true` explicitly:
+`skip_generated_marker` is a **plain bool** — unlike most toggles it has no "absent = true" fallback. When the key is **omitted, it defaults to `false`** (generated-marker scanning is off). The shipped `sai-cfg.yml` sets it to `true` explicitly:
 
 ```yaml
 skip_generated_marker: true   # scan file head for @generated / "DO NOT EDIT." markers
@@ -164,7 +164,7 @@ strip_comments: true
 
 ## honor_noindex_marker / honor_noduplicate_marker
 
-Both default to **`true`** when omitted. They are **not present in the shipped `indexer.yaml`** — they take effect via the defaults. See [opt-out markers](../guides/opt-out-markers.md) for the in-source `sai-noindexing` / `sai-noduplicate` behavior.
+Both default to **`true`** when omitted. They are **not present in the shipped `sai-cfg.yml`** — they take effect via the defaults. See [opt-out markers](../guides/opt-out-markers.md) for the in-source `sai-noindexing` / `sai-noduplicate` behavior.
 
 ```yaml
 honor_noindex_marker: true        # respect sai-noindexing comments (skip chunk entirely)
@@ -212,7 +212,7 @@ The Qdrant **API key is a secret** and is read **only** from the environment —
 | `QDRANT_API_KEY` | Qdrant API key (**secret** — keep it out of version control) | none (env-only by design) |
 | `QDRANT_URL` | Qdrant cluster gRPC URL; overrides `qdrant.url` if set | `qdrant.url` |
 
-If your `indexer.yaml` contains `qdrant.url` it is safe to commit (the URL is not a secret); the key never lives there.
+If your `sai-cfg.yml` contains `qdrant.url` it is safe to commit (the URL is not a secret); the key never lives there.
 
 ## Footgun: unknown keys are silently ignored
 

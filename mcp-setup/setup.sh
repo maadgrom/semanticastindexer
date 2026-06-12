@@ -137,21 +137,21 @@ build_binary() {
     echo "$bin_path"
 }
 
-# --- Create or update indexer.yaml for agentic use ---
+# --- Create or update sai-cfg.yml for agentic use ---
 create_indexer_config() {
     local target="$1"
-    local config_path="$target/indexer.yaml"
+    local config_path="$target/sai-cfg.yml"
 
     if [[ -f "$config_path" && "$NON_INTERACTIVE" == false ]]; then
-        warn "indexer.yaml already exists in $target"
+        warn "sai-cfg.yml already exists in $target"
         read -rp "Overwrite with recommended agentic defaults? [y/N] " answer
         if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-            log "Keeping existing indexer.yaml"
+            log "Keeping existing sai-cfg.yml"
             return
         fi
     fi
 
-    log "Creating recommended indexer.yaml for agentic code search..."
+    log "Creating recommended sai-cfg.yml for agentic code search..."
 
     cat > "$config_path" <<'YAML'
 # semanticastindexer configuration optimized for agentic coding systems.

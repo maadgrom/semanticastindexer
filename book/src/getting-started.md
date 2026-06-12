@@ -41,6 +41,17 @@ are project-relative:
 cd /path/to/your/project
 ```
 
+Optionally generate a starter `sai-cfg.yml` — the fully-commented standard config. A short
+interview asks for the backend, embedder, collection, and model (Enter accepts every
+default; `--yes` skips the questions entirely):
+
+```bash
+semanticastindexer init
+```
+
+Without a config, the built-in defaults apply — fine for this tutorial. See the
+[configuration reference](reference/configuration.md) for every key.
+
 ## 3. Dry-run to preview what gets indexed
 
 Before touching the index, do a **dry-run**. It reports exactly which files would be included

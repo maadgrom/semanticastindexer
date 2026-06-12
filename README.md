@@ -57,6 +57,7 @@ Hugging Face (`jina-embeddings-v2-base-code`, 161M params, 768-dim; or `e5-small
 
 ```bash
 # From the repo root of the project you want to search:
+semanticastindexer init                                # generate a starter sai-cfg.yml (optional; --yes for defaults)
 semanticastindexer --root src --ext ts,tsx --dry-run   # see what WOULD be indexed (no network)
 semanticastindexer --root src --ext ts,tsx             # index it
 semanticastindexer --query-only --query "where do we open the duckdb connection"
@@ -74,7 +75,7 @@ semanticastindexer duplicates                          # codebase-wide near-dupl
 | [Installation](book/src/installation.md) | Per-OS install, connect an agent, build from source, uninstall |
 | [How it works](book/src/concepts/how-it-works.md) | The indexing pipeline, query path, worker model, point IDs |
 | [CLI reference](book/src/reference/cli.md) | Every subcommand and flag |
-| [Configuration](book/src/reference/configuration.md) | Every `indexer.yaml` key, type, and default |
+| [Configuration](book/src/reference/configuration.md) | Every `sai-cfg.yml` key, type, and default |
 | [MCP server & tools](book/src/reference/mcp-server.md) | All six `sai_` tools, gating, `.mcp.json` wiring |
 | [Backends & embedders](book/src/reference/backends-and-embedders.md) | Qdrant vs DuckDB, ort vs ollama, recommended code model |
 | [Troubleshooting](book/src/operations/troubleshooting.md) | First-run downloads, dimension mismatch, MCP wiring |

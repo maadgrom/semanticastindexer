@@ -21,11 +21,16 @@ use crate::worker::{self, BackendHandle};
 
 /// Run one parsed CLI invocation to completion. The single entrypoint `main` calls.
 pub async fn run(args: Args) -> Result<()> {
-    // `update` is config-independent (no plan, no backend) — handle it before any
-    // config loading so it works from any directory.
+    // `init` and `update` are config-independent (no plan, no backend) — handle them
+    // before any config loading. `init` generates the config, so it must also work
+    // when an existing one is broken; `update` works from any directory.
+    if let Some(Cmd::Init(init_args)) = &args.command {
+        return crate::init::run(init_args);
+    }
     if matches!(args.command, Some(Cmd::Update)) {
         return run_update();
     }
+
     let t0 = std::time::Instant::now();
     let git_ctx = git::capture();
     let plan = build_plan(&args)?;
@@ -35,7 +40,8 @@ pub async fn run(args: Args) -> Result<()> {
     indexer::ensure_chunker_available(&plan)?;
 
     match &args.command {
-        // Dispatched before config loading at the top of this function.
+        // Both dispatched before config loading at the top of this function.
+        Some(Cmd::Init(_)) => unreachable!("init is handled before config loading"),
         Some(Cmd::Update) => unreachable!("update is handled before config loading"),
         Some(Cmd::Flush) => {
             run_timed(t0, &args, &git_ctx, "", async {

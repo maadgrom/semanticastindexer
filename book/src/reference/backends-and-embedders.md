@@ -17,7 +17,7 @@ The same five MCP tools and the same CLI subcommands work over either backend:
 | **qdrant** | Qdrant Cloud **server-side inference** (`Document` API — no local model) | Qdrant Cloud collection (cosine `VectorParams`) | server-side HNSW cosine | none locally; needs the cluster |
 | **duckdb** | local, via an **embedder** (see below) | single DuckDB file + **VSS/HNSW** cosine index | local `array_cosine_distance` over the HNSW index | embedder-dependent + the DuckDB VSS extension |
 
-Select the backend in `indexer.yaml` (`backend: qdrant | duckdb`) or override per run with
+Select the backend in `sai-cfg.yml` (`backend: qdrant | duckdb`) or override per run with
 `--backend <name>`. The backend [`factory`](#how-the-backend-is-selected) is feature-gated:
 selecting a backend whose Cargo feature was not compiled in fails with a clear, actionable
 error, e.g.:
@@ -79,7 +79,7 @@ The DuckDB backend persists everything to a single file (`duckdb.path`, e.g.
 ## DuckDB embedders
 
 The DuckDB backend produces vectors locally via a pluggable embedder
-(`embedder: ort | ollama` in `indexer.yaml`, or `--embedder <name>`). `ort` is the default.
+(`embedder: ort | ollama` in `sai-cfg.yml`, or `--embedder <name>`). `ort` is the default.
 
 | Embedder | How | Network on first run |
 | -------- | --- | -------------------- |
@@ -259,7 +259,7 @@ there.
 - [Choosing a model](../guides/choosing-a-model.md) — model trade-offs and recommendations.
 - [Tuning similarity](../guides/tuning-similarity.md) — thresholds and scoring.
 - [Chunking](chunking.md) — how source is sliced into embeddable chunks.
-- [Configuration](configuration.md) — every `indexer.yaml` key.
+- [Configuration](configuration.md) — every `sai-cfg.yml` key.
 - [MCP server and tools](mcp-server.md) — `sai_`-prefixed tools over either backend.
 - [Qdrant Cloud](../integrations/qdrant-cloud.md) and
   [Ollama](../integrations/ollama.md) — backend/embedder setup.

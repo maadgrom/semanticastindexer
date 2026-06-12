@@ -24,6 +24,7 @@ pub mod cli;
 pub mod config;
 pub mod git;
 pub mod indexer;
+pub mod init;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 // Shared similarity-search core (union-find clustering + find_similar resolution) and

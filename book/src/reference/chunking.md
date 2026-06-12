@@ -2,11 +2,11 @@
 
 How SAI splits each source file into the embeddable units ("chunks") that get vectorized, stored, and compared. SAI ships two chunkers — the line-window chunker (`lines`) and the symbol-aware tree-sitter chunker (`ast`) — and picks one for you unless you say otherwise.
 
-For the terms used here (chunk, symbol, embedder), see the [glossary](../concepts/glossary.md). To choose the chunker on the command line or in `indexer.yaml`, see the [CLI reference](../reference/cli.md) and [Configuration](../reference/configuration.md).
+For the terms used here (chunk, symbol, embedder), see the [glossary](../concepts/glossary.md). To choose the chunker on the command line or in `sai-cfg.yml`, see the [CLI reference](../reference/cli.md) and [Configuration](../reference/configuration.md).
 
 ## Smart default (`lines` vs `ast`)
 
-When you do **not** explicitly set `--chunker` (CLI) or `chunker:` (in `indexer.yaml`), SAI defaults as follows:
+When you do **not** explicitly set `--chunker` (CLI) or `chunker:` (in `sai-cfg.yml`), SAI defaults as follows:
 
 - Languages with good AST support — currently **`ts`, `tsx`, `rs`, and `go`** — **and** a binary built with `--features ast` default to the symbol-aware `ast` chunker.
 - Everything else defaults to the reliable `lines` chunker.
@@ -22,7 +22,7 @@ sai index --chunker ast
 ```
 
 ```yaml
-# indexer.yaml
+# sai-cfg.yml
 chunker: ast   # or: lines
 ```
 

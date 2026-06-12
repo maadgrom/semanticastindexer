@@ -428,7 +428,7 @@
 
   <section class="config">
     <h2 class="sec-h"># one config file</h2>
-    <p>One <code>indexer.yaml</code> is the whole control surface. It picks the backend, embedder, and chunker, sets the model, and defines exactly what leaves the repo: tests, generated files, shadcn primitives, comments. The CLI and the MCP server both read it.</p>
+    <p>One <code>sai-cfg.yml</code> is the whole control surface. It picks the backend, embedder, and chunker, sets the model, and defines exactly what leaves the repo: tests, generated files, shadcn primitives, comments. The CLI and the MCP server both read it.</p>
     <pre class="yaml"><span class="k">backend</span>: duckdb          <span class="c"># qdrant | duckdb</span>
 <span class="k">embedder</span>: ort            <span class="c"># ort (offline ONNX) | ollama</span>
 <span class="k">chunker</span>: ast             <span class="c"># lines | ast (symbol-aware)</span>

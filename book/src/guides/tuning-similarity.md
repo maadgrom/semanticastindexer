@@ -13,7 +13,7 @@ see [MCP server](../reference/mcp-server.md).
 
 ## The four knobs
 
-All four live in the `similarity:` block of `indexer.yaml`:
+All four live in the `similarity:` block of `sai-cfg.yml`:
 
 | Knob | Default | Used by | Meaning |
 |------|---------|---------|---------|
@@ -40,13 +40,13 @@ Every knob resolves the same way, **per knob, independently**:
 CLI flag / MCP tool arg  >  config (similarity.*)  >  built-in default
 ```
 
-So if `indexer.yaml` sets `duplicate_min_score: 0.90` but a `sai_find_duplicates`
+So if `sai-cfg.yml` sets `duplicate_min_score: 0.90` but a `sai_find_duplicates`
 call passes `min_score: 0.95`, the call uses `0.95`. Omit the arg and the call
 falls back to the configured `0.90`; omit the config key too and it falls back to
 the built-in `0.93`.
 
 ```yaml
-# indexer.yaml
+# sai-cfg.yml
 similarity:
   find_similar_min_score: 0.80
   duplicate_min_score: 0.90
@@ -114,7 +114,7 @@ near-duplicates survive:
 semanticastindexer duplicates --min-score 0.80 --min-cluster-size 2 --top-k 10
 ```
 
-**4. Write the chosen values** into `similarity:` in `indexer.yaml` so every search,
+**4. Write the chosen values** into `similarity:` in `sai-cfg.yml` so every search,
 CLI run, and MCP server picks them up by default. The CLI flags / MCP args remain
 available for one-off overrides.
 
@@ -151,6 +151,6 @@ which of those chunks cluster together.
 ## See also
 
 - [Search and duplicates](./search-and-duplicates.md) — running the searches these knobs tune.
-- [Configuration](../reference/configuration.md) — the full `indexer.yaml` schema.
+- [Configuration](../reference/configuration.md) — the full `sai-cfg.yml` schema.
 - [MCP server](../reference/mcp-server.md) — `sai_find_similar` / `sai_find_duplicates` tool args.
 - [Choosing a model](./choosing-a-model.md) — why the model changes what a score means.

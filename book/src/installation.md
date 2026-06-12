@@ -139,7 +139,7 @@ Then run the one-command setup script to register the MCP server:
 ## Security
 
 - The Qdrant **API key** is read only from the `QDRANT_API_KEY` environment variable (a
-  secret — never commit it). The cluster URL can be set in `indexer.yaml` (`qdrant.url`)
+  secret — never commit it). The cluster URL can be set in `sai-cfg.yml` (`qdrant.url`)
   or via `QDRANT_URL`.
 - If an API key is ever exposed, **rotate it** in the cluster's *API Keys* tab.
 - Add `target/` to `.gitignore` (build artifact).
@@ -168,7 +168,7 @@ confirmation prompt; in a non-interactive shell (CI) it proceeds without asking.
 
 **Left untouched** (delete by hand if you want them gone):
 
-- Per-project index files (`.index/`) and any `indexer.yaml`.
+- Per-project index files (`.index/`) and any `sai-cfg.yml`.
 - The Codex (`~/.codex/config.toml`) and Continue (`~/.continue/config.yaml`) entries.
 - Any PATH line the installer added to your shell rc (`~/.zshrc`, `~/.bashrc`, `~/.profile`).
 

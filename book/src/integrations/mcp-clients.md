@@ -23,7 +23,7 @@ The server defaults to `--backend duckdb --embedder ollama` and is **read-only b
 default**. The snippets below pass `--embedder ort` for the fully offline ONNX embedder;
 drop that flag (or set `--embedder ollama`) if you run an Ollama embedding server. The
 server's `cwd` must be the indexed project root so it finds that project's DuckDB index
-and `indexer.yaml`.
+and `sai-cfg.yml`.
 
 ## Using the installer to wire a client
 
@@ -315,7 +315,7 @@ If a client starts but the `sai_` tools don't appear, or queries error out:
 
 - Confirm the `command` path is correct and the binary was built with `--features all`.
 - Confirm `cwd` is the project root you actually indexed (so the DuckDB index and
-  `indexer.yaml` are found).
+  `sai-cfg.yml` are found).
 - Make sure you indexed the project once before starting the server.
 - Fully restart the client after editing its config.
 

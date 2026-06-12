@@ -41,11 +41,11 @@ within the 512-token context window server-side.
 
 ## Connection
 
-The cluster **URL** can live in `indexer.yaml` (`qdrant.url`) or come from the
+The cluster **URL** can live in `sai-cfg.yml` (`qdrant.url`) or come from the
 `QDRANT_URL` environment variable, which **overrides** the YAML value. The **API key is a
 secret** and is read **only** from `QDRANT_API_KEY` in the environment — never put it in YAML.
 
-In `indexer.yaml`:
+In `sai-cfg.yml`:
 
 ```yaml
 backend: qdrant
@@ -70,7 +70,7 @@ Notes from the connection code:
 - If `QDRANT_API_KEY` is unset (or empty), SAI prints a warning and proceeds — Qdrant
   Cloud will then reject the request, so set the key.
 
-Select the backend in `indexer.yaml` (`backend: qdrant`) or override per run with
+Select the backend in `sai-cfg.yml` (`backend: qdrant`) or override per run with
 `--backend qdrant`. See the [configuration reference](../reference/configuration.md)
 and the [CLI reference](../reference/cli.md).
 
