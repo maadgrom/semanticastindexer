@@ -6,9 +6,14 @@ This guide shows how to wire it into a pipeline — keeping the index in sync on
 push, caching the local ONNX model, running Ollama as a service, passing Qdrant
 credentials as secrets, and failing the build when new near-duplicates appear.
 
-> **The repo does not ship an *indexing* workflow.** It ships `release.yml` (release
-> binaries) and `docker.yml` (the container image described below), but nothing that
-> indexes your code. The indexing examples below are templates for *your* repository.
+> **The repo dogfoods one indexing workflow.** `dedup-gate.yml` builds the PR's own
+> binary, fully indexes the base branch into a per-PR Qdrant collection, runs the
+> real `sync --since` to bring the index to the PR head, and fails the PR only when
+> the near-duplicate cluster count in `src/` grows (see
+> [Fail the build when new duplicates appear](#fail-the-build-when-new-duplicates-appear)).
+> `release.yml` (release binaries) and `docker.yml` (the container image described
+> below) cover packaging. The indexing examples below remain templates for *your*
+> repository.
 
 ## Run SAI from the prebuilt container
 
@@ -238,6 +243,7 @@ resolves CLI flag > config `similarity.*` > built-in default. Tune them with
 To catch only **newly introduced** duplicates rather than failing on a pre-existing
 backlog, scope the scan to changed files with `--path-glob`, or compare the cluster
 count of the base branch against the head branch and fail only when it grows.
+This repository's own `dedup-gate.yml` implements the base-vs-head count comparison.
 
 ## Read-only by default
 

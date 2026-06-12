@@ -1,0 +1,145 @@
+name: dedup-gate
+
+# Dogfooding PR gate: builds THIS PR's semanticastindexer, indexes the BASE branch
+# into a per-PR Qdrant collection (server-side inference), runs the real
+# `sync --since` to bring the index to the PR head, and fails only when the
+# near-duplicate cluster count in src/ GROWS. Pre-existing duplicates never block.
+# This is the only real end-to-end index run in CI (ci.yml's suite is mock-based).
+#
+# Requires repository secrets QDRANT_URL and QDRANT_API_KEY. Fork PRs don't
+# receive secrets, so the job is skipped for them (see the job-level `if`).
+#
+# Branch protection note: path-filtered — unrelated PRs show it as "skipped".
+# Do NOT mark it a required status check while path filters are in place.
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'sai-cfg.yml'
+      - '.github/workflows/dedup-gate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dedup-gate:
+    name: near-duplicate gate (qdrant)
+    # Secrets are not exposed to fork PRs; skip rather than fail there.
+    if: github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      QDRANT_URL: ${{ secrets.QDRANT_URL }}
+      QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+      # One collection per PR: the gate MUTATES the index (base index + sync),
+      # so concurrent PRs must never share a collection.
+      SAI_COLLECTION: dedup_gate_pr_${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On pull_request the default checkout is the PR MERGE commit
+          # (refs/pull/N/merge). Depth 2 also fetches both parents, so HEAD^1
+          # (the base branch tip) is resolvable AND checkout-able.
+          fetch-depth: 2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v2-rust # same cache namespace bump as ci.yml
+
+      # qdrant (default feature) + ast chunker — exactly the paths the gate
+      # exercises. Skips bundled DuckDB C++ and ort/ONNX, the slowest compiles;
+      # those combos remain compile-checked by clippy/test/features in ci.yml.
+      - name: Build sai from the PR source
+        run: cargo build --locked --features ast
+
+      - name: "Gate: fail only when the PR grows the near-duplicate cluster count"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SAI=(target/debug/semanticastindexer --backend qdrant --collection "$SAI_COLLECTION")
+
+          MERGE_SHA=$(git rev-parse HEAD)     # PR merge commit
+          BASE_SHA=$(git rev-parse HEAD^1)    # parent1 = base branch tip
+          echo "merge commit: ${MERGE_SHA}  base tip: ${BASE_SHA}  collection: ${SAI_COLLECTION}"
+
+          # `sync` shells out to `git diff --name-only <since>`. With rename
+          # detection a rename lists only the NEW path, leaving the old path's
+          # points stale. Disable: renames become delete+add, both refreshed.
+          git config diff.renames false
+
+          # First line of `duplicates` output -> cluster count.
+          #   "no near-duplicate clusters (min_score ...)"   -> 0
+          #   "N near-duplicate cluster(s) (min_score ...):" -> N
+          # Anything else fails loudly rather than silently passing.
+          count_clusters() {
+            local first n
+            first=${1%%$'\n'*}
+            if [[ "$first" == "no near-duplicate clusters"* ]]; then
+              printf '0'; return 0
+            fi
+            n=$(grep -oE '^[0-9]+' <<<"$first" || true)
+            if [[ -z "$n" ]]; then
+              echo "::error title=dedup-gate::unrecognized duplicates output: ${first}" >&2
+              return 1
+            fi
+            printf '%s' "$n"
+          }
+
+          # --max-clusters lifts the default cap of 50 (would saturate the count).
+          # --path-glob scopes BOTH measurements to src/**: sync re-indexes any
+          # changed file matching --ext regardless of --root (e.g. tests/*.rs),
+          # while the full base index walks only src/ — without the glob the two
+          # measurements would cover different file sets.
+          DUP_ARGS=(duplicates --path-glob 'src/**' --max-clusters 100000 --silent)
+
+          # 1) Index the BASE branch with the PR's own binary. --recreate drops
+          #    any leftover collection from a cancelled prior run, guaranteeing
+          #    a clean slate. target/ is gitignored, so it survives the checkouts.
+          git -c advice.detachedHead=false checkout --quiet "$BASE_SHA"
+          "${SAI[@]}" --root src --ext rs --recreate --silent
+
+          # 2) Return the tree to the merge commit BEFORE the baseline count, so
+          #    both `duplicates` runs resolve thresholds from the PR's sai-cfg.yml
+          #    (a PR tuning similarity.* is measured consistently on both sides).
+          git checkout --quiet "$MERGE_SHA"
+
+          base_out=$("${SAI[@]}" "${DUP_ARGS[@]}")
+          base_n=$(count_clusters "$base_out")
+          echo "::group::baseline duplicates on ${BASE_SHA} (${base_n} cluster(s))"
+          printf '%s\n' "$base_out"
+          echo "::endgroup::"
+
+          # 3) THE ACTUAL SYNC under test: incremental base -> PR head.
+          "${SAI[@]}" sync --since "$BASE_SHA" --root src --ext rs --silent
+
+          # 4) Head count — printed in full so reviewers see the clusters.
+          head_out=$("${SAI[@]}" "${DUP_ARGS[@]}")
+          head_n=$(count_clusters "$head_out")
+          echo "duplicates after sync to ${MERGE_SHA} (${head_n} cluster(s)):"
+          printf '%s\n' "$head_out"
+
+          if (( head_n > base_n )); then
+            echo "::error title=near-duplicate regression::this PR grows near-duplicate clusters in src/ from ${base_n} to ${head_n} (thresholds: sai-cfg.yml similarity.* / built-in min_score 0.93). Cluster details are in the step log above."
+            exit 1
+          fi
+          echo "OK: near-duplicate clusters ${base_n} -> ${head_n} (no degradation)"
+
+      # Delete the per-PR collection so gate runs leave nothing behind on the
+      # cluster. `flush` has no confirmation prompt, so it works headless. If a
+      # cancelled run skips this, the next run's --recreate cleans up.
+      - name: Cleanup per-PR collection
+        if: always()
+        run: target/debug/semanticastindexer --backend qdrant --collection "$SAI_COLLECTION" flush --silent
