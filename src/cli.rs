@@ -108,6 +108,10 @@ pub enum Cmd {
     /// + embedder feature.
     #[cfg(any(feature = "duckdb", feature = "qdrant"))]
     Similar(SimilarArgs),
+    /// Self-update: download and install the latest release over this binary (runs the
+    /// official release installer). On Windows, prints the command to run instead — a
+    /// running executable cannot replace itself there.
+    Update,
 }
 
 /// `init` subcommand args: where to write the generated config and how to answer

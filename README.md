@@ -25,14 +25,19 @@ One line, no Rust toolchain required (downloads a prebuilt binary):
 curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash
 
 # Windows (PowerShell)
-powershell -c "irm https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.ps1 | iex"
+powershell -c "irm https://maadgrom.github.io/semanticastindexer/install.ps1 | iex"
 ```
 
-Then connect your coding agent (optional, the binary is a full CLI on its own). On
-macOS/Linux, add `--platform <id>` and the installer wires up that client's MCP config:
+Then connect your coding agent (optional, the binary is a full CLI on its own). Add
+`--platform <id>` (macOS/Linux) or `-Platform <id>` (Windows) and the installer wires up
+that client's MCP config:
 
 ```bash
+# macOS / Linux
 curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash -s -- --platform claude-code
+
+# Windows (PowerShell; the scriptblock form is how flags pass through irm)
+powershell -c "& ([scriptblock]::Create((irm https://maadgrom.github.io/semanticastindexer/install.ps1))) -Platform claude-code"
 ```
 
 Supported ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`, `codex`,

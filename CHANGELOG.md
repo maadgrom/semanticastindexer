@@ -13,6 +13,12 @@ All notable changes to this project are documented here. The format is based on
   extra excludes). `--yes` accepts every default non-interactively; `--force`
   overwrites; `--output <path>` redirects. `vector_dim` is auto-filled for recognized
   models and asked for otherwise; the generated file is validated before writing.
+- `update` subcommand: self-update to the latest GitHub release via the official
+  release installer (on Windows it prints the PowerShell one-liner instead, since a
+  running executable cannot replace itself).
+- Native Windows installer wrapper (`install.ps1`): same agent-wiring flags as
+  `install.sh`, PowerShell-style (`-Platform`, `-All`, `-Write`, …), hosted on the
+  install page alongside the shell installer.
 - AST chunking for Rust and Go (function-only, like TS/TSX).
 - Library target (`src/lib.rs`): the indexing pipeline, config resolution, vector
   backends, and similarity core are now reusable from other crates; the binary is a
@@ -41,6 +47,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- The installers' "Next steps" now print the bare `semanticastindexer` command (the
+  absolute path could be wrong when the install dir was not yet on the current
+  shell's PATH) and tell you to open a new terminal when needed; absolute paths are
+  still used where they belong — inside the generated MCP config snippets.
 - Windows builds with `--features all` no longer fail to link (LNK2038 runtime-
   library mismatch): tokenizers' `esaxx_fast` feature is dropped, removing the
   esaxx-rs C++ object whose hardcoded static CRT conflicted with bundled DuckDB's

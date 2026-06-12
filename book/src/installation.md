@@ -14,29 +14,37 @@ curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash
 
 ```powershell
 # Windows (PowerShell)
-powershell -c "irm https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.ps1 | iex"
+powershell -c "irm https://maadgrom.github.io/semanticastindexer/install.ps1 | iex"
 ```
 
 Prefer to pick your OS interactively? Use the hosted install page:
 **[maadgrom.github.io/semanticastindexer](https://maadgrom.github.io/semanticastindexer/)**.
 
-On macOS/Linux the installer downloads the binary, then **asks which coding agent(s) to
+On every OS the installer downloads the binary, then **asks which coding agent(s) to
 connect** (reading your keypress straight from the terminal, so the prompt works even under
 `curl | bash`). Press Enter to skip the prompt and install only the binary — it's a full CLI
 on its own. See the [CLI reference](reference/cli.md) to start indexing immediately.
 
 ## Connect your coding agent
 
-Connecting an agent is optional. On macOS/Linux, add `--platform <id>` and `install.sh` wires
-up that client's MCP config (and, for Claude Code, installs the `semantic-code-search-mcp`
-skill into `~/.claude/skills/`):
+Connecting an agent is optional. Add `--platform <id>` (macOS/Linux) or `-Platform <id>`
+(Windows) and the installer wires up that client's MCP config (and, for Claude Code,
+installs the `semantic-code-search-mcp` skill into `~/.claude/skills/`):
 
 ```bash
+# macOS / Linux
 curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash -s -- --platform cursor
 ```
 
+```powershell
+# Windows (the scriptblock form is how flags pass through irm)
+powershell -c "& ([scriptblock]::Create((irm https://maadgrom.github.io/semanticastindexer/install.ps1))) -Platform cursor"
+```
+
 Supported ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`, `codex`,
-`hermes`, `ollama`, `generic`.
+`hermes`, `ollama`, `generic`. `install.ps1` takes the same flags PowerShell-style:
+`-Platform <id>`, `-All`, `-NonInteractive`, `-Write`, `-Collection <name>`,
+`-Embedder <id>`, `-SkipBinary`.
 
 | Flag | Effect |
 | ---- | ------ |
@@ -51,7 +59,7 @@ Supported ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`
 By default — without `--write` — the installer **prints** the config snippet and the exact
 target file path so you can paste it yourself. The merge with `--write` only applies to
 JSON-based clients; for Continue (YAML) and Codex (TOML) the installer always prints the block
-to paste. On Windows, install the binary first, then paste the printed block into your client.
+to paste.
 
 > When no client is selected, no tty is available, or you pass `--non-interactive`, the
 > installer prints a `generic` MCP block. The generated snippet runs the server as

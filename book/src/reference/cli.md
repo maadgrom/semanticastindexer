@@ -253,6 +253,21 @@ semanticastindexer mcp --allow-write --allow-setup
 
 See the [MCP server and tools reference](../reference/mcp-server.md) for full tool details, and the [glossary](../concepts/glossary.md) for terminology.
 
+## `update`
+
+Self-update: download and install the latest GitHub release over the current binary by
+running the official release installer. Config-independent — works from any directory,
+needs no `indexer.yaml`, and is always compiled in (no feature gate).
+
+```bash
+semanticastindexer update
+```
+
+On macOS and Linux the installer replaces the binary in place; the new version takes
+effect on the next invocation (restart any running MCP servers to pick it up). On
+Windows a running executable cannot overwrite itself, so `update` prints the exact
+PowerShell one-liner to run instead.
+
 ## Feature gating
 
 SAI is built with Cargo features. Subcommands and chunkers are compiled in only when the matching feature is present:

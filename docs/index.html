@@ -107,7 +107,8 @@
   /* Install card + OS tabs */
   .install { padding: 8px 0 0; }
   .card { background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-  .tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--line-soft); background: linear-gradient(180deg, var(--tab-tint), transparent); }
+  .tabs { display: flex; flex-wrap: nowrap; gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--line-soft); background: linear-gradient(180deg, var(--tab-tint), transparent); overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
   .tab { appearance: none; border: 0; background: transparent; color: var(--text-dim); font-family: var(--sans); font-size: 13.5px; white-space: nowrap; cursor: pointer; padding: 9px 14px; border-radius: 8px 8px 0 0; position: relative; transition: color .15s ease; }
   .tab:hover { color: var(--text); }
   .tab[aria-selected="true"] { color: var(--text); }
@@ -130,7 +131,7 @@
   .copy:focus-visible { outline-offset: -2px; }
   .copy svg { width: 15px; height: 15px; }
 
-  /* Connect (reference block, no selector widget) */
+  /* Connect (agent tabs, same card as install) */
   .connect { padding: 44px 0 0; }
   .connect p { font-size: 15px; color: var(--text-dim); margin: 0 0 14px; max-width: 62ch; }
   .connect p code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
@@ -321,9 +322,12 @@
 
   <section class="connect">
     <h2 class="sec-h"># connect your agent</h2>
-    <p>On macOS and Linux the installer asks which client(s) to connect, so you can wire up all of them or just the one you use. To skip the prompt in a script, pass <code>--all</code> or <code>--platform &lt;id&gt;</code>:</p>
-    <div id="connect-cmd"></div>
-    <p class="connect-foot">Client ids: <code>claude-code</code>, <code>claude-desktop</code>, <code>cursor</code>, <code>windsurf</code>, <code>continue</code>, <code>codex</code>, <code>hermes</code>, <code>ollama</code>. On Windows, install the binary above, then paste the printed MCP block into your client. Per-client config paths live in the <a href="https://maadgrom.github.io/semanticastindexer/book/installation.html">installation docs</a>.</p>
+    <p>The installer asks which client(s) to connect, so you can wire up all of them or just the one you use. To skip the prompt in a script, pick a client:</p>
+    <div class="card">
+      <div class="tabs" id="agent-tabs" role="tablist" aria-label="Choose your agent"></div>
+      <div class="panel" id="agent-panel" role="tabpanel"></div>
+    </div>
+    <p class="connect-foot">These commands follow the OS picked under <a href="#install">install</a>. Per-client config paths live in the <a href="https://maadgrom.github.io/semanticastindexer/book/installation.html">installation docs</a>.</p>
   </section>
 
   <section class="proof">
@@ -462,20 +466,49 @@
 <p id="sr-status" class="sr-only" role="status" aria-live="polite"></p>
 
 <script>
-  var PAGES = "https://maadgrom.github.io/semanticastindexer/install.sh";
-  var PS1 = "https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.ps1";
+  var SH = "https://maadgrom.github.io/semanticastindexer/install.sh";
+  var PS1 = "https://maadgrom.github.io/semanticastindexer/install.ps1";
 
   var OSES = [
-    { id: "macos",   label: "macOS",   cmd: "curl -fsSL " + PAGES + " | bash" },
-    { id: "linux",   label: "Linux",   cmd: "curl -fsSL " + PAGES + " | bash" },
-    { id: "windows", label: "Windows", cmd: 'powershell -c "irm ' + PS1 + ' | iex"' }
+    { id: "macos",   label: "macOS",   cmd: "curl -fsSL " + SH + " | bash",
+      note: "Downloads the prebuilt binary (no Rust needed), then asks which agent(s) to connect." },
+    { id: "linux",   label: "Linux",   cmd: "curl -fsSL " + SH + " | bash",
+      note: "Downloads the prebuilt binary (no Rust needed), then asks which agent(s) to connect." },
+    { id: "windows", label: "Windows", cmd: 'powershell -c "irm ' + PS1 + ' | iex"',
+      note: "Downloads the prebuilt binary (no Rust needed), then asks which agent(s) to connect." }
   ];
-  var OS_NOTE = {
-    macos:   "Downloads the prebuilt binary (no Rust needed), then asks which agent(s) to connect.",
-    linux:   "Downloads the prebuilt binary (no Rust needed), then asks which agent(s) to connect.",
-    windows: "Installs the prebuilt binary via PowerShell. Connect your client from the section below."
-  };
-  var CONNECT_CMD = "curl -fsSL " + PAGES + " | bash -s -- --all";
+
+  // The same connect flags exist on every OS: install.sh takes --platform/--all,
+  // install.ps1 takes -Platform/-All (passed via the scriptblock form below).
+  function connectCmd(os, a) {
+    if (os === "windows") {
+      var psFlag = a.id === "all" ? "-All" : "-Platform " + a.id;
+      return { cmd: 'powershell -c "& ([scriptblock]::Create((irm ' + PS1 + '))) ' + psFlag + '"', flag: psFlag };
+    }
+    var shFlag = a.id === "all" ? "--all" : "--platform " + a.id;
+    return { cmd: "curl -fsSL " + SH + " | bash -s -- " + shFlag, flag: shFlag };
+  }
+
+  var AGENTS = [
+    { id: "all",            label: "All",
+      note: "Connects every supported client in one pass. Add <code>--write</code> (<code>-Write</code> on Windows) to merge JSON configs in place." },
+    { id: "claude-code",    label: "Claude Code",
+      note: "Installs the bundled Claude skill and prints the <code>.mcp.json</code> block for the project you want to search." },
+    { id: "claude-desktop", label: "Claude Desktop",
+      note: "Prints the MCP block for the Claude Desktop config. Add <code>--write</code> (<code>-Write</code> on Windows) to merge it in." },
+    { id: "cursor",         label: "Cursor",
+      note: "Prints the MCP block for <code>~/.cursor/mcp.json</code>. Add <code>--write</code> (<code>-Write</code> on Windows) to merge it in." },
+    { id: "windsurf",       label: "Windsurf",
+      note: "Prints the MCP block for <code>~/.codeium/windsurf/mcp_config.json</code>. Add <code>--write</code> (<code>-Write</code> on Windows) to merge it in." },
+    { id: "continue",       label: "Continue",
+      note: "Prints the YAML block for <code>~/.continue/config.yaml</code> — paste it in (config merging is JSON-only)." },
+    { id: "codex",          label: "Codex",
+      note: "Prints the TOML block for <code>~/.codex/config.toml</code> — paste it in (config merging is JSON-only)." },
+    { id: "hermes",         label: "Hermes",
+      note: "Prints a generic MCP block — paste it into your Hermes MCP config." },
+    { id: "ollama",         label: "Ollama",
+      note: "Switches the embedder to Ollama and prints the matching MCP block. Make sure <code>ollama serve</code> is running with an embedding model pulled." }
+  ];
 
   var COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
   var CHECK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
@@ -500,52 +533,71 @@
       "</button></div>";
   }
 
-  /* ---- OS install tabs (WAI-ARIA tabs pattern) ---- */
-  var osTabs = document.getElementById("os-tabs");
-  var osPanel = document.getElementById("os-panel");
-  var osCurrent = 0;
-
-  function renderOs(i) {
-    var o = OSES[i];
-    osPanel.innerHTML = '<p class="panel-note">' + OS_NOTE[o.id] + "</p>" +
-      '<p class="cmd-label">install</p>' + cmdBox(o.cmd, null, "Copy install command");
-  }
-  function selectOs(i) {
-    osCurrent = i;
-    osTabs.querySelectorAll(".tab").forEach(function (t, j) {
-      t.setAttribute("aria-selected", j === i ? "true" : "false");
-      t.tabIndex = j === i ? 0 : -1;
+  /* ---- Tab group (WAI-ARIA tabs pattern) ---- */
+  function tabGroup(tabsEl, panelEl, items, idPrefix, renderPanel, onChange) {
+    var current = 0;
+    function select(i) {
+      current = i;
+      tabsEl.querySelectorAll(".tab").forEach(function (t, j) {
+        t.setAttribute("aria-selected", j === i ? "true" : "false");
+        t.tabIndex = j === i ? 0 : -1;
+      });
+      panelEl.setAttribute("aria-labelledby", idPrefix + items[i].id);
+      panelEl.innerHTML = renderPanel(items[i]);
+      if (onChange) onChange(items[i]);
+    }
+    items.forEach(function (item, i) {
+      var b = document.createElement("button");
+      b.className = "tab"; b.id = idPrefix + item.id; b.type = "button";
+      b.setAttribute("role", "tab"); b.setAttribute("aria-controls", panelEl.id); b.textContent = item.label;
+      b.addEventListener("click", function () {
+        select(i);
+        if (b.scrollIntoView) b.scrollIntoView({ block: "nearest", inline: "nearest" });
+      });
+      b.addEventListener("keydown", function (e) {
+        var n = null;
+        if (e.key === "ArrowRight") n = (current + 1) % items.length;
+        else if (e.key === "ArrowLeft") n = (current - 1 + items.length) % items.length;
+        else if (e.key === "Home") n = 0;
+        else if (e.key === "End") n = items.length - 1;
+        if (n !== null) { e.preventDefault(); select(n); tabsEl.querySelectorAll(".tab")[n].focus(); }
+      });
+      tabsEl.appendChild(b);
     });
-    osPanel.setAttribute("aria-labelledby", "os-" + OSES[i].id);
-    renderOs(i);
+    return { select: select, current: function () { return current; } };
   }
-  OSES.forEach(function (o, i) {
-    var b = document.createElement("button");
-    b.className = "tab"; b.id = "os-" + o.id; b.type = "button";
-    b.setAttribute("role", "tab"); b.setAttribute("aria-controls", "os-panel"); b.textContent = o.label;
-    b.addEventListener("click", function () { selectOs(i); });
-    b.addEventListener("keydown", function (e) {
-      var n = null;
-      if (e.key === "ArrowRight") n = (osCurrent + 1) % OSES.length;
-      else if (e.key === "ArrowLeft") n = (osCurrent - 1 + OSES.length) % OSES.length;
-      else if (e.key === "Home") n = 0;
-      else if (e.key === "End") n = OSES.length - 1;
-      if (n !== null) { e.preventDefault(); selectOs(n); osTabs.querySelectorAll(".tab")[n].focus(); }
-    });
-    osTabs.appendChild(b);
-  });
 
-  // Default the OS tab to the visitor's platform (Mac explicit, Windows explicit, else Linux).
+  /* ---- OS install tabs; changing the OS re-renders the connect panel below ---- */
+  var agentTabs = null;
+  var osTabs = tabGroup(
+    document.getElementById("os-tabs"), document.getElementById("os-panel"), OSES, "os-",
+    function (o) {
+      return '<p class="panel-note">' + o.note + "</p>" +
+        '<p class="cmd-label">install</p>' + cmdBox(o.cmd, null, "Copy install command");
+    },
+    function () { if (agentTabs) agentTabs.select(agentTabs.current()); }
+  );
+
+  /* ---- Agent connect tabs ("All" first, or one client per tab). The command
+         tracks the OS picked above: install.sh on macOS/Linux, install.ps1 on Windows. ---- */
+  agentTabs = tabGroup(
+    document.getElementById("agent-tabs"), document.getElementById("agent-panel"), AGENTS, "agent-",
+    function (a) {
+      var c = connectCmd(OSES[osTabs.current()].id, a);
+      return '<p class="panel-note">' + a.note + "</p>" +
+        '<p class="cmd-label">connect</p>' + cmdBox(c.cmd, c.flag, "Copy connect command for " + a.label);
+    }
+  );
+
+  // Default the OS tab to the visitor's platform (Mac explicit, Windows explicit, else Linux);
+  // this also renders the connect panel via the onChange hook above.
   (function () {
     var ua = (navigator.userAgent || "") + " " + (navigator.platform || "");
     var guess = 1;
     if (/Win/i.test(ua)) guess = 2;
     else if (/Mac/i.test(ua) && !/iPhone|iPad|iPod/i.test(ua)) guess = 0;
-    selectOs(guess);
+    osTabs.select(guess);
   })();
-
-  /* ---- Connect command (static reference, not a selector) ---- */
-  document.getElementById("connect-cmd").innerHTML = cmdBox(CONNECT_CMD, "--all", "Copy connect command");
 
   /* ---- Proof chat: staggered reveal on first enter (skipped under reduced motion) ---- */
   (function () {
