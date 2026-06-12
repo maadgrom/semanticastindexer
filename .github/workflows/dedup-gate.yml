@@ -69,7 +69,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          SAI=(target/debug/semanticastindexer --backend qdrant --collection "$SAI_COLLECTION")
+          # --root/--ext are NOT clap-global flags (unlike --backend/--collection/
+          # --silent), so they must precede any subcommand — keep them in the
+          # array. duplicates/flush parse-but-ignore them.
+          SAI=(target/debug/semanticastindexer --backend qdrant --collection "$SAI_COLLECTION" --root src --ext rs)
 
           MERGE_SHA=$(git rev-parse HEAD)     # PR merge commit
           BASE_SHA=$(git rev-parse HEAD^1)    # parent1 = base branch tip
@@ -109,7 +112,7 @@ jobs:
           #    any leftover collection from a cancelled prior run, guaranteeing
           #    a clean slate. target/ is gitignored, so it survives the checkouts.
           git -c advice.detachedHead=false checkout --quiet "$BASE_SHA"
-          "${SAI[@]}" --root src --ext rs --recreate --silent
+          "${SAI[@]}" --recreate --silent
 
           # 2) Return the tree to the merge commit BEFORE the baseline count, so
           #    both `duplicates` runs resolve thresholds from the PR's sai-cfg.yml
@@ -123,7 +126,7 @@ jobs:
           echo "::endgroup::"
 
           # 3) THE ACTUAL SYNC under test: incremental base -> PR head.
-          "${SAI[@]}" sync --since "$BASE_SHA" --root src --ext rs --silent
+          "${SAI[@]}" sync --since "$BASE_SHA" --silent
 
           # 4) Head count — printed in full so reviewers see the clusters.
           head_out=$("${SAI[@]}" "${DUP_ARGS[@]}")
@@ -142,4 +145,5 @@ jobs:
       # cancelled run skips this, the next run's --recreate cleans up.
       - name: Cleanup per-PR collection
         if: always()
+        shell: bash
         run: target/debug/semanticastindexer --backend qdrant --collection "$SAI_COLLECTION" flush --silent

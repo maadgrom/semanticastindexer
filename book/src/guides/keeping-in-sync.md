@@ -84,7 +84,7 @@ progress, and dirty-state warnings — the noise-free mode built for hooks and C
 SAI=/abs/path/to/semanticastindexer
 QDRANT_URL="https://<id>.<region>.aws.cloud.qdrant.io:6334" \
 QDRANT_API_KEY="$QDRANT_API_KEY" \
-  "$SAI" sync --staged --ext ts,tsx --silent >/dev/null 2>&1 &
+  "$SAI" --ext ts,tsx sync --staged --silent >/dev/null 2>&1 &
 exit 0
 ```
 
@@ -102,7 +102,7 @@ with the commit that just landed:
 SAI=/abs/path/to/semanticastindexer
 QDRANT_URL="https://<id>.<region>.aws.cloud.qdrant.io:6334" \
 QDRANT_API_KEY="$QDRANT_API_KEY" \
-  "$SAI" sync --since HEAD~1 --ext ts,tsx --silent >/dev/null 2>&1 &
+  "$SAI" --ext ts,tsx sync --since HEAD~1 --silent >/dev/null 2>&1 &
 ```
 
 `--since HEAD~1` diffs the last commit, which is exactly the set of files just committed or
@@ -119,7 +119,7 @@ index correct before code leaves your machine. Diff against the upstream trackin
 SAI=/abs/path/to/semanticastindexer
 UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
 if [ -n "$UPSTREAM" ]; then
-  "$SAI" sync --since "$UPSTREAM" --ext ts,tsx --silent >/dev/null 2>&1 &
+  "$SAI" --ext ts,tsx sync --since "$UPSTREAM" --silent >/dev/null 2>&1 &
 fi
 exit 0
 ```
@@ -134,14 +134,14 @@ files. For example `.husky/post-commit`:
 
 ```sh
 SAI=/abs/path/to/semanticastindexer
-"$SAI" sync --since HEAD~1 --ext ts,tsx --silent >/dev/null 2>&1 &
+"$SAI" --ext ts,tsx sync --since HEAD~1 --silent >/dev/null 2>&1 &
 ```
 
 And `.husky/pre-commit`:
 
 ```sh
 SAI=/abs/path/to/semanticastindexer
-"$SAI" sync --staged --ext ts,tsx --silent >/dev/null 2>&1 &
+"$SAI" --ext ts,tsx sync --staged --silent >/dev/null 2>&1 &
 exit 0
 ```
 
@@ -154,12 +154,12 @@ Background the command so lefthook continues without waiting:
 pre-commit:
   commands:
     sai-sync:
-      run: /abs/path/to/semanticastindexer sync --staged --ext ts,tsx --silent >/dev/null 2>&1 &
+      run: /abs/path/to/semanticastindexer --ext ts,tsx sync --staged --silent >/dev/null 2>&1 &
 
 post-commit:
   commands:
     sai-sync:
-      run: /abs/path/to/semanticastindexer sync --since HEAD~1 --ext ts,tsx --silent >/dev/null 2>&1 &
+      run: /abs/path/to/semanticastindexer --ext ts,tsx sync --since HEAD~1 --silent >/dev/null 2>&1 &
 ```
 
 ## Don't block the commit

@@ -130,7 +130,7 @@ jobs:
         run: curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash
 
       - name: Sync changed files
-        run: semanticastindexer sync --backend qdrant --since HEAD~1 --ext ts,tsx --silent
+        run: semanticastindexer --backend qdrant --ext ts,tsx sync --since HEAD~1 --silent
 ```
 
 `sync` deletes each changed file's old points and uploads the current content fresh;
