@@ -23,15 +23,16 @@ embedder: ort
 # Chunker — how each file is split into embeddable chunks. CLI `--chunker <name>` overrides.
 #
 # Smart default (new behavior):
-#   - For languages with AST support (currently "ts" / "tsx" / "rs" / "go") **and** the
+#   - For languages with AST support (currently "ts" / "tsx" / "rs" / "go" / "py") **and** the
 #     binary was built with `--features ast` (or `all`): we default to the symbol-aware "ast" chunker.
 #   - For everything else we fall back to the reliable "lines" chunker.
 #
 #   lines  — line-window chunker. ~MAX_LINES lines / `max_chunk_chars` chars per window
 #            with a small overlap. No symbols. Always available.
-#   ast    — tree-sitter, FUNCTION-ONLY (TS/TSX + Rust + Go). Emits ONE chunk per named
-#            function at any depth (free functions, methods, arrow/function-expression
-#            consts; Rust impl/trait/nested functions; Go func decls + receiver methods).
+#   ast    — tree-sitter, FUNCTION-ONLY (TS/TSX + Rust + Go + Python). Emits ONE chunk per
+#            named function at any depth (free functions, methods, arrow/function-expression
+#            consts; Rust impl/trait/nested functions; Go func decls + receiver methods;
+#            Python def/async def including class methods and nested functions).
 #            Non-function code — classes,
 #            interfaces, type aliases, const/static/mod/struct/enum/trait, imports, and
 #            bare closures — is NOT chunked (this is a function near-duplicate index;
@@ -42,7 +43,7 @@ embedder: ort
 #   NOTE: `ast` is feature-gated. If you select it (or it is auto-selected) on a binary
 #         built without the feature, you get a clear actionable error.
 #   NOTE: comments are stripped BEFORE chunking.
-chunker: ast # auto-selected for ts/tsx/rs/go when the ast feature is present
+chunker: ast # auto-selected for ts/tsx/rs/go/py when the ast feature is present
 # Max chunk size in CHARS — the size bound BOTH chunkers honor (a char approximation of
 # the model's token window, ~4 chars/token; no tokenizer needed). When unset, it is
 # defaulted by the embedder/model:

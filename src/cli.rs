@@ -38,7 +38,7 @@ pub struct Args {
     pub embedder: Option<String>,
 
     /// Chunker: "lines" or "ast" (tree-sitter). When omitted, we auto-select "ast" when any
-    /// requested --ext has AST support (ts/tsx/rs/go) *if* the binary was built with --features ast.
+    /// requested --ext has AST support (ts/tsx/rs/go/py) *if* the binary was built with --features ast.
     /// Explicit --chunker always wins.
     #[arg(long)]
     pub chunker: Option<String>,

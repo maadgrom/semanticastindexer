@@ -29,11 +29,11 @@ chunker: ast   # or: lines
 | Chunker | How it splits | Symbols | Availability |
 | ------- | ------------- | ------- | ------------ |
 | **`lines`** (fallback) | Line windows: up to ~60 lines (`MAX_LINES`) **and** up to `max_chunk_chars` characters per window, with an 8-line overlap (`OVERLAP_LINES`) | none (`symbol` is empty) | always compiled in |
-| **`ast`** (preferred for TS/TSX/Rust/Go when available) | tree-sitter parse → **one chunk per function** | yes (function name) | requires `--features ast` (included in `--features all`) |
+| **`ast`** (preferred for TS/TSX/Rust/Go/Python when available) | tree-sitter parse → **one chunk per function** | yes (function name) | requires `--features ast` (included in `--features all`) |
 
 ## The AST chunker is function-only
 
-The index exists to compare **functions** for near-duplicates, so the AST chunker (tree-sitter, for **TypeScript/TSX + Rust + Go**) deliberately embeds functions and nothing else. Earlier versions emitted non-function nodes too, which flooded duplicate detection with tiny, near-identical vectors — making every run report the whole codebase as duplicated.
+The index exists to compare **functions** for near-duplicates, so the AST chunker (tree-sitter, for **TypeScript/TSX + Rust + Go + Python**) deliberately embeds functions and nothing else. Earlier versions emitted non-function nodes too, which flooded duplicate detection with tiny, near-identical vectors — making every run report the whole codebase as duplicated.
 
 ### What gets chunked
 
@@ -44,6 +44,7 @@ One chunk per **named function** at any nesting depth. The function's name is st
 | **TypeScript / TSX** (`.ts`, `.tsx`) | named `function` declarations; class/object methods (`method_definition`); and arrow/function-expression `const`s — the binding name (e.g. `const double = (n) => ...`) becomes the symbol |
 | **Rust** (`.rs`) | every `function_item` — free functions, `impl` and trait default-body methods, and nested functions (the pattern matches at any depth) |
 | **Go** (`.go`) | top-level `func` declarations and receiver methods (`func (r T) M()`). The symbol is the bare method name; the receiver is not qualified into it |
+| **Python** (`.py`) | every `def` / `async def` — free functions, class methods, and nested functions (the pattern matches at any depth). Decorators are not part of the chunk: it starts at the `def` line |
 
 ### What is NOT chunked
 
@@ -52,7 +53,7 @@ The AST chunker drops everything that is not a function. A file made entirely of
 - Classes, interfaces, and type aliases
 - `const` / `static` / `mod` / `struct` / `enum` / `trait` items
 - Imports and top-level statements
-- Bare anonymous closures / func literals (one-line lambdas are tiny and near-identical, so capturing them would collapse every duplicate run into one cluster)
+- Bare anonymous closures / func literals / Python `lambda`s (one-line lambdas are tiny and near-identical, so capturing them would collapse every duplicate run into one cluster)
 
 Go's only nested-function form is a func literal (a closure), and — like Rust closures — those are intentionally not captured.
 
@@ -60,13 +61,13 @@ Go's only nested-function form is a func literal (a closure), and — like Rust 
 
 - **Oversized function** — a function whose byte length exceeds `max_chunk_chars` is line-split over its own span via the shared line chunker, and **every** resulting window keeps the function's `symbol`.
 - **No functions in the file** — the file produces no chunks; nothing else is indexed.
-- **Parse-failure fallback** — a file that fails to parse (root parse error), or any extension without a tree-sitter grammar (anything other than `.ts` / `.tsx` / `.rs` / `.go`, e.g. Python), silently falls back to the line chunker.
+- **Parse-failure fallback** — a file that fails to parse (root parse error), or any extension without a tree-sitter grammar (anything other than `.ts` / `.tsx` / `.rs` / `.go` / `.py`, e.g. Java), silently falls back to the line chunker.
 - **Comments are stripped *before* chunking** — so the AST parses comment-stripped text. Stripping preserves the exact line count, so a chunk's `start_line`/`end_line` still point at the real lines in the original file.
 - **Exact-span dedupe** — two captures sharing an identical byte span are collapsed to one chunk, preferring the one that carries a symbol. Nested functions are emitted in their own right **and** remain part of their enclosing function's chunk (no carve-out); the overlap is acceptable for near-duplicate detection.
 
 ### Feature gating
 
-The `ast` chunker is **feature-gated**. If `chunker: ast` is explicitly selected — or auto-selected for a TS/TSX/Rust/Go file — on a binary built **without** `--features ast`, SAI fails fast at startup with a clear, actionable error:
+The `ast` chunker is **feature-gated**. If `chunker: ast` is explicitly selected — or auto-selected for a TS/TSX/Rust/Go/Python file — on a binary built **without** `--features ast`, SAI fails fast at startup with a clear, actionable error:
 
 ```text
 chunker 'ast' selected but this binary was built without the 'ast' feature (rebuild with --features ast)

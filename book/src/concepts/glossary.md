@@ -4,7 +4,7 @@ Plain-language definitions for the domain terms used across the SAI docs. Terms 
 
 ## AST / tree-sitter
 
-An **Abstract Syntax Tree (AST)** is the structured, parsed form of source code. SAI's `ast` chunker uses [tree-sitter](https://tree-sitter.github.io/) to parse TypeScript/TSX, Rust, and Go and emit **one chunk per named function**. It is feature-gated behind `--features ast`; non-function code (classes, types, imports, top-level statements) is deliberately not embedded. See [Chunking](../reference/chunking.md).
+An **Abstract Syntax Tree (AST)** is the structured, parsed form of source code. SAI's `ast` chunker uses [tree-sitter](https://tree-sitter.github.io/) to parse TypeScript/TSX, Rust, Go, and Python and emit **one chunk per named function**. It is feature-gated behind `--features ast`; non-function code (classes, types, imports, top-level statements) is deliberately not embedded. See [Chunking](../reference/chunking.md).
 
 ## chunk
 

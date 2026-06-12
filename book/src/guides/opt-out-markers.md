@@ -48,7 +48,7 @@ to be on its own line, and casing is ignored (`sai-NoIndexing`, `SAI-NODUPLICATE
 What a single marker affects depends on the chunker (see
 [`chunking.md`](../reference/chunking.md)):
 
-- **AST chunker** (`chunker: ast`, covering TypeScript/TSX, Rust, and Go): each function
+- **AST chunker** (`chunker: ast`, covering TypeScript/TSX, Rust, Go, and Python): each function
   is one chunk, so a marker applies to **the function whose body contains it**. Place the
   marker on the line above the function or anywhere inside it.
 - **Lines chunker** (`chunker: lines`, the default and the fallback for every other

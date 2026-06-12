@@ -22,12 +22,12 @@ backend: duckdb
 embedder: ort
 # Chunker — how each file is split into embeddable chunks. CLI `--chunker <name>` overrides.
 # Left unset on purpose: the smart default picks the symbol-aware "ast" chunker for
-# languages with AST support (ts/tsx/rs/go) when the binary was built with
+# languages with AST support (ts/tsx/rs/go/py) when the binary was built with
 # `--features ast` (or `all`), and the reliable "lines" chunker for everything else.
 #
 #   lines  — line-window chunker. ~MAX_LINES lines / `max_chunk_chars` chars per window
 #            with a small overlap. No symbols. Always available.
-#   ast    — tree-sitter, FUNCTION-ONLY (TS/TSX + Rust + Go). Emits ONE chunk per named
+#   ast    — tree-sitter, FUNCTION-ONLY (TS/TSX + Rust + Go + Python). Emits ONE chunk per named
 #            function at any depth. Oversized functions are line-split, keeping the
 #            symbol. A file with no functions yields no chunks. Requires `--features ast`.
 #
