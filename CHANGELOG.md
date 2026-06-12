@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- AST chunking for Python (function-only, like TS/TSX/Rust/Go): every `def` /
+  `async def` — free functions, class methods, and nested functions — becomes one
+  symbol-tagged chunk; `lambda`s are not captured. `py` joins the smart-default
+  extension list, so `--ext py` auto-selects the `ast` chunker on `--features ast`
+  builds.
+
 ## [0.1.1] - 2026-06-12
 
 ### Added

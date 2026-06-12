@@ -33,7 +33,11 @@ const DEFAULT_CHUNKER: &str = "lines";
 /// was built with the `ast` feature and the user did not explicitly set a chunker
 /// via CLI or config). For all other extensions we fall back to the reliable
 /// line-based chunker.
-const AST_PREFERRED_EXTS: &[&str] = &["ts", "tsx", "rs", "go"];
+///
+/// MUST stay in sync with the grammar dispatch in `indexer`'s `ast::try_chunk_ast` —
+/// an extension listed here without a grammar there would silently line-chunk.
+/// Locked by `ast_dispatch_covers_all_preferred_extensions` in the indexer tests.
+pub(crate) const AST_PREFERRED_EXTS: &[&str] = &["ts", "tsx", "rs", "go", "py"];
 
 /// Returns whether we should prefer the AST chunker when no explicit chunker was
 /// provided: true if ANY requested extension has a tree-sitter grammar. The chunker
@@ -92,7 +96,7 @@ pub struct Config {
     pub embedder: Option<String>,
     /// Chunker: "lines" or "ast" (tree-sitter, needs the `ast` feature).
     /// When not explicitly set, we auto-select "ast" for languages we have good
-    /// grammars for (currently ts/tsx/rs/go) if the binary was built with --features ast.
+    /// grammars for (currently ts/tsx/rs/go/py) if the binary was built with --features ast.
     /// CLI `--chunker` always takes precedence.
     pub chunker: Option<String>,
     /// Max chunk size in chars. When unset, defaulted by the embedder/model (E5≈1400, qwen/ollama≈32000).

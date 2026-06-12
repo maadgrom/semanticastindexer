@@ -78,12 +78,12 @@ pub fn render(a: &Answers) -> String {
     y.push_str(
         "# Chunker — how each file is split into embeddable chunks. CLI `--chunker <name>` overrides.\n\
          # Left unset on purpose: the smart default picks the symbol-aware \"ast\" chunker for\n\
-         # languages with AST support (ts/tsx/rs/go) when the binary was built with\n\
+         # languages with AST support (ts/tsx/rs/go/py) when the binary was built with\n\
          # `--features ast` (or `all`), and the reliable \"lines\" chunker for everything else.\n\
          #\n\
          #   lines  — line-window chunker. ~MAX_LINES lines / `max_chunk_chars` chars per window\n\
          #            with a small overlap. No symbols. Always available.\n\
-         #   ast    — tree-sitter, FUNCTION-ONLY (TS/TSX + Rust + Go). Emits ONE chunk per named\n\
+         #   ast    — tree-sitter, FUNCTION-ONLY (TS/TSX + Rust + Go + Python). Emits ONE chunk per named\n\
          #            function at any depth. Oversized functions are line-split, keeping the\n\
          #            symbol. A file with no functions yields no chunks. Requires `--features ast`.\n\
          #\n\

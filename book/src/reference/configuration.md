@@ -22,7 +22,7 @@ Type, default, and resolution for every recognized key. "Has CLI flag" means a `
 | --- | --- | --- | --- | --- |
 | `backend` | string | `qdrant` | CLI > config > default | has `--backend` |
 | `embedder` | string | `ort` | CLI > config > default | has `--embedder` |
-| `chunker` | string | smart: `ast` for ts/tsx/rs/go when built `--features ast`, else `lines` | CLI > config > smart default | has `--chunker` |
+| `chunker` | string | smart: `ast` for ts/tsx/rs/go/py when built `--features ast`, else `lines` | CLI > config > smart default | has `--chunker` |
 | `collection` | string | `source_code` | CLI > config > default | has `--collection` |
 | `model` | string | `ort` → `jinaai/jina-embeddings-v2-base-code`; otherwise `intfloat/multilingual-e5-small` | CLI > config > embedder-aware default | has `--model` |
 | `vector_dim` | integer | `ort` → `768`; otherwise `384` | config > embedder-aware default | config-only (runtime-validated) |

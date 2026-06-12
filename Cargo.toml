@@ -27,9 +27,9 @@ duckdb = ["dep:duckdb"]
 ort = ["dep:ort", "dep:tokenizers", "dep:ndarray", "dep:hf-hub", "duckdb"]
 # Remote Ollama HTTP embedder — implies the duckdb storage backend.
 ollama = ["dep:reqwest", "duckdb"]
-# AST chunker (tree-sitter). Supports TypeScript/TSX, Rust, and Go.
+# AST chunker (tree-sitter). Supports TypeScript/TSX, Rust, Go, and Python.
 # Backend-free — gated only so the heavy tree-sitter grammars stay out of the default build.
-ast = ["dep:tree-sitter", "dep:tree-sitter-typescript", "dep:tree-sitter-rust", "dep:tree-sitter-go"]
+ast = ["dep:tree-sitter", "dep:tree-sitter-typescript", "dep:tree-sitter-rust", "dep:tree-sitter-go", "dep:tree-sitter-python"]
 # MCP server (`semanticastindexer mcp`): exposes semantic code search to Claude over stdio
 # via the official Rust MCP SDK (rmcp). READ-ONLY. Defaults to backend=duckdb +
 # embedder=ollama, so it pulls in those features to be usable out of the box. schemars
@@ -62,12 +62,13 @@ ndarray = { version = "0.17", optional = true }
 hf-hub = { version = "0.5", optional = true }
 # Remote Ollama HTTP embedder (feature = "ollama").
 reqwest = { version = "0.13", features = ["json"], optional = true }
-# AST chunker (feature = "ast"): tree-sitter + grammars for TS/TSX, Rust, and Go.
+# AST chunker (feature = "ast"): tree-sitter + grammars for TS/TSX, Rust, Go, and Python.
 # Grammar crates bind through the tree-sitter-language ABI shim, so these build together.
 tree-sitter = { version = "0.26", optional = true }
 tree-sitter-typescript = { version = "0.23", optional = true }
 tree-sitter-rust = { version = "0.24", optional = true }
 tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
 # MCP server (feature = "mcp"): official Rust MCP SDK + JSON-schema generation for tools.
 # Pinned to 1.7 (verified to build with cargo 1.96 / rustc 1.96 in this tree). Features:
 # server (handler), macros (#[tool]/#[tool_router]/#[tool_handler]), transport-io (stdio),

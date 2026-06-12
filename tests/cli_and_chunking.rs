@@ -71,6 +71,38 @@ fn build_plan_errors_on_missing_explicit_config() {
     assert!(res.is_err(), "explicit missing config must error");
 }
 
+/// Chunker smart default: with no explicit --chunker (CLI or config), an extension
+/// with a tree-sitter grammar auto-selects "ast" on `--features ast` builds, while a
+/// grammarless extension always stays on the safe "lines" chunker.
+#[test]
+fn chunker_auto_selects_ast_for_supported_exts() {
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("indexer.yaml");
+    fs::write(&cfg, "collection: c\n").unwrap();
+    let cfg_path = cfg.to_str().unwrap();
+
+    let plan_for_ext = |ext: &str| {
+        build_plan(&parse(&[
+            "semanticastindexer",
+            "--config",
+            cfg_path,
+            "--ext",
+            ext,
+        ]))
+        .unwrap()
+    };
+
+    let expected = if cfg!(feature = "ast") {
+        "ast"
+    } else {
+        "lines"
+    };
+    for ext in ["ts", "tsx", "rs", "go", "py"] {
+        assert_eq!(plan_for_ext(ext).chunker, expected, "--ext {ext}");
+    }
+    assert_eq!(plan_for_ext("java").chunker, "lines", "no grammar for java");
+}
+
 /// Build a plan rooted at `root` with config `yaml`, ext ts.
 fn plan_for(root: &std::path::Path, yaml: &str) -> semanticastindexer::config::Plan {
     let cfg = root.join("indexer.yaml");

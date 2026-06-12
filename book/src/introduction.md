@@ -15,7 +15,7 @@ SAI works the same whether you drive it yourself from the terminal or wire it in
 
 - **Local-first and offline.** Embeddings run **on-device** through ONNX Runtime (via `ort`) — no API keys, nothing leaves your machine. A compact code model is pulled once from Hugging Face (`jina-embeddings-v2-base-code`, or `e5-small`). If you prefer, you can instead point at an [Ollama](./integrations/ollama.md) server over HTTP.
 - **Pluggable backends.** Store vectors in a **local DuckDB** file (VSS/HNSW, fully offline) or in **[Qdrant Cloud](./integrations/qdrant-cloud.md)** with server-side inference.
-- **Symbol-aware AST chunking.** Code is split per symbol using tree-sitter for **TypeScript/TSX, Rust, and Go**; every other language falls back to a line-based chunker.
+- **Symbol-aware AST chunking.** Code is split per symbol using tree-sitter for **TypeScript/TSX, Rust, Go, and Python**; every other language falls back to a line-based chunker.
 - **You control what leaves the repo.** A YAML config filters out tests, generated files, comments, and more, and `sai-noindexing` / `sai-noduplicate` opt-out markers let you exclude code inline.
 - **Read-only by default.** The MCP server only searches; the write tool (`sai_refresh`) requires `--allow-write`.
 

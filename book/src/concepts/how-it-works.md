@@ -62,7 +62,7 @@ C-family extensions covered by comment stripping are: `ts`, `tsx`, `js`, `jsx`, 
 | Chunker | Behaviour | `symbol` |
 | --- | --- | --- |
 | `lines` (default) | Line windows bounded by `max_chunk_chars` (model-aware) and a hard cap of 60 lines per window, with an 8-line overlap between consecutive windows. | always `None` |
-| `ast` (feature-gated) | Tree-sitter, **functions only** (TS/TSX + Rust + Go): named function declarations, methods, and arrow/function-expression bindings. One chunk per function; oversized functions are line-split over their own span and keep the symbol. Unsupported extensions or parse errors fall back to the line chunker. | the function name |
+| `ast` (feature-gated) | Tree-sitter, **functions only** (TS/TSX + Rust + Go + Python): named function declarations, methods, and arrow/function-expression bindings. One chunk per function; oversized functions are line-split over their own span and keep the symbol. Unsupported extensions or parse errors fall back to the line chunker. | the function name |
 
 The AST index is deliberately function-only: non-function code (imports, classes,
 interfaces, type aliases, plain consts, bare closures) is never emitted, so a file with no

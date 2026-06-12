@@ -136,7 +136,7 @@ fn chunk_content(plan: &Plan, path: &Path, content: &str) -> Vec<Chunk> {
 }
 
 /// AST chunker entry point. When the `ast` feature is compiled in, we try to use a
-/// language-specific tree-sitter grammar (TS/TSX + Rust + Go) to emit symbol-aware
+/// language-specific tree-sitter grammar (TS/TSX + Rust + Go + Python) to emit symbol-aware
 /// chunks. For unsupported extensions or parse failures, we fall back to the line
 /// chunker. When the feature is NOT compiled in, selecting `chunker: ast` is a hard
 /// error (mirrors the other feature gates).
@@ -534,7 +534,7 @@ pub(crate) fn load_file_for_indexing(
     Some(raw)
 }
 
-/// AST chunker (tree-sitter, TypeScript/TSX + Rust + Go). Pure logic, like the rest of this module.
+/// AST chunker (tree-sitter, TypeScript/TSX + Rust + Go + Python). Pure logic, like the rest of this module.
 ///
 /// This index exists to compare FUNCTIONS for near-duplicates, so the AST chunker emits
 /// function chunks ONLY — never classes, interfaces, type aliases, consts, mods, or other
@@ -543,8 +543,8 @@ pub(crate) fn load_file_for_indexing(
 ///
 /// Strategy:
 /// - Parse the file with the matching grammar. A root parse error → `None` so the caller
-///   falls back to the line chunker. Only `.ts`/`.tsx`/`.rs`/`.go` are AST-handled; any other
-///   extension returns `None`.
+///   falls back to the line chunker. Only `.ts`/`.tsx`/`.rs`/`.go`/`.py` are AST-handled; any
+///   other extension returns `None`.
 /// - A tree-sitter [`Query`] captures NAMED function-like nodes at ANY depth: function
 ///   declarations, methods, and arrow/function-expression bindings. The binding name is the
 ///   chunk symbol. Bare anonymous closures are NOT captured (tiny near-identical lambdas
@@ -595,6 +595,16 @@ mod ast {
 (method_declaration name: (field_identifier) @name) @item
 "#;
 
+    // --- Python query ---
+    /// Functions only (see the TS note): every `function_definition` — free functions,
+    /// class methods, nested functions, and `async def`s are all the same node kind in
+    /// tree-sitter-python, and the pattern matches at any depth. Decorators live in a
+    /// wrapping `decorated_definition`, so the chunk span starts at `def` (decorator
+    /// lines are not embedded). Anonymous `lambda`s are intentionally NOT captured.
+    const PY_QUERY_SRC: &str = r#"
+(function_definition name: (identifier) @name) @item
+"#;
+
     /// One captured function node: byte span, line span (1-based), and symbol (the
     /// function's name; `None` for anonymous closures).
     struct Item {
@@ -628,6 +638,7 @@ mod ast {
         let (language, query_src): (tree_sitter::Language, &str) = match ext {
             "rs" => (tree_sitter_rust::LANGUAGE.into(), RUST_QUERY_SRC),
             "go" => (tree_sitter_go::LANGUAGE.into(), GO_QUERY_SRC),
+            "py" => (tree_sitter_python::LANGUAGE.into(), PY_QUERY_SRC),
             "ts" => (
                 tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
                 TS_QUERY_SRC,
@@ -641,7 +652,7 @@ mod ast {
     /// Parse `content` with `language`, run `query_src` (which MUST define `@name` + `@item`
     /// captures), collect each captured function node, and hand off to the shared builder.
     /// A root parse error returns `None` so the caller falls back to the line chunker. This
-    /// is the single per-language collection path shared by TS, Rust, and Go.
+    /// is the single per-language collection path shared by TS, Rust, Go, and Python.
     fn collect_function_chunks(
         language: tree_sitter::Language,
         query_src: &str,
@@ -712,7 +723,7 @@ mod ast {
             .collect()
     }
 
-    /// Turn captured function nodes into chunks. Shared by the TS, Rust, and Go collectors.
+    /// Turn captured function nodes into chunks. Shared by all the per-language collectors.
     ///
     /// Each function becomes ONE chunk (or several windows if it exceeds `cap`). Any two
     /// captures that share an EXACT span are deduped to a single chunk, preferring the one
@@ -1155,6 +1166,76 @@ func (w Widget) Method() uint64 {
         assert!(!all_text.contains("import"), "import must not be indexed");
     }
 
+    /// Python function-only chunking: free functions, class methods, nested functions,
+    /// `async def`s, and decorated functions are captured; module-level constants, class
+    /// declarations, and `lambda` bindings are NOT.
+    #[cfg(feature = "ast")]
+    #[test]
+    fn ast_python_captures_only_functions() {
+        // sai-noduplicate: per-language AST capture test (Python), mirror of the Rust/Go cases
+        use std::path::Path;
+
+        let src = "\
+DEFAULT_BACKEND = \"qdrant\"
+
+square = lambda x: x * x
+
+class Widget:
+    def method(self):
+        return self.x
+
+def free_fn(a):
+    def nested(b):
+        return b + 1
+    return nested(a)
+
+async def fetch_data(url):
+    return await get(url)
+
+@cached
+def decorated(n):
+    return n * 2
+";
+        let chunks = super::ast::try_chunk_ast(Path::new("fixture.py"), src, 1400)
+            .expect("Python fixture must parse via the AST chunker");
+        let symbols: Vec<String> = chunks.iter().filter_map(|c| c.symbol.clone()).collect();
+
+        for expected in ["method", "free_fn", "nested", "fetch_data", "decorated"] {
+            assert!(
+                symbols.iter().any(|s| s == expected),
+                "{expected} ({symbols:?})"
+            );
+        }
+
+        // Non-function bindings must never be captured…
+        for forbidden in ["DEFAULT_BACKEND", "Widget", "square"] {
+            assert!(
+                !symbols.iter().any(|s| s == forbidden),
+                "{forbidden} must not be a chunk symbol ({symbols:?})"
+            );
+        }
+        // …nor appear as text (no remainder pass): module-level statements are gone, and a
+        // decorated function's chunk starts at `def` (the decorator line is not embedded).
+        let all_text: String = chunks
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !all_text.contains("DEFAULT_BACKEND"),
+            "module constant must not be indexed"
+        );
+        assert!(
+            !all_text.contains("class Widget"),
+            "class decl line must not be indexed"
+        );
+        assert!(!all_text.contains("lambda"), "lambda must not be indexed");
+        assert!(
+            !all_text.contains("@cached"),
+            "decorator line must not be indexed"
+        );
+    }
+
     /// AST oversize-split: methods are captured directly (no class qualification), and an
     /// oversized standalone function line-splits into multiple windows that keep its symbol.
     #[cfg(feature = "ast")]
@@ -1208,14 +1289,33 @@ export function huge(): number {
         );
     }
 
-    /// AST fallback: an extension without a tree-sitter grammar (e.g. Python) returns `None`
+    /// Sync lock: every extension the smart default advertises as AST-preferred
+    /// (`config::AST_PREFERRED_EXTS`) must dispatch to a grammar in `try_chunk_ast`.
+    /// An entry in one list but not the other would silently line-chunk files the
+    /// user was told get AST chunking. Empty source parses error-free in every
+    /// grammar, so `Some` here means "extension has a grammar".
+    #[cfg(feature = "ast")]
+    #[test]
+    fn ast_dispatch_covers_all_preferred_extensions() {
+        use std::path::PathBuf;
+        for ext in crate::config::AST_PREFERRED_EXTS {
+            let path = PathBuf::from(format!("fixture.{ext}"));
+            assert!(
+                super::ast::try_chunk_ast(&path, "", 1400).is_some(),
+                "ext '{ext}' is AST-preferred but has no grammar dispatch"
+            );
+        }
+    }
+
+    /// AST fallback: an extension without a tree-sitter grammar (e.g. Java) returns `None`
     /// so the caller uses the line chunker.
     #[cfg(feature = "ast")]
     #[test]
     fn ast_returns_none_for_unsupported_extension() {
         use std::path::Path;
         assert!(
-            super::ast::try_chunk_ast(Path::new("x.py"), "def f():\n    pass\n", 1400).is_none()
+            super::ast::try_chunk_ast(Path::new("x.java"), "class X { void f() {} }\n", 1400)
+                .is_none()
         );
     }
 
