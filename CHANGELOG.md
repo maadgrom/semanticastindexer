@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-12
+
 ### Added
 
 - `init` subcommand: generates the standard, fully-commented `sai-cfg.yml` via a short
