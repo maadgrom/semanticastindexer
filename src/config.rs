@@ -15,16 +15,16 @@ pub const DEFAULT_CONFIG: &str = "sai-cfg.yml";
 /// Default config filenames sought (in order) in the working directory when `--config`
 /// is omitted: the standard name, its `.yaml` spelling, then the legacy pre-rename name.
 pub const DEFAULT_CONFIG_LOOKUP: &[&str] = &["sai-cfg.yml", "sai-cfg.yaml", "indexer.yaml"];
-const DEFAULT_COLLECTION: &str = "source_code";
-/// Default model for the Qdrant (server-side inference) path. Public so the `init`
-/// generator stays aligned with the runtime defaults by construction.
-pub const DEFAULT_MODEL: &str = "intfloat/multilingual-e5-small";
+pub(crate) const DEFAULT_COLLECTION: &str = "source_code";
+/// Default model for the Qdrant (server-side inference) path. Crate-visible so the
+/// `init` generator stays aligned with the runtime defaults by construction.
+pub(crate) const DEFAULT_MODEL: &str = "intfloat/multilingual-e5-small";
 /// Recommended default for the `ort` embedder (local ONNX + DuckDB). A code-trained
 /// model that produces much better separation for near-duplicate detection than
-/// general text models like e5-small. Public for the `init` generator.
-pub const DEFAULT_ORT_MODEL: &str = "jinaai/jina-embeddings-v2-base-code";
+/// general text models like e5-small. Crate-visible for the `init` generator.
+pub(crate) const DEFAULT_ORT_MODEL: &str = "jinaai/jina-embeddings-v2-base-code";
 const DEFAULT_VECTOR_DIM: u64 = 384;
-const DEFAULT_ORT_VECTOR_DIM: u64 = 768;
+pub(crate) const DEFAULT_ORT_VECTOR_DIM: u64 = 768;
 const DEFAULT_BACKEND: &str = "qdrant";
 const DEFAULT_EMBEDDER: &str = "ort";
 const DEFAULT_CHUNKER: &str = "lines";
@@ -46,14 +46,14 @@ fn ast_preferred_for_exts(exts: &[String]) -> bool {
             .any(|&p| p.eq_ignore_ascii_case(e))
     })
 }
-const DEFAULT_DUCKDB_PATH: &str = ".index/code.duckdb";
-const DEFAULT_MODEL_REPO: &str = "Xenova/multilingual-e5-small";
+pub(crate) const DEFAULT_DUCKDB_PATH: &str = ".index/code.duckdb";
+pub(crate) const DEFAULT_MODEL_REPO: &str = "Xenova/multilingual-e5-small";
 /// Matches `DEFAULT_ORT_MODEL`. The ort embedder downloads from this HF repo.
 const DEFAULT_ORT_MODEL_REPO: &str = "jinaai/jina-embeddings-v2-base-code";
-const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+pub(crate) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 /// Default Ollama embedding model. mxbai-embed-large is 1024-d → use vector_dim: 1024.
-/// Public for the `init` generator.
-pub const DEFAULT_OLLAMA_MODEL: &str = "mxbai-embed-large";
+/// Crate-visible for the `init` generator.
+pub(crate) const DEFAULT_OLLAMA_MODEL: &str = "mxbai-embed-large";
 // Similarity-threshold built-in defaults. These are MODEL-SPECIFIC cutoffs (Qwen ≠ e5);
 // tune them in the YAML `similarity:` block per model. Resolution for every knob is
 // MCP tool arg > config value > these defaults.

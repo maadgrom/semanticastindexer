@@ -6,12 +6,13 @@
 use anyhow::{Context, Result};
 use std::io::{BufRead, Write};
 
-// Per-path model defaults shared with runtime resolution (`config::build_plan`), so the
-// generator can never drift from what the tool would resolve anyway: `ort` gets the
+// Defaults shared with runtime resolution (`config::build_plan`), so the generator can
+// never drift from what the tool would resolve anyway. Model per path: `ort` gets the
 // code-trained Jina model, `ollama` a model users commonly have pulled, Qdrant Cloud
 // the lightweight server-side e5.
 use crate::config::{
-    DEFAULT_MODEL as DEFAULT_QDRANT_MODEL, DEFAULT_OLLAMA_MODEL, DEFAULT_ORT_MODEL,
+    DEFAULT_COLLECTION, DEFAULT_DUCKDB_PATH, DEFAULT_MODEL as DEFAULT_QDRANT_MODEL,
+    DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_ORT_MODEL, DEFAULT_ORT_VECTOR_DIM,
 };
 
 /// Answers collected by the `init` interview. `Default` is the standard dummy config:
@@ -43,12 +44,12 @@ impl Default for Answers {
         Answers {
             backend: "duckdb".to_string(),
             embedder: "ort".to_string(),
-            collection: "source_code".to_string(),
+            collection: DEFAULT_COLLECTION.to_string(),
             model: DEFAULT_ORT_MODEL.to_string(),
-            vector_dim: 768,
+            vector_dim: DEFAULT_ORT_VECTOR_DIM,
             qdrant_url: None,
-            duckdb_path: ".index/code.duckdb".to_string(),
-            ollama_url: "http://localhost:11434".to_string(),
+            duckdb_path: DEFAULT_DUCKDB_PATH.to_string(),
+            ollama_url: DEFAULT_OLLAMA_URL.to_string(),
             extra_exclude_dirs: Vec::new(),
         }
     }
@@ -104,7 +105,7 @@ pub fn interview<R: BufRead, W: Write>(input: &mut R, out: &mut W) -> Result<Ans
         input,
         out,
         "Collection (Qdrant) / table (DuckDB) name",
-        "source_code",
+        DEFAULT_COLLECTION,
     )?;
 
     let default_model = match (backend.as_str(), embedder.as_str()) {
@@ -123,34 +124,25 @@ pub fn interview<R: BufRead, W: Write>(input: &mut R, out: &mut W) -> Result<Ans
 
     // Optional, backend-specific connection settings.
     let mut answers = Answers {
-        backend: backend.clone(),
-        embedder: embedder.clone(),
+        backend,
+        embedder,
         collection,
         model,
         vector_dim,
         ..Answers::default()
     };
-    if backend == "qdrant" {
+    if answers.backend == "qdrant" {
         answers.qdrant_url = ask_optional(
             input,
             out,
             "Qdrant cluster gRPC URL (Enter = use the QDRANT_URL env var)",
         )?;
     } else {
-        answers.duckdb_path = ask_string(
-            input,
-            out,
-            "DuckDB index file path",
-            &Answers::default().duckdb_path,
-        )?;
+        answers.duckdb_path =
+            ask_string(input, out, "DuckDB index file path", DEFAULT_DUCKDB_PATH)?;
     }
-    if embedder == "ollama" {
-        answers.ollama_url = ask_string(
-            input,
-            out,
-            "Ollama server URL",
-            &Answers::default().ollama_url,
-        )?;
+    if answers.embedder == "ollama" {
+        answers.ollama_url = ask_string(input, out, "Ollama server URL", DEFAULT_OLLAMA_URL)?;
     }
 
     answers.extra_exclude_dirs = ask_list(

@@ -4,9 +4,10 @@
 //! to parse back into [`crate::config::Config`] (see the round-trip tests).
 
 use super::interview::Answers;
-// The default ort model needs no explicit `duckdb.model_repo` override (it lives in
-// its own HF repo); shared with runtime resolution so the two can never drift.
-use crate::config::DEFAULT_ORT_MODEL;
+// Shared with runtime resolution so the two can never drift: the default ort model
+// needs no explicit `duckdb.model_repo` override (it lives in its own HF repo), and
+// e5-small's ONNX export repo is the same one `build_plan` resolves to.
+use crate::config::{DEFAULT_MODEL_REPO, DEFAULT_ORT_MODEL};
 
 /// Render a user-supplied scalar for YAML. Plain identifiers, paths, and URLs are
 /// emitted raw (matching the hand-written style of the template); anything YAML could
@@ -33,7 +34,7 @@ fn yaml_scalar(value: &str) -> String {
 /// their own repo; e5-small's ONNX export lives in the Xenova mirror.
 fn ort_model_repo_for(model: &str) -> String {
     if model.to_ascii_lowercase().contains("e5-small") {
-        "Xenova/multilingual-e5-small".to_string()
+        DEFAULT_MODEL_REPO.to_string()
     } else {
         model.to_string()
     }
