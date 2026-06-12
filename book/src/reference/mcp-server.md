@@ -36,7 +36,7 @@ access through the single-threaded connection. For the full rationale see
 Two resolution rules apply throughout the tools:
 
 - **Threshold resolution (per knob):** `MCP tool arg > config value > built-in default`. The
-  config values come from the `similarity:` block of `indexer.yaml`; the built-in defaults are
+  config values come from the `similarity:` block of `sai-cfg.yml`; the built-in defaults are
   `find_similar_min_score = 0.85`, `duplicate_min_score = 0.93`, `duplicate_min_cluster_size = 2`,
   and `top_k = 10`. These cutoffs are **model-specific** — tune them per embedding model. See
   [Tuning similarity](../guides/tuning-similarity.md).
@@ -167,7 +167,7 @@ chunk counts) and the removed paths.
 ## Wiring (`.mcp.json`)
 
 Point `command` at the built binary (an absolute path is safest) and set `cwd` to the indexed
-project root so the server finds that project's index and `indexer.yaml`:
+project root so the server finds that project's index and `sai-cfg.yml`:
 
 ```json
 {

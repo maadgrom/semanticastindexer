@@ -6,7 +6,7 @@
 #
 # Reverses what install.sh did: removes the binary, the Claude Code skill, and the
 # `semantic-code-search` MCP server entry from known JSON client configs. Per-project
-# index files (.index/) and any indexer.yaml are left untouched (delete them yourself).
+# index files (.index/) and any sai-cfg.yml are left untouched (delete them yourself).
 #
 set -euo pipefail
 
@@ -40,7 +40,7 @@ Removes:
     and ./.mcp.json), each backed up to <file>.bak
 
 Leaves alone (remove manually if you want):
-  - per-project index files (.index/) and indexer.yaml
+  - per-project index files (.index/) and sai-cfg.yml
   - Codex (~/.codex/config.toml) and Continue (~/.continue/config.yaml) entries
   - any PATH line the install added to your shell rc
 
@@ -123,7 +123,7 @@ main() {
     echo
     success "Done."
     echo "Left in place (remove manually if you want):"
-    echo "  - per-project index: .index/  and any indexer.yaml"
+    echo "  - per-project index: .index/  and any sai-cfg.yml"
     echo "  - Codex:   ~/.codex/config.toml  ([mcp_servers.$SERVER_NAME])"
     echo "  - Continue: ~/.continue/config.yaml"
     echo "  - any PATH line the installer added to your shell rc (~/.zshrc, ~/.bashrc, ~/.profile)"

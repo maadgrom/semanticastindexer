@@ -7,13 +7,13 @@ credentials come from** and **which backend you choose**.
 ## The API key is a secret; the URL is not
 
 The only secret SAI uses is the Qdrant **API key**, and it is read **only** from the
-environment — never from `indexer.yaml` or any other config file. The cluster **URL** is
+environment — never from `sai-cfg.yml` or any other config file. The cluster **URL** is
 not a secret and may live in YAML (`qdrant.url`) or in the environment.
 
 | Value | Where it comes from |
 | ----- | ------------------- |
 | `QDRANT_API_KEY` | **Environment only** (secret). There is no YAML key for it by design. |
-| Qdrant URL | `qdrant.url` in `indexer.yaml`, or the `QDRANT_URL` env var (which overrides YAML). |
+| Qdrant URL | `qdrant.url` in `sai-cfg.yml`, or the `QDRANT_URL` env var (which overrides YAML). |
 
 Rules:
 
@@ -27,7 +27,7 @@ Rules:
 ```bash
 # The key always comes from the environment; the URL can come from YAML or here.
 export QDRANT_API_KEY="<your-key>"
-export QDRANT_URL="https://<your-cluster>.qdrant.io:6334"   # or set qdrant.url in indexer.yaml
+export QDRANT_URL="https://<your-cluster>.qdrant.io:6334"   # or set qdrant.url in sai-cfg.yml
 semanticastindexer --backend qdrant --root src --ext ts,tsx
 ```
 

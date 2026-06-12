@@ -78,7 +78,7 @@ semanticastindexer sync --silent
 ## Passing Qdrant credentials as secrets
 
 When you target the Qdrant backend, the **API key** is read **only** from the environment
-(it is a secret); the cluster **URL** can come from `qdrant.url` in `indexer.yaml` or the
+(it is a secret); the cluster **URL** can come from `qdrant.url` in `sai-cfg.yml` or the
 `QDRANT_URL` env var. In CI the simplest is to pass both as secrets and never commit the key:
 
 | Variable | Value |
@@ -173,7 +173,7 @@ rather than silently rebuilding (see above).
 
 The `ollama` embedder talks to an embedding server over HTTP, which suits CI where an
 embedding service often already runs. Start `ollama serve`, pull an embedding model,
-then point SAI at it. Configure `ollama.url` and `ollama.model` in `indexer.yaml`
+then point SAI at it. Configure `ollama.url` and `ollama.model` in `sai-cfg.yml`
 (see [reference/configuration.md](../reference/configuration.md)):
 
 ```yaml

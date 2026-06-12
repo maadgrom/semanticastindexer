@@ -94,7 +94,7 @@ Set `honor_noindex_marker: false` to index even chunks containing `sai-noindexin
 `honor_noduplicate_marker: false` to include `sai-noduplicate` chunks in duplicate
 clustering. When a toggle is off, that marker is ignored — the other toggle is
 unaffected. See [`configuration.md`](../reference/configuration.md) for where these keys
-live in `indexer.yaml`.
+live in `sai-cfg.yml`.
 
 ## Caveat: string literals also trigger the markers
 

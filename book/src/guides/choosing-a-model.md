@@ -12,7 +12,7 @@ wrong and SAI errors at runtime.
 ## Two embedders for the DuckDB backend
 
 The DuckDB backend produces vectors locally through a pluggable **embedder**,
-selected with `embedder: ort | ollama` in `indexer.yaml` (or `--embedder <name>`
+selected with `embedder: ort | ollama` in `sai-cfg.yml` (or `--embedder <name>`
 on the CLI). The default is `ort`.
 
 | Embedder | How it runs | Network | Needs a server? |
@@ -167,7 +167,7 @@ duckdb:
 
 - [Backends & embedders](../reference/backends-and-embedders.md) — the full
   backend/embedder reference and the Jina first-run staging caveat.
-- [Configuration](../reference/configuration.md) — every `indexer.yaml` key,
+- [Configuration](../reference/configuration.md) — every `sai-cfg.yml` key,
   including the `duckdb` and `ollama` sub-sections.
 - [Tuning similarity](./tuning-similarity.md) — adjusting `duplicate_min_score`
   and the other thresholds once you pick a model.

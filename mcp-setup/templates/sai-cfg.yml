@@ -1,7 +1,7 @@
 # semanticastindexer configuration.
 #
 # Controls what gets embedded and pushed to the selected vector backend (Qdrant or
-# DuckDB). Loaded by default from `indexer.yaml` in the current directory; override
+# DuckDB). Loaded by default from `sai-cfg.yml` in the current directory; override
 # with `--config <path>`. CLI flags (--backend, --collection, --model, ...) take
 # precedence over values here.
 #

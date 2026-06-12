@@ -50,7 +50,7 @@ Options the script supports:
 
 The script creates (in the target project):
 
-- `indexer.yaml` — tuned for agentic code search (smart excludes, good similarity thresholds)
+- `sai-cfg.yml` — tuned for agentic code search (smart excludes, good similarity thresholds)
 - `.mcp.json.example` — ready for Claude Code / generic MCP clients
 - `claude-desktop-config.example.json`
 

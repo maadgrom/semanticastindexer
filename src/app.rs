@@ -21,6 +21,12 @@ use crate::worker::{self, BackendHandle};
 
 /// Run one parsed CLI invocation to completion. The single entrypoint `main` calls.
 pub async fn run(args: Args) -> Result<()> {
+    // `init` generates a config, so it must run before any config is loaded — and even
+    // when an existing config is broken.
+    if let Some(Cmd::Init(init_args)) = &args.command {
+        return crate::init::run(init_args);
+    }
+
     let t0 = std::time::Instant::now();
     let git_ctx = git::capture();
     let plan = build_plan(&args)?;
@@ -30,6 +36,8 @@ pub async fn run(args: Args) -> Result<()> {
     indexer::ensure_chunker_available(&plan)?;
 
     match &args.command {
+        // Handled by the early return above, before config loading.
+        Some(Cmd::Init(_)) => unreachable!("init returns before plan building"),
         Some(Cmd::Flush) => {
             run_timed(t0, &args, &git_ctx, "", async {
                 let backend = factory(&plan, Access::ReadWrite)?;

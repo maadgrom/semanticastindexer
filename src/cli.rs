@@ -9,7 +9,7 @@ use crate::config::DEFAULT_CONFIG;
 #[derive(Parser, Debug, Clone)]
 #[command(
     about = "Near-duplicate detection and semantic code search: index source into Qdrant Cloud or local DuckDB, query in natural language, and serve over MCP",
-    long_about = "Index source files into a vector backend (Qdrant Cloud server-side inference, or local DuckDB with on-device ONNX/Ollama embeddings) for near-duplicate detection and semantic code search. Run as a CLI or as an MCP server for AI coding agents. Configured by indexer.yaml; flags override config."
+    long_about = "Index source files into a vector backend (Qdrant Cloud server-side inference, or local DuckDB with on-device ONNX/Ollama embeddings) for near-duplicate detection and semantic code search. Run as a CLI or as an MCP server for AI coding agents. Configured by sai-cfg.yml (generate one with `init`); flags override config."
 )]
 pub struct Args {
     /// Subcommand. Omitted = full index of --root (the default).
@@ -43,10 +43,12 @@ pub struct Args {
     #[arg(long)]
     pub chunker: Option<String>,
 
-    /// Path to the YAML config controlling exclusions. Global: accepted before or after
-    /// a subcommand.
-    #[arg(long, default_value = DEFAULT_CONFIG, global = true)]
-    pub config: String,
+    /// Path to the YAML config controlling exclusions. When omitted, the first of
+    /// `sai-cfg.yml`, `sai-cfg.yaml`, or legacy `indexer.yaml` found in the current
+    /// directory is used (built-in defaults when none exists). Global: accepted before
+    /// or after a subcommand.
+    #[arg(long, global = true)]
+    pub config: Option<String>,
 
     /// Target collection (overrides config). Global: accepted before or after a subcommand.
     #[arg(long, global = true)]
@@ -83,6 +85,10 @@ pub struct Args {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Cmd {
+    /// Generate a starter `sai-cfg.yml` config. Asks a few questions (backend, embedder,
+    /// collection, model, ...) with sensible defaults; `--yes` skips the interview and
+    /// writes the standard defaults directly.
+    Init(InitArgs),
     /// Flush the vector storage: delete the entire collection.
     Flush,
     /// Re-index only changed files (for git hooks): delete each file's points, then upload fresh.
@@ -102,6 +108,23 @@ pub enum Cmd {
     /// + embedder feature.
     #[cfg(any(feature = "duckdb", feature = "qdrant"))]
     Similar(SimilarArgs),
+}
+
+/// `init` subcommand args: where to write the generated config and how to answer
+/// the interview.
+#[derive(clap::Args, Debug, Clone)]
+pub struct InitArgs {
+    /// Accept every default without prompting (non-interactive).
+    #[arg(long, default_value_t = false)]
+    pub yes: bool,
+
+    /// Overwrite the output file if it already exists.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    /// Output path for the generated config.
+    #[arg(long, default_value = DEFAULT_CONFIG)]
+    pub output: String,
 }
 
 /// `duplicates` subcommand args. Each threshold knob resolves CLI flag > config

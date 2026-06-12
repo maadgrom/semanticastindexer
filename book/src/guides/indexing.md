@@ -26,7 +26,7 @@ cd /path/to/your/project
 "$BIN" --root src --ext ts,tsx --collection source_code
 ```
 
-Only files whose extension appears in `--ext` are read. Both flags override `indexer.yaml`.
+Only files whose extension appears in `--ext` are read. Both flags override `sai-cfg.yml`.
 
 ## Dry-run first
 
@@ -82,7 +82,7 @@ include/exclude decision runs in this exact order:
 Steps 1–2 are the glob gate; the hard-pruned dirs (step 3) are applied as the walk descends,
 before any file is even examined.
 
-A minimal `indexer.yaml` controlling these:
+A minimal `sai-cfg.yml` controlling these:
 
 ```yaml
 include: []                       # empty → consider all files; non-empty → allow-list only

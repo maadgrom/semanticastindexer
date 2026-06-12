@@ -58,7 +58,7 @@ Guides (task-oriented)
 Reference
   cli.md                     every subcommand + every flag (incl. subcommand-local),      [exp]
                              defaults, exit/timing behavior, the two --limit defaults
-  configuration.md           ONE table: every indexer.yaml key + type + default +         [exp]
+  configuration.md           ONE table: every sai-cfg.yml key + type + default +         [exp]
                              resolution + "config-only vs has-CLI-flag"
   mcp-server.md              all 6 sai_ tools, --allow-write AND --allow-setup, gating     [exp]
   output-schemas.md          JSON response shape per tool + CLI text output formats        [NEW]
@@ -142,11 +142,11 @@ These are wrong/stale today and should be corrected as part of the work:
   default. Update the binary description.
 - `architecture.md`: dangling reference to nonexistent "internal audit notes" (see §4.5).
 - `docs/mcp-server.md`: missing `sai_prepare_mcp_setup` (6th tool) and `--allow-setup` (see §4.3).
-- `docs/chunking.md` & `indexer.yaml` comment: AST coverage stated as "ts/tsx" but code's
+- `docs/chunking.md` & `sai-cfg.yml` comment: AST coverage stated as "ts/tsx" but code's
   `AST_PREFERRED_EXTS` is ts/tsx/**rs/go**.
 - `CHANGELOG.md`: 0.1.0 says AST is "TS/TSX" only — stale vs shipped Rust/Go; also not linked
   from README.
-- `configuration.md` / `indexer.yaml`: `honor_noindex_marker` / `honor_noduplicate_marker` aren't
+- `configuration.md` / `sai-cfg.yml`: `honor_noindex_marker` / `honor_noduplicate_marker` aren't
   in the shipped YAML (default-true behavior undocumented in the file users edit);
   `skip_generated_marker` is a plain bool that defaults **false** when omitted (asymmetric with the
   Option<bool> markers that default true) — call this out; `prefix_style` is config-only (no CLI

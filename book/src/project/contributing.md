@@ -87,7 +87,7 @@ Notes drawn straight from the manifest:
 ```text
 src/
 ├── main.rs              # CLI entry point (clap): parses args, dispatches subcommands
-├── config.rs            # indexer.yaml parsing, filters, sai-* opt-out markers
+├── config.rs            # sai-cfg.yml parsing, filters, sai-* opt-out markers
 ├── git.rs               # git helpers (changed-files / since for `sync`)
 ├── indexer.rs           # indexing pipeline: chunk → embed → upsert
 ├── search.rs            # query / similar / duplicates logic
