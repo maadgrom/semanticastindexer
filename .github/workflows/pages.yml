@@ -32,7 +32,7 @@ jobs:
         run: |
           mkdir -p _site/book
           # Landing page + the install/uninstall one-liners + .nojekyll (served raw).
-          cp docs/index.html docs/install.sh docs/uninstall.sh _site/
+          cp docs/index.html docs/install.sh docs/install.ps1 docs/uninstall.sh _site/
           cp docs/.nojekyll _site/.nojekyll
           # Shared image assets (logo, favicon) served at /assets/.
           cp -r assets _site/assets
