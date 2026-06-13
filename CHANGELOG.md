@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-13
+
 ### Added
 
 - AST chunking for Python (function-only, like TS/TSX/Rust/Go): every `def` /
@@ -13,6 +15,19 @@ All notable changes to this project are documented here. The format is based on
   symbol-tagged chunk; `lambda`s are not captured. `py` joins the smart-default
   extension list, so `--ext py` auto-selects the `ast` chunker on `--features ast`
   builds.
+- `dedup-gate.yml` PR workflow: the repo now dogfoods its own near-duplicate
+  detection. It builds the PR binary, indexes the base branch into a per-PR Qdrant
+  Cloud collection (server-side e5-small inference), runs the real `sync --since` to
+  advance the index to the PR head, and fails only when the near-duplicate cluster
+  count in `src/` grows. A companion workflow flushes the collection when the PR
+  closes.
+
+### Fixed
+
+- Qdrant `duplicates` / `similar`: read dense vectors from the nested `vector` oneof
+  returned by Qdrant >= 1.16 (the deprecated flat `data` field is now empty), so
+  retrieved vectors are no longer length 0. Without this, both commands failed
+  against current Qdrant Cloud with "Vector dimension error: expected dim: N, got 0".
 
 ## [0.1.1] - 2026-06-12
 
