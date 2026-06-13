@@ -492,21 +492,40 @@ fn point_id_u64(id: &Option<qdrant_client::qdrant::PointId>) -> u64 {
 /// Extract a dense `Vec<f32>` from a retrieved point's `VectorsOutput` (single unnamed
 /// vector). Retrieved points carry the `*Output` proto types, not the input `Vectors`.
 fn extract_vector(vectors: Option<VectorsOutput>) -> Result<Vec<f32>> {
+    use qdrant_client::qdrant::vector_output::Vector as DenseOrSparse;
     use qdrant_client::qdrant::vectors_output::VectorsOptions;
     let v = vectors
         .and_then(|vs| vs.vectors_options)
         .context("point has no vector (was with_vectors(true) set?)")?;
-    match v {
-        // `data` is the flat dense payload. It is `#[deprecated]` in newer qdrant protos in
-        // favour of a nested `dense` field, but it is still populated for single dense
-        // vectors and is the simplest portable accessor here.
-        VectorsOptions::Vector(vec) =>
-        {
-            #[allow(deprecated)]
-            Ok(vec.data)
-        }
+    let out = match v {
+        VectorsOptions::Vector(out) => out,
         VectorsOptions::Vectors(_) => {
             anyhow::bail!("named vectors are not supported; expected a single dense vector")
+        }
+    };
+    // Qdrant >= 1.16 returns the dense values in the nested `vector` oneof and leaves
+    // the flat `data` field empty (it is `#[deprecated]`); older servers populated
+    // `data`. Read the new field first, fall back to the legacy one, so both work.
+    // (Mirrors `VectorOutput::into_vector` in qdrant-client.) Without this, every
+    // retrieved vector is empty against current Qdrant Cloud and the NN query fails
+    // with "expected dim: N, got 0".
+    match out.vector {
+        Some(DenseOrSparse::Dense(d)) => Ok(d.data),
+        Some(DenseOrSparse::Sparse(_)) => {
+            anyhow::bail!("sparse vectors are not supported; expected a dense vector")
+        }
+        Some(DenseOrSparse::MultiDense(_)) => {
+            anyhow::bail!("multi-dense vectors are not supported; expected a single dense vector")
+        }
+        None => {
+            #[allow(deprecated)]
+            let legacy = out.data;
+            if legacy.is_empty() {
+                anyhow::bail!(
+                    "point vector is empty (neither the nested dense field nor legacy data is set)"
+                );
+            }
+            Ok(legacy)
         }
     }
 }

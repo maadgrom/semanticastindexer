@@ -1,0 +1,52 @@
+name: dedup-gate-cleanup
+
+# Companion to dedup-gate.yml. The gate creates and deletes a per-PR Qdrant
+# collection within each run (its `if: always()` flush step), so in normal
+# operation nothing lingers. This job is the belt-and-suspenders teardown: when a
+# PR closes (merged or not), it flushes the collection so a hard-killed final gate
+# run (job timeout / runner death, where the always() flush never executed and no
+# later run recreated+flushed) can never leak it.
+#
+# `flush` deletes the Qdrant collection and is idempotent — it no-ops if the
+# collection is already gone (src/vectordbs/qdrant.rs), so running it on every
+# close is safe even when the gate already cleaned up.
+#
+# Path filter mirrors dedup-gate.yml exactly: only PRs that could have triggered
+# the gate (and thus created a collection) need teardown on close.
+on:
+  pull_request:
+    types: [closed]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'sai-cfg.yml'
+      - '.github/dedup-gate.sai-cfg.yml'
+      - '.github/workflows/dedup-gate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: drop per-PR collection
+    # Secrets aren't exposed to fork PRs, and the gate is skipped there, so there
+    # is never a collection to clean up for a fork.
+    if: github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Prebuilt lean image bundles the binary (qdrant feature) at /usr/local/bin —
+    # no checkout and no compile needed, just connect to Qdrant and delete.
+    container: ghcr.io/maadgrom/semanticastindexer:edge
+    env:
+      QDRANT_URL: ${{ secrets.QDRANT_URL }}
+      QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+      # Must match dedup-gate.yml's per-PR collection name exactly.
+      SAI_COLLECTION: dedup_gate_pr_${{ github.event.pull_request.number }}
+    steps:
+      # Alpine ships busybox `sh`, not bash — pin the shell so the step is
+      # deterministic regardless of the runner's bash-vs-sh fallback.
+      - name: Flush the per-PR collection
+        shell: sh
+        run: semanticastindexer --backend qdrant --collection "$SAI_COLLECTION" flush --silent
