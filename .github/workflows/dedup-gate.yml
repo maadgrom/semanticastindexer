@@ -19,6 +19,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'sai-cfg.yml'
+      - '.github/dedup-gate.sai-cfg.yml'
       - '.github/workflows/dedup-gate.yml'
 
 permissions:
@@ -69,14 +70,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          # --root/--ext are NOT clap-global flags (unlike --backend/--collection/
-          # --silent), so they must precede any subcommand — keep them in the
-          # array. duplicates/flush parse-but-ignore them.
-          SAI=(target/debug/semanticastindexer --backend qdrant --collection "$SAI_COLLECTION" --root src --ext rs)
-
           MERGE_SHA=$(git rev-parse HEAD)     # PR merge commit
           BASE_SHA=$(git rev-parse HEAD^1)    # parent1 = base branch tip
           echo "merge commit: ${MERGE_SHA}  base tip: ${BASE_SHA}  collection: ${SAI_COLLECTION}"
+
+          # CI-only config: Qdrant backend + server-side e5-small (384-d) to match
+          # the cluster's Inference tab (the repo's sai-cfg.yml targets the local
+          # jina/768 path). Copy it OUTSIDE the repo BEFORE the base checkout below
+          # — that commit predates this file, so a tracked --config path would
+          # vanish; $RUNNER_TEMP survives git checkout. One config for both base
+          # and head keeps the duplicate-count comparison self-consistent.
+          CI_CFG="$RUNNER_TEMP/dedup-gate.sai-cfg.yml"
+          cp .github/dedup-gate.sai-cfg.yml "$CI_CFG"
+
+          # --config/--root/--ext precede any subcommand (--root/--ext are not
+          # clap-global). duplicates/flush parse-but-ignore --root/--ext.
+          SAI=(target/debug/semanticastindexer --config "$CI_CFG" --backend qdrant --collection "$SAI_COLLECTION" --root src --ext rs)
 
           # `sync` shells out to `git diff --name-only <since>`. With rename
           # detection a rename lists only the NEW path, leaving the old path's

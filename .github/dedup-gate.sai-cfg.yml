@@ -1,0 +1,24 @@
+# CI-only config for .github/workflows/dedup-gate.yml. NOT auto-loaded (the
+# auto-discovered names are sai-cfg.yml / sai-cfg.yaml / indexer.yaml); the gate
+# passes it explicitly via --config.
+#
+# The repo's root sai-cfg.yml targets the LOCAL ort/DuckDB path: the code-trained
+# jina model (jinaai/jina-embeddings-v2-base-code, 768-d). The PR gate instead
+# uses the Qdrant Cloud backend with SERVER-SIDE inference, and the CI cluster's
+# Inference tab hosts intfloat/multilingual-e5-small (384-d). The model + dim
+# below MUST match that cluster, or Qdrant rejects the collection / inference.
+#
+# Both the base index and the PR-head sync run with this same config, so the
+# near-duplicate count comparison stays self-consistent.
+backend: qdrant
+model: intfloat/multilingual-e5-small
+vector_dim: 384
+
+# e5-small is a GENERAL-text model, so cosine scores run high across unrelated
+# code: at the built-in default (0.93) the whole repo collapses into one
+# ~150-member "cluster". Measured on this repo (src/**): 0.93 -> largest 151,
+# 0.95 -> 41, 0.97 -> 7, 0.98 -> 5 (largest 4), 0.99 -> 0. 0.98 keeps only
+# genuine near-duplicates. The gate is RELATIVE (it fails only when the cluster
+# count grows), so a small stable baseline is fine. Re-tune if the model changes.
+similarity:
+  duplicate_min_score: 0.98

@@ -22,6 +22,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'sai-cfg.yml'
+      - '.github/dedup-gate.sai-cfg.yml'
       - '.github/workflows/dedup-gate.yml'
 
 permissions:
