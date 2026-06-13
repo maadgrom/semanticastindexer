@@ -142,7 +142,8 @@ jobs:
 
       # Delete the per-PR collection so gate runs leave nothing behind on the
       # cluster. `flush` has no confirmation prompt, so it works headless. If a
-      # cancelled run skips this, the next run's --recreate cleans up.
+      # cancelled run skips this, the next run's --recreate cleans up; and
+      # dedup-gate-cleanup.yml flushes once more when the PR finally closes.
       - name: Cleanup per-PR collection
         if: always()
         shell: bash
