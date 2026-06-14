@@ -30,6 +30,23 @@ and awaits a `oneshot` reply — keeping handler futures `Send` while serializin
 access through the single-threaded connection. For the full rationale see
 [how it works](../concepts/how-it-works.md#the-backend-worker-thread-actor-model).
 
+### Concurrency and the index lock
+
+The server opens the DuckDB index once and **holds it for the life of the connection** —
+read-only by default, or read-write under `--allow-write`. DuckDB enforces single-writer /
+multi-reader access at the file level **across processes**, so while an MCP server is connected:
+
+- A separate CLI **`sync`**, full re-index, or `flush` (all open the database read-write)
+  against the same `.index` will fail or block on the lock — even a *read-only* MCP connection
+  blocks a CLI writer.
+- Two read-only consumers (e.g. an MCP server plus a CLI `duplicates`/`similar`) coexist fine.
+
+So the in-process write tools are the preferred way to keep the index fresh **without shelling
+out**: call **`sai_sync`** (reconcile the git-changed set) or **`sai_refresh`** (specific paths)
+on the running `--allow-write` server — they mutate through the same connection, so there is no
+second handle and no lock contention. If you do need heavy CLI maintenance, disable/disconnect
+the MCP server first (via your client's MCP toggle), run the CLI command, then reconnect.
+
 ### Threshold and limit resolution
 
 Two resolution rules apply throughout the tools:
