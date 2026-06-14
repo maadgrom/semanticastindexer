@@ -360,7 +360,7 @@ async fn index_sources(handle: &BackendHandle, plan: &Plan, ctx: &git::GitContex
 /// upsert, with the HNSW index rebuilt even when a path fails mid-batch.
 async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
     let changed =
-        resolve_changed_files(Some(&sync_args.since), sync_args.staged, &sync_args.files)?;
+        crate::git::changed_files(Some(&sync_args.since), sync_args.staged, &sync_args.files)?;
     if changed.is_empty() {
         println!("sync: no changed files");
         return Ok(());
@@ -387,57 +387,15 @@ async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a changed-file list: explicit `files` win; otherwise `git diff --name-only`
-/// against the staged set (`--cached`) or `<since>..HEAD`. Shared by `sync` (which always
-/// passes a `since`) and `duplicates --since/--staged/--file` (changed-file seeding).
-fn resolve_changed_files(
-    since: Option<&str>,
-    staged: bool,
-    files: &[String],
-) -> Result<Vec<String>> {
-    if !files.is_empty() {
-        return Ok(files.to_vec());
-    }
-    let mut cmd = Command::new("git");
-    cmd.args(["diff", "--name-only"]);
-    if staged {
-        cmd.arg("--cached");
-    } else if let Some(since) = since {
-        cmd.arg(since);
-    }
-    let output = cmd
-        .output()
-        .context("failed to run `git diff` (is git on PATH?)")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "git diff failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect())
-}
-
-/// Run the read-only MCP server over stdio. Defaults backend=duckdb + embedder=ollama
-/// (the offline, no-quota path) unless the user overrode `--backend`/`--embedder` (or set
-/// them in the config). Builds the backend + embedder ONCE, opens DuckDB read-only, then
-/// serves rmcp until EOF.
+/// Run the read-only MCP server over stdio. Backend/embedder resolve as `--flag > config >
+/// duckdb/ort` (the fully-offline default), so `--config sai-cfg.yml` alone drives the server.
+/// Builds the backend + embedder ONCE, opens DuckDB read-only, then serves rmcp until EOF.
 #[cfg(feature = "mcp")]
 async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()> {
-    // Apply the MCP-specific defaults: when the user did not pass `--backend`/`--embedder`,
-    // prefer duckdb + ollama (the indexer's global defaults are qdrant + ort). Explicit
-    // CLI flags still win; config values are honored via the normal merge in `build_plan`.
-    let mut mcp_args = args.clone();
-    if mcp_args.backend.is_none() {
-        mcp_args.backend = Some("duckdb".to_string());
-    }
-    if mcp_args.embedder.is_none() {
-        mcp_args.embedder = Some("ollama".to_string());
-    }
-    let plan = build_plan(&mcp_args)?;
+    // The MCP offline defaults (duckdb + ort) sit BELOW the config, not above it: they apply
+    // only when neither the flag nor `sai-cfg.yml` sets backend/embedder. See
+    // `config::build_mcp_plan`.
+    let plan = crate::config::build_mcp_plan(args)?;
     indexer::ensure_chunker_available(&plan)?;
     // --allow-write opens the index WRITABLE (normal `connect`, incl. HNSW persistence) so
     // the `refresh` tool can delete + re-embed. Default is read-only: `refresh` then errors.
@@ -503,7 +461,7 @@ async fn run_duplicates(
     // the CI-gate mode — "does the changed code duplicate anything already indexed?" — and
     // it catches new slop that joins a pre-existing cluster, which a count-delta misses.
     let seed_paths = if args.since.is_some() || args.staged || !args.files.is_empty() {
-        let changed = resolve_changed_files(args.since.as_deref(), args.staged, &args.files)?;
+        let changed = crate::git::changed_files(args.since.as_deref(), args.staged, &args.files)?;
         Some(changed.into_iter().collect::<HashSet<String>>())
     } else {
         None

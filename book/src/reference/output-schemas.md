@@ -172,9 +172,9 @@ setup script and adds execution fields.
   "recommended_command": "/path/to/mcp-setup/setup.sh --non-interactive --backend duckdb --embedder ollama",
   "mcp_server_config_example": {
     "mcpServers": {
-      "semantic-code-search": {
+      "sai": {
         "command": "<path-to-semanticastindexer>",
-        "args": ["mcp", "--backend", "duckdb", "--embedder", "ollama", "--collection", "source_code"],
+        "args": ["mcp", "--config", "sai-cfg.yml"],
         "cwd": "/path/to/project"
       }
     }

@@ -220,13 +220,13 @@ generate_mcp_configs() {
     local abs_bin
     abs_bin="$(cd "$(dirname "$bin_path")" && pwd)/$(basename "$bin_path")"
 
-    local mcp_args='["mcp", "--backend", "'"$BACKEND"'", "--embedder", "'"$EMBEDDER"'", "--collection", "'"$COLLECTION"'"]'
+    local mcp_args='["mcp", "--config", "sai-cfg.yml"]'
 
     # .mcp.json (Claude Code / many tools)
     cat > "$target/.mcp.json.example" <<EOF
 {
   "mcpServers": {
-    "semantic-code-search": {
+    "sai": {
       "command": "$abs_bin",
       "args": $mcp_args,
       "cwd": "$target"
@@ -239,7 +239,7 @@ EOF
     cat > "$target/claude-desktop-config.example.json" <<EOF
 {
   "mcpServers": {
-    "semantic-code-search": {
+    "sai": {
       "command": "$abs_bin",
       "args": $mcp_args,
       "cwd": "$target"
@@ -274,15 +274,34 @@ install_globally() {
         echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
     fi
 
-    # Create a convenience wrapper for MCP use
-    local wrapper="$dest_dir/code-search-mcp"
+    # Create a convenience wrapper (true passthrough — sai mcp, sai index, sai search all work)
+    local wrapper="$dest_dir/sai"
     cat > "$wrapper" <<EOF
 #!/usr/bin/env bash
-# Convenience wrapper for semantic code search MCP server
-exec "$dest_bin" mcp "\$@"
+# sai CLI / MCP server wrapper
+exec "$dest_bin" "\$@"
 EOF
     chmod +x "$wrapper"
-    success "Created convenience command: code-search-mcp"
+    success "Created convenience command: sai"
+}
+
+# --- Install the Claude Code skill ---
+install_claude_skill() {
+    # Upgrade cleanup: remove old-named skill dir so upgraders are not stranded.
+    if [[ -d "$HOME/.claude/skills/semantic-code-search-mcp" ]]; then
+        rm -rf "$HOME/.claude/skills/semantic-code-search-mcp"
+        success "Removed old skill dir $HOME/.claude/skills/semantic-code-search-mcp"
+    fi
+
+    local skill_dir="$HOME/.claude/skills/sai"
+    mkdir -p "$skill_dir"
+    local skill_src="$PROJECT_ROOT/.agents/skills/sai/SKILL.md"
+    if [[ -f "$skill_src" ]]; then
+        cp "$skill_src" "$skill_dir/SKILL.md"
+        success "Installed skill → $skill_dir/SKILL.md"
+    else
+        warn "SKILL.md not found at $skill_src — skipping skill install."
+    fi
 }
 
 # --- Main flow ---
@@ -303,6 +322,7 @@ main() {
 
     create_indexer_config "$target"
     generate_mcp_configs "$bin_path" "$target"
+    install_claude_skill
 
     if [[ "$INSTALL_GLOBAL" == true ]]; then
         install_globally "$bin_path"

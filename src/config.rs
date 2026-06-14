@@ -272,7 +272,31 @@ impl Plan {
 }
 
 /// Merge CLI args over the YAML config into a resolved Plan.
+/// MCP server defaults: duckdb + ort — the fully-offline local path (ONNX model is cached
+/// on first run; no daemon, no API quota). Applied only when neither the CLI flag nor the
+/// config sets the backend/embedder — i.e. `flag > config > these` — so the MCP server
+/// honors `backend:`/`embedder:` from `sai-cfg.yml`.
+const MCP_DEFAULT_BACKEND: &str = "duckdb";
+const MCP_DEFAULT_EMBEDDER: &str = "ort";
+
+/// Resolve the runtime [`Plan`]: CLI flags win, then `sai-cfg.yml`, then the global
+/// defaults (`qdrant` + `ort`).
 pub fn build_plan(args: &Args) -> Result<Plan> {
+    build_plan_with_defaults(args, DEFAULT_BACKEND, DEFAULT_EMBEDDER)
+}
+
+/// Like [`build_plan`], but the MCP server's offline defaults (`duckdb` + `ort`) apply only
+/// when neither the CLI flag nor the config specifies the backend/embedder. This keeps the
+/// config authoritative: `--config sai-cfg.yml` alone is enough to drive the server.
+pub fn build_mcp_plan(args: &Args) -> Result<Plan> {
+    build_plan_with_defaults(args, MCP_DEFAULT_BACKEND, MCP_DEFAULT_EMBEDDER)
+}
+
+fn build_plan_with_defaults(
+    args: &Args,
+    backend_default: &str,
+    embedder_default: &str,
+) -> Result<Plan> {
     let config = load_config(args)?;
 
     let exclude = build_globset(&config.exclude, "exclude")?;
@@ -286,12 +310,12 @@ pub fn build_plan(args: &Args) -> Result<Plan> {
         .backend
         .clone()
         .or(config.backend)
-        .unwrap_or_else(|| DEFAULT_BACKEND.to_string());
+        .unwrap_or_else(|| backend_default.to_string());
     let embedder = args
         .embedder
         .clone()
         .or(config.embedder)
-        .unwrap_or_else(|| DEFAULT_EMBEDDER.to_string());
+        .unwrap_or_else(|| embedder_default.to_string());
 
     // ort (local ONNX via DuckDB) now defaults to the code-specialized Jina model.
     // All other paths (Qdrant server inference, Ollama) keep the lightweight E5 default.
@@ -460,6 +484,24 @@ pub fn resolve_default_config(dir: &Path) -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// A bare default config filename (no directory part) that is simply absent is not an
+/// error: `mcp --config sai-cfg.yml` must work in projects that never ran `init`.
+fn is_bare_default_config_name(p: &str) -> bool {
+    matches!(p, "sai-cfg.yml" | "sai-cfg.yaml")
+}
+
+/// Emit the "no config → built-in defaults" note and return the defaults. Shared by the
+/// two no-config paths: no `--config` with no default file present, and an absent bare
+/// default config name.
+fn builtin_defaults_with_note() -> Config {
+    eprintln!(
+        "note: no config at {} — using built-in defaults (only hard dirs pruned). \
+         Run `semanticastindexer init` to generate one.",
+        DEFAULT_CONFIG
+    );
+    Config::default()
+}
+
 /// Load YAML config. No `--config` + no default file → built-in defaults; an explicit
 /// `--config` path that does not exist → error.
 fn load_config(args: &Args) -> Result<Config> {
@@ -467,20 +509,19 @@ fn load_config(args: &Args) -> Result<Config> {
         Some(p) => {
             let path = std::path::PathBuf::from(p);
             if !path.exists() {
+                // An absent bare default name is not an error — fall back to built-in
+                // defaults like the `None` branch. Any other missing path (a typo, or one
+                // with a directory component) still bails.
+                if is_bare_default_config_name(p) {
+                    return Ok(builtin_defaults_with_note());
+                }
                 anyhow::bail!("config file not found: {p}");
             }
             path
         }
         None => match resolve_default_config(Path::new(".")) {
             Some(path) => path,
-            None => {
-                eprintln!(
-                    "note: no config at {} — using built-in defaults (only hard dirs pruned). \
-                     Run `semanticastindexer init` to generate one.",
-                    DEFAULT_CONFIG
-                );
-                return Ok(Config::default());
-            }
+            None => return Ok(builtin_defaults_with_note()),
         },
     };
     let display = path.display();
@@ -529,6 +570,20 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir(dir.path().join("sai-cfg.yml")).unwrap();
         assert_eq!(resolve_default_config(dir.path()), None);
+    }
+
+    /// A bare default config name (no directory component) is the only case that soft-falls
+    /// back to built-in defaults when the file is absent. The legacy name, any name with a
+    /// directory component, and unrelated names all return false (those still bail).
+    #[test]
+    fn bare_default_config_name_recognition() {
+        assert!(is_bare_default_config_name("sai-cfg.yml"));
+        assert!(is_bare_default_config_name("sai-cfg.yaml"));
+        // Legacy name does NOT soft-fallback.
+        assert!(!is_bare_default_config_name("indexer.yaml"));
+        // Has a directory component → not bare.
+        assert!(!is_bare_default_config_name("configs/sai-cfg.yml"));
+        assert!(!is_bare_default_config_name("other.yml"));
     }
 }
 

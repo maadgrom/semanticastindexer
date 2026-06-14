@@ -2,6 +2,7 @@
 //! Never blocks, never errors the caller. All ops are fast local reads.
 //! Used for "per-commit picture" + pre-commit hook safety (dirty stage OK).
 
+use anyhow::{Context, Result};
 use std::process::Command;
 
 /// Captured at command start (or per refresh). sha=None + dirty=true on any failure / no repo.
@@ -50,4 +51,53 @@ fn is_dirty() -> bool {
         .status()
         .map(|s| !s.success())
         .unwrap_or(true)
+}
+
+/// Files changed according to git — shared by the CLI `sync`/`duplicates --since` commands
+/// and the MCP `sai_sync` tool. A non-empty `explicit` list overrides git detection; otherwise
+/// the working tree is diffed against `since` (or the staged set when `staged`; or plain
+/// `git diff` when `since` is `None`). Returns repo-relative paths.
+pub fn changed_files(
+    since: Option<&str>,
+    staged: bool,
+    explicit: &[String],
+) -> Result<Vec<String>> {
+    if !explicit.is_empty() {
+        return Ok(explicit.to_vec());
+    }
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--name-only"]);
+    if staged {
+        cmd.arg("--cached");
+    } else if let Some(since) = since {
+        cmd.arg(since);
+    }
+    let output = cmd
+        .output()
+        .context("failed to run `git diff` (is git on PATH?)")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git diff failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An explicit path list bypasses git entirely and is returned verbatim (the path the
+    /// CLI `--file` flag and the MCP `sai_sync { paths }` argument take).
+    #[test]
+    fn changed_files_returns_explicit_paths_verbatim() {
+        let explicit = vec!["a.rs".to_string(), "b/c.ts".to_string()];
+        let got = changed_files(Some("HEAD~1"), false, &explicit).unwrap();
+        assert_eq!(got, explicit);
+    }
 }

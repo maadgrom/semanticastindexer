@@ -17,8 +17,6 @@ param(
     [string]$Platform = "",
     [switch]$All,
     [switch]$NonInteractive,
-    [string]$Collection = "source_code",
-    [string]$Embedder = "ort",
     [switch]$Write,
     [switch]$SkipBinary,
     [switch]$Help
@@ -32,11 +30,11 @@ $ErrorActionPreference = "Stop"
 $Owner = "maadgrom"
 $Repo = "semanticastindexer"
 $BinaryName = "semanticastindexer"
-$ServerName = "semantic-code-search"
+$ServerName = "sai"
 $ReleaseInstaller = "https://github.com/$Owner/$Repo/releases/latest/download/$BinaryName-installer.ps1"
 $RawBase = "https://raw.githubusercontent.com/$Owner/$Repo/main"
 $PagesUrl = "https://$Owner.github.io/$Repo/"
-$AllAgents = @("claude-code", "claude-desktop", "cursor", "windsurf", "continue", "codex", "hermes", "ollama")
+$AllAgents = @("claude-code", "claude-desktop", "cursor", "windsurf", "continue", "codex", "hermes")
 $ProjectDir = (Get-Location).Path
 
 function Log($msg)      { Write-Host "[install] " -ForegroundColor Blue -NoNewline; Write-Host $msg }
@@ -61,11 +59,9 @@ Agent selection (skip the prompt):
   -NonInteractive      Don't prompt; just install the binary + print a generic MCP block
 
 Supported platform ids:
-  claude-code  claude-desktop  cursor  windsurf  continue  codex  hermes  ollama  generic
+  claude-code  claude-desktop  cursor  windsurf  continue  codex  hermes  generic
 
 Other options:
-  -Collection <name>   Collection name (default: source_code)
-  -Embedder <id>       ort | ollama (default: ort; the 'ollama' client forces ollama)
   -Write               Merge config into the client's file (JSON clients only; best-effort, backs up)
   -SkipBinary          Don't install the binary (just emit config)
   -Help                Show this help
@@ -112,13 +108,13 @@ function Resolve-Binary {
 # --- Config snippet builders ---
 function Json-Escape($s) { return $s.Replace('\', '\\').Replace('"', '\"') }
 
-function Json-Snippet($bin, $emb) {
+function Json-Snippet($bin) {
     return @"
 {
   "mcpServers": {
     "$ServerName": {
       "command": "$(Json-Escape $bin)",
-      "args": ["mcp", "--backend", "duckdb", "--embedder", "$emb", "--collection", "$Collection"],
+      "args": ["mcp", "--config", "sai-cfg.yml"],
       "cwd": "$(Json-Escape $ProjectDir)"
     }
   }
@@ -126,21 +122,21 @@ function Json-Snippet($bin, $emb) {
 "@
 }
 
-function Toml-Snippet($bin, $emb) {
+function Toml-Snippet($bin) {
     return @"
 [mcp_servers.$ServerName]
 command = '$bin'
-args = ["mcp", "--backend", "duckdb", "--embedder", "$emb", "--collection", "$Collection"]
+args = ["mcp", "--config", "sai-cfg.yml"]
 cwd = '$ProjectDir'
 "@
 }
 
-function Yaml-Snippet($bin, $emb) {
+function Yaml-Snippet($bin) {
     return @"
 mcpServers:
   - name: $ServerName
     command: "$(Json-Escape $bin)"
-    args: ["mcp", "--backend", "duckdb", "--embedder", "$emb", "--collection", "$Collection"]
+    args: ["mcp", "--config", "sai-cfg.yml"]
     cwd: "$(Json-Escape $ProjectDir)"
 "@
 }
@@ -155,7 +151,7 @@ function Print-Block($where, $content) {
 
 # Best-effort merge of the MCP server entry into an existing JSON config; on a
 # broken/missing file it starts fresh (after a .bak backup), like install.sh.
-function Write-JsonConfig($target, $bin, $emb) {
+function Write-JsonConfig($target, $bin) {
     $dir = Split-Path -Parent $target
     if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $cfg = $null
@@ -170,7 +166,7 @@ function Write-JsonConfig($target, $bin, $emb) {
     }
     $server = [pscustomobject]@{
         command = $bin
-        args    = @("mcp", "--backend", "duckdb", "--embedder", $emb, "--collection", $Collection)
+        args    = @("mcp", "--config", "sai-cfg.yml")
         cwd     = $ProjectDir
     }
     if ($cfg.mcpServers.PSObject.Properties[$ServerName]) {
@@ -183,10 +179,22 @@ function Write-JsonConfig($target, $bin, $emb) {
 }
 
 function Install-ClaudeSkill {
-    $skillDir = Join-Path $HOME ".claude\skills\semantic-code-search-mcp"
+    # Upgrade cleanup: remove old-named artifacts so upgraders are not stranded.
+    $oldWrapper = Join-Path $HOME ".local\bin\code-search-mcp"
+    if (Test-Path $oldWrapper) {
+        Remove-Item $oldWrapper -Force
+        Success "Removed old wrapper $oldWrapper"
+    }
+    $oldSkillDir = Join-Path $HOME ".claude\skills\semantic-code-search-mcp"
+    if (Test-Path $oldSkillDir) {
+        Remove-Item $oldSkillDir -Recurse -Force
+        Success "Removed old skill dir $oldSkillDir"
+    }
+
+    $skillDir = Join-Path $HOME ".claude\skills\sai"
     if (-not (Test-Path $skillDir)) { New-Item -ItemType Directory -Path $skillDir -Force | Out-Null }
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri "$RawBase/mcp-setup/SKILL.md" -OutFile (Join-Path $skillDir "SKILL.md")
+        Invoke-WebRequest -UseBasicParsing -Uri "$RawBase/.agents/skills/sai/SKILL.md" -OutFile (Join-Path $skillDir "SKILL.md")
         Success "Installed skill -> $skillDir\SKILL.md"
     } catch {
         Warn "Could not download SKILL.md (offline?). Skipping skill file."
@@ -195,52 +203,61 @@ function Install-ClaudeSkill {
 
 # Wire up one client.
 function Configure-Platform($id, $bin) {
-    $emb = $Embedder
-    if ($id -eq "ollama") { $emb = "ollama" }
     Write-Host ""
     Write-Host "* $id" -ForegroundColor White
     switch ($id) {
         "claude-code" {
             Install-ClaudeSkill
             $target = Join-Path $ProjectDir ".mcp.json"
-            if ($Write) { Write-JsonConfig $target $bin $emb }
-            else { Print-Block "$target (in the project you want to search)" (Json-Snippet $bin $emb) }
+            if ($Write) {
+                $claudeCli = Get-Command claude -ErrorAction SilentlyContinue
+                if ($claudeCli) {
+                    $result = & claude mcp add $ServerName --scope project --transport stdio -- $bin mcp --config sai-cfg.yml 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                        Success "Registered '$ServerName' via 'claude mcp add'"
+                    } else {
+                        Warn "claude mcp add failed (exit $LASTEXITCODE); falling back to JSON merge."
+                        Write-JsonConfig $target $bin
+                    }
+                } else {
+                    Write-JsonConfig $target $bin
+                }
+            } else {
+                Print-Block "$target (in the project you want to search)" (Json-Snippet $bin)
+                if (Get-Command claude -ErrorAction SilentlyContinue) {
+                    Log "Tip: re-run with -Write to auto-register via 'claude mcp add'."
+                }
+            }
         }
         "claude-desktop" {
             $target = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
-            if ($Write) { Write-JsonConfig $target $bin $emb }
-            else { Print-Block $target (Json-Snippet $bin $emb) }
+            if ($Write) { Write-JsonConfig $target $bin }
+            else { Print-Block $target (Json-Snippet $bin) }
         }
         "cursor" {
             $target = Join-Path $HOME ".cursor\mcp.json"
-            if ($Write) { Write-JsonConfig $target $bin $emb }
-            else { Print-Block $target (Json-Snippet $bin $emb) }
+            if ($Write) { Write-JsonConfig $target $bin }
+            else { Print-Block $target (Json-Snippet $bin) }
         }
         "windsurf" {
             $target = Join-Path $HOME ".codeium\windsurf\mcp_config.json"
-            if ($Write) { Write-JsonConfig $target $bin $emb }
-            else { Print-Block $target (Json-Snippet $bin $emb) }
+            if ($Write) { Write-JsonConfig $target $bin }
+            else { Print-Block $target (Json-Snippet $bin) }
         }
         "continue" {
-            Print-Block (Join-Path $HOME ".continue\config.yaml") (Yaml-Snippet $bin $emb)
+            Print-Block (Join-Path $HOME ".continue\config.yaml") (Yaml-Snippet $bin)
             if ($Write) { Warn "-Write supports JSON clients only; paste the YAML above into Continue's config." }
         }
         "codex" {
-            Print-Block (Join-Path $HOME ".codex\config.toml") (Toml-Snippet $bin $emb)
+            Print-Block (Join-Path $HOME ".codex\config.toml") (Toml-Snippet $bin)
             if ($Write) { Warn "-Write supports JSON clients only; paste the TOML above into ~\.codex\config.toml." }
         }
         "hermes" {
             Warn "Hermes config location is client-specific - paste this generic MCP block into its MCP config."
-            Print-Block "your Hermes MCP config" (Json-Snippet $bin $emb)
-        }
-        "ollama" {
-            Warn "Ollama is the embedding backend, not an MCP client. Make sure it is running:"
-            Write-Host "    ollama serve"
-            Write-Host "    ollama pull nomic-embed-text"
-            Print-Block "your MCP client config (uses --embedder ollama)" (Json-Snippet $bin $emb)
+            Print-Block "your Hermes MCP config" (Json-Snippet $bin)
         }
         "generic" {
-            Print-Block "your MCP client config" (Json-Snippet $bin $emb)
+            Print-Block "your MCP client config" (Json-Snippet $bin)
         }
         default {
             Warn "Unknown platform '$id' - skipping."
@@ -254,8 +271,8 @@ function Prompt-Agents {
     Write-Host "Which coding agent(s) should I connect? (the binary works as a CLI regardless)"
     Write-Host ""
     Write-Host "   1) Claude Code       4) Windsurf        7) Hermes"
-    Write-Host "   2) Claude Desktop    5) Continue.dev    8) Ollama"
-    Write-Host "   3) Cursor            6) Codex CLI       9) Generic / manual"
+    Write-Host "   2) Claude Desktop    5) Continue.dev    8) Generic / manual"
+    Write-Host "   3) Cursor            6) Codex CLI"
     Write-Host ""
     $choice = Read-Host "Enter numbers (e.g. 1 3), 'all', or press Enter to skip"
 
@@ -265,7 +282,7 @@ function Prompt-Agents {
     }
 
     $map = @{ "1" = "claude-code"; "2" = "claude-desktop"; "3" = "cursor"; "4" = "windsurf";
-              "5" = "continue"; "6" = "codex"; "7" = "hermes"; "8" = "ollama"; "9" = "generic" }
+              "5" = "continue"; "6" = "codex"; "7" = "hermes"; "8" = "generic" }
     $out = @()
     foreach ($tok in ($choice -split '\s+' | Where-Object { $_ })) {
         if ($map.ContainsKey($tok)) { $out += $map[$tok] }

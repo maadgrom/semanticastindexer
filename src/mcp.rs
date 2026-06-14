@@ -1,9 +1,10 @@
 //! MCP server (`semanticastindexer mcp`, feature = "mcp").
 //!
 //! Exposes the indexer's semantic search to Claude over **stdio** via the official Rust
-//! MCP SDK (`rmcp`). READ-ONLY: no index/upsert/flush tools. Backend + Embedder are built
-//! ONCE at startup (defaults backend=duckdb, embedder=ollama) and shared across tool calls
-//! behind an `Arc<Mutex>` (DuckDB's connection is single-threaded).
+//! MCP SDK (`rmcp`). Search is read-only; the `sai_refresh`/`sai_sync` write tools are gated
+//! behind `--allow-write`. Backend + Embedder are built ONCE at startup (offline defaults
+//! backend=duckdb, embedder=ort, resolved as flag > `sai-cfg.yml` > default) and shared across
+//! tool calls behind an `Arc<Mutex>` (DuckDB's connection is single-threaded).
 //!
 //! Tools (structured JSON output; all prefixed `sai_` to namespace them in the agent's
 //! tool list):
@@ -11,6 +12,8 @@
 //! - `sai_find_similar`    — neighbours of a snippet (`code`) or an existing chunk (`path`+`line`).
 //! - `sai_find_duplicates` — codebase-wide near-duplicate clusters via NN + union-find.
 //! - `sai_index_status`    — backend/collection/model/dim/chunk_count/chunker.
+//! - `sai_refresh`         — re-index specific paths (write; `--allow-write`).
+//! - `sai_sync`            — reconcile the index with the working tree, like CLI `sync` (write).
 //!
 //! Embedding semantics (correctness-critical):
 //! - `sai_search_code`            → embed as QUERY.
@@ -133,6 +136,21 @@ pub struct RefreshArgs {
     pub paths: Vec<String>,
 }
 
+/// `sync` input (write tool; requires `--allow-write`). Reconciles the index with the
+/// working tree, like the CLI `sync` command.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SyncArgs {
+    /// Git revision to diff against (changed set = working tree vs `<since>`). Default "HEAD~1".
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Reconcile the staged set (`git diff --cached`) instead of `--since`. Default false.
+    #[serde(default)]
+    pub staged: bool,
+    /// Explicit changed path(s) to reconcile; overrides git detection.
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
 /// `prepare_mcp_setup` input.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PrepareMcpSetupArgs {
@@ -148,7 +166,7 @@ pub struct PrepareMcpSetupArgs {
     /// Whether to enable the tree-sitter AST chunker (requires the binary to have been built with --features ast).
     #[serde(default)]
     pub use_ast_chunker: bool,
-    /// Whether to install the binary globally into ~/.local/bin (creates a `code-search-mcp` wrapper).
+    /// Whether to install the binary globally into ~/.local/bin (creates a `sai` wrapper).
     #[serde(default)]
     pub install_globally: bool,
     /// If true and the server was started with `--allow-setup`, actually execute the setup script.
@@ -179,14 +197,14 @@ struct SearchHit {
 // Server.
 // ---------------------------------------------------------------------------
 
-/// The MCP code-search server. Holds the shared (read-only) backend + plan metadata.
+/// The MCP `sai` server. Holds the shared (read-only) backend + plan metadata.
 #[derive(Clone)]
-pub struct CodeSearchServer {
+pub struct SaiServer {
     inner: Arc<ServerInner>,
     // Consumed by the `#[tool_handler]` macro's generated dispatch; the dead-code lint
     // doesn't see that use (it reads the field via a trait method), so allow it here.
     #[allow(dead_code)]
-    tool_router: ToolRouter<CodeSearchServer>,
+    tool_router: ToolRouter<SaiServer>,
 }
 
 /// Shared state behind the `Arc`. The `!Send` DuckDB backend lives on a worker thread;
@@ -217,7 +235,7 @@ struct ServerInner {
 }
 
 #[tool_router]
-impl CodeSearchServer {
+impl SaiServer {
     /// Build the server from a backend-worker handle + the resolved plan. `allow_write`
     /// enables the `refresh` write tool (the worker's backend must have been opened
     /// writable by the caller in that case).
@@ -448,9 +466,9 @@ impl CodeSearchServer {
 
         let mcp_config = json!({
             "mcpServers": {
-                "semantic-code-search": {
+                "sai": {
                     "command": "<path-to-semanticastindexer>",
-                    "args": ["mcp", "--backend", backend, "--embedder", embedder, "--collection", "source_code"],
+                    "args": ["mcp", "--config", "sai-cfg.yml"],
                     "cwd": target
                 }
             }
@@ -539,26 +557,54 @@ impl CodeSearchServer {
             .await
             .map_err(internal)?;
 
-        let mut refreshed: Vec<serde_json::Value> = Vec::new();
-        let mut removed: Vec<String> = Vec::new();
-        for (path, outcome) in report.entries {
-            match outcome {
-                ReindexOutcome::Reindexed { chunks } => {
-                    refreshed.push(json!({ "path": path, "chunks": chunks }));
-                }
-                ReindexOutcome::Removed { .. } => removed.push(path),
-            }
+        Ok(refresh_result(report))
+    }
+
+    /// Reconcile the index with the working tree (write tool; requires `--allow-write`).
+    #[tool(
+        description = "Reconcile the index with the working tree, like the CLI `sync`: re-index files changed since a git revision (default HEAD~1) — re-chunk/re-embed survivors and drop points for deleted or now-excluded paths. Pass `paths` to reconcile an explicit set instead of using git. Requires the server to be started with --allow-write."
+    )]
+    async fn sai_sync(
+        &self,
+        Parameters(args): Parameters<SyncArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if !self.inner.allow_write {
+            return Err(McpError::invalid_params(
+                "server is read-only; restart with --allow-write to enable sync",
+                None,
+            ));
+        }
+        let since = args.since.as_deref().unwrap_or("HEAD~1");
+        let changed =
+            crate::git::changed_files(Some(since), args.staged, &args.paths).map_err(internal)?;
+        if changed.is_empty() {
+            return Ok(CallToolResult::structured(
+                json!({ "refreshed": [], "removed": [], "note": "no changed files" }),
+            ));
+        }
+        if changed.len() > MAX_REFRESH_PATHS {
+            return Err(McpError::invalid_params(
+                format!(
+                    "too many changed files ({}; max {MAX_REFRESH_PATHS}). Narrow `since` or pass explicit `paths`.",
+                    changed.len()
+                ),
+                None,
+            ));
         }
 
-        Ok(CallToolResult::structured(json!({
-            "refreshed": refreshed,
-            "removed": removed,
-        })))
+        // Same one-shot bulk reconcile as `sai_refresh`, over the git-changed set.
+        let report = self
+            .inner
+            .backend
+            .refresh(changed)
+            .await
+            .map_err(internal)?;
+        Ok(refresh_result(report))
     }
 }
 
 #[tool_handler]
-impl ServerHandler for CodeSearchServer {
+impl ServerHandler for SaiServer {
     fn get_info(&self) -> ServerInfo {
         // ServerInfo (= InitializeResult) is #[non_exhaustive], so a cross-crate struct
         // literal is impossible — build via Default + field assignment.
@@ -568,8 +614,9 @@ impl ServerHandler for CodeSearchServer {
         info.instructions = Some(
             "Semantic code search over the indexed repository. Tools: sai_search_code, \
              sai_find_similar, sai_find_duplicates, sai_index_status (read-only), sai_prepare_mcp_setup \
-             (setup helper; execution requires --allow-setup), and sai_refresh \
-             (re-index files; only usable when the server was started with --allow-write)."
+             (setup helper; execution requires --allow-setup), and the write tools sai_refresh \
+             (re-index specific files) and sai_sync (reconcile the index with the working tree) — \
+             both require the server to be started with --allow-write."
                 .to_string(),
         );
         info
@@ -585,7 +632,7 @@ pub async fn serve_inner(
     allow_write: bool,
     allow_setup: bool,
 ) -> Result<()> {
-    let server = CodeSearchServer::new(backend, plan, allow_write, allow_setup);
+    let server = SaiServer::new(backend, plan, allow_write, allow_setup);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -598,6 +645,22 @@ pub async fn serve_inner(
 /// Clamp a caller-supplied limit to `[1, MAX_LIMIT]`.
 fn clamp_limit(n: u64) -> u64 {
     n.clamp(1, MAX_LIMIT)
+}
+
+/// Shape a [`RefreshReport`](crate::worker::RefreshReport) into the `{refreshed, removed}`
+/// tool result shared by the `sai_refresh` and `sai_sync` write tools.
+fn refresh_result(report: crate::worker::RefreshReport) -> CallToolResult {
+    let mut refreshed: Vec<serde_json::Value> = Vec::new();
+    let mut removed: Vec<String> = Vec::new();
+    for (path, outcome) in report.entries {
+        match outcome {
+            ReindexOutcome::Reindexed { chunks } => {
+                refreshed.push(json!({ "path": path, "chunks": chunks }));
+            }
+            ReindexOutcome::Removed { .. } => removed.push(path),
+        }
+    }
+    CallToolResult::structured(json!({ "refreshed": refreshed, "removed": removed }))
 }
 
 /// Map an `anyhow::Error` to an MCP internal error.

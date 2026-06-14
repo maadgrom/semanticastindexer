@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "semantic-code-search": {
+    "sai": {
       "command": "/semanticastindexer",
-      "args": ["mcp", "--backend", "duckdb", "--embedder", "ort", "--collection", "source_code"],
+      "args": ["mcp", "--config", "sai-cfg.yml"],
       "cwd": "semanticastindexer"
     }
   }

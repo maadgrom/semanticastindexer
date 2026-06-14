@@ -8,7 +8,7 @@ description = "Near-duplicate detection and semantic code search for AI coding a
 license = "MIT"
 repository = "https://github.com/maadgrom/semanticastindexer"
 readme = "README.md"
-keywords = ["near-duplicate", "deslop", "code-search", "mcp", "embeddings"]
+keywords = ["near-duplicate", "deslop", "sai", "mcp", "embeddings"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]

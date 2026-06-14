@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `sai_sync` MCP tool: reconcile the index with the working tree from an agent — the MCP
+  analog of the CLI `sync` (git-changed set → re-chunk/re-embed survivors, drop deleted or
+  now-excluded paths). Write tool; requires `--allow-write`, like `sai_refresh`.
+
+### Changed
+
+- MCP server entry renamed from `semantic-code-search` / `code-search` to `sai` across all
+  example configs (`.mcp.json.example`, `claude-desktop-config.example.json`). The
+  `~/.local/bin` convenience wrapper and the `~/.claude/skills/` skill directory are likewise
+  now named `sai`, and the installed wrapper is a true passthrough (`sai mcp`/`sai index`/… work).
+- The MCP server now honors `backend:` / `embedder:` from `sai-cfg.yml`. Precedence is
+  `--flag > sai-cfg.yml > duckdb/ort` (the fully-offline default); previously the server forced
+  its own duckdb/ollama defaults *over* the config. MCP example configs are now just
+  `["mcp", "--config", "sai-cfg.yml"]` — the redundant `--backend`/`--embedder`/`--collection`
+  flags were removed.
+- Config loader: an explicit `--config sai-cfg.yml` / `sai-cfg.yaml` that is absent on
+  disk now falls back to built-in defaults instead of erroring, so the MCP server works
+  in projects that have not yet run `init`.
+- `mcp-setup/setup.sh` now installs the Claude Code skill into `~/.claude/skills/sai/`, matching
+  the human `install.sh` (the agent-facing setup path previously installed only the MCP server).
+- `uninstall.sh` and the installers now also remove the old `code-search`-named artifacts
+  (`~/.local/bin/code-search-mcp`, `~/.claude/skills/semantic-code-search-mcp/`) when
+  upgrading from a prior release.
+
 ## [0.1.2] - 2026-06-13
 
 ### Added

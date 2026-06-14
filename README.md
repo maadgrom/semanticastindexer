@@ -41,7 +41,7 @@ powershell -c "& ([scriptblock]::Create((irm https://maadgrom.github.io/semantic
 ```
 
 Supported ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`, `codex`,
-`hermes`, `ollama`, `generic`. Or pick yours on the install page:
+`hermes`, `generic`. Or pick yours on the install page:
 👉 **[maadgrom.github.io/semanticastindexer](https://maadgrom.github.io/semanticastindexer/)**.
 Prefer to build from source? See the [installation guide](book/src/installation.md).
 
@@ -64,6 +64,16 @@ semanticastindexer --query-only --query "where do we open the duckdb connection"
 semanticastindexer duplicates                          # codebase-wide near-duplicate clusters
 ```
 
+### From your coding agent (MCP)
+
+Once wired up (see [Install](#install)), the agent gets `sai_`-prefixed tools: `sai_search_code`,
+`sai_find_similar`, `sai_find_duplicates`, and `sai_index_status` (read-only) — plus, when the
+server runs with `--allow-write`, `sai_refresh` (re-index specific files) and `sai_sync`
+(reconcile the index with the working tree, like the CLI `sync`). The server reads `sai-cfg.yml`,
+so its config is just `args: ["mcp", "--config", "sai-cfg.yml"]`. Prefer these in-process write
+tools over a CLI `sync` while the server is connected — the MCP holds the index lock (see
+[MCP server & tools](book/src/reference/mcp-server.md)).
+
 ## Documentation
 
 📖 **Full documentation site:** <https://maadgrom.github.io/semanticastindexer/book/>
@@ -76,7 +86,7 @@ semanticastindexer duplicates                          # codebase-wide near-dupl
 | [How it works](book/src/concepts/how-it-works.md) | The indexing pipeline, query path, worker model, point IDs |
 | [CLI reference](book/src/reference/cli.md) | Every subcommand and flag |
 | [Configuration](book/src/reference/configuration.md) | Every `sai-cfg.yml` key, type, and default |
-| [MCP server & tools](book/src/reference/mcp-server.md) | All six `sai_` tools, gating, `.mcp.json` wiring |
+| [MCP server & tools](book/src/reference/mcp-server.md) | All seven `sai_` tools, gating, `.mcp.json` wiring |
 | [Backends & embedders](book/src/reference/backends-and-embedders.md) | Qdrant vs DuckDB, ort vs ollama, recommended code model |
 | [Troubleshooting](book/src/operations/troubleshooting.md) | First-run downloads, dimension mismatch, MCP wiring |
 
@@ -94,7 +104,7 @@ builds are incremental and fast. See [Installation → build from source](book/s
 
 - Credentials are read only from `QDRANT_URL` / `QDRANT_API_KEY` — never commit them; rotate
   any exposed key in the cluster's *API Keys* tab.
-- The MCP server is **read-only by default** (the write tool requires `--allow-write`).
+- The MCP server is **read-only by default** (the `sai_refresh` / `sai_sync` write tools require `--allow-write`).
 
 ## License
 

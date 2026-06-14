@@ -29,7 +29,7 @@ on its own. See the [CLI reference](reference/cli.md) to start indexing immediat
 
 Connecting an agent is optional. Add `--platform <id>` (macOS/Linux) or `-Platform <id>`
 (Windows) and the installer wires up that client's MCP config (and, for Claude Code,
-installs the `semantic-code-search-mcp` skill into `~/.claude/skills/`):
+installs the `sai` skill into `~/.claude/skills/`):
 
 ```bash
 # macOS / Linux
@@ -72,17 +72,17 @@ For the full per-client walkthrough, see [MCP clients](integrations/mcp-clients.
 
 | Platform | Config file | Notes |
 | -------- | ----------- | ----- |
-| **Claude Code** | project `.mcp.json` + skill in `~/.claude/skills/semantic-code-search-mcp/` | Full skill experience |
+| **Claude Code** | project `.mcp.json` + skill in `~/.claude/skills/sai/` | Full skill experience |
 | **Claude Desktop** | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) | Linux: `~/.config/Claude/claude_desktop_config.json` |
 | **Cursor** | `~/.cursor/mcp.json` | Or project `.cursor/mcp.json` |
 | **Windsurf / Cascade** | `~/.codeium/windsurf/mcp_config.json` | JSON config |
 | **Continue.dev** | `~/.continue/config.yaml` | `mcpServers` block (YAML, paste manually) |
-| **Codex CLI** | `~/.codex/config.toml` | `[mcp_servers.semantic-code-search]` (TOML, paste manually) |
+| **Codex CLI** | `~/.codex/config.toml` | `[mcp_servers.sai]` (TOML, paste manually) |
 | **Hermes** | client-specific MCP config | Installer prints a generic block to paste |
 | **Ollama** | n/a (embedding backend) | Installs the binary configured with `--embedder ollama`; run `ollama serve` + `ollama pull nomic-embed-text` |
 | **Generic / manual** | your client's MCP config | Paste the printed `.mcp.json` block |
 
-The MCP server entry is always registered under the name `semantic-code-search`. For the tool
+The MCP server entry is always registered under the name `sai`. For the tool
 surface it exposes — `sai_search_code`, `sai_find_similar`, `sai_find_duplicates`,
 `sai_index_status`, `sai_prepare_mcp_setup`, and `sai_refresh` — see the
 [MCP server and tools](reference/mcp-server.md) reference.
@@ -161,9 +161,9 @@ confirmation prompt; in a non-interactive shell (CI) it proceeds without asking.
 **Removed:**
 
 - The `semanticastindexer` binary from `~/.cargo/bin` and `~/.local/bin` (plus any
-  `code-search-mcp` wrapper alongside it).
-- The Claude Code skill directory `~/.claude/skills/semantic-code-search-mcp/`.
-- The `semantic-code-search` entry from known JSON MCP configs — Claude Desktop, Cursor,
+  `sai` wrapper alongside it).
+- The Claude Code skill directory `~/.claude/skills/sai/`.
+- The `sai` entry from known JSON MCP configs — Claude Desktop, Cursor,
   Windsurf, and the project's `./.mcp.json` — each backed up to `<file>.bak` before editing.
 
 **Left untouched** (delete by hand if you want them gone):
