@@ -71,16 +71,28 @@ fn build_mcp_plan_honors_config_over_offline_defaults() {
     // (whereas the global `build_plan` would default to qdrant).
     let bare = dir.path().join("sai-cfg.yml");
     fs::write(&bare, "collection: c\n").unwrap();
-    let p = build_mcp_plan(&parse(&["semanticastindexer", "--config", bare.to_str().unwrap()])).unwrap();
+    let p = build_mcp_plan(&parse(&[
+        "semanticastindexer",
+        "--config",
+        bare.to_str().unwrap(),
+    ]))
+    .unwrap();
     assert_eq!(p.backend, "duckdb", "MCP default backend is duckdb");
     assert_eq!(p.embedder, "ort", "MCP default embedder is ort");
 
     // Config explicitly selects ollama → config wins over the MCP `ort` default.
     let chosen = dir.path().join("cfg2.yml");
     fs::write(&chosen, "backend: duckdb\nembedder: ollama\n").unwrap();
-    let p2 =
-        build_mcp_plan(&parse(&["semanticastindexer", "--config", chosen.to_str().unwrap()])).unwrap();
-    assert_eq!(p2.embedder, "ollama", "config embedder wins over the MCP ort default");
+    let p2 = build_mcp_plan(&parse(&[
+        "semanticastindexer",
+        "--config",
+        chosen.to_str().unwrap(),
+    ]))
+    .unwrap();
+    assert_eq!(
+        p2.embedder, "ollama",
+        "config embedder wins over the MCP ort default"
+    );
 
     // An explicit flag still wins over both config and the MCP default.
     let p3 = build_mcp_plan(&parse(&[

@@ -57,7 +57,11 @@ fn is_dirty() -> bool {
 /// and the MCP `sai_sync` tool. A non-empty `explicit` list overrides git detection; otherwise
 /// the working tree is diffed against `since` (or the staged set when `staged`; or plain
 /// `git diff` when `since` is `None`). Returns repo-relative paths.
-pub fn changed_files(since: Option<&str>, staged: bool, explicit: &[String]) -> Result<Vec<String>> {
+pub fn changed_files(
+    since: Option<&str>,
+    staged: bool,
+    explicit: &[String],
+) -> Result<Vec<String>> {
     if !explicit.is_empty() {
         return Ok(explicit.to_vec());
     }

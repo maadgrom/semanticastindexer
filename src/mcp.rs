@@ -593,7 +593,12 @@ impl SaiServer {
         }
 
         // Same one-shot bulk reconcile as `sai_refresh`, over the git-changed set.
-        let report = self.inner.backend.refresh(changed).await.map_err(internal)?;
+        let report = self
+            .inner
+            .backend
+            .refresh(changed)
+            .await
+            .map_err(internal)?;
         Ok(refresh_result(report))
     }
 }
