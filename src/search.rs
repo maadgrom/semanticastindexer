@@ -59,12 +59,20 @@ pub struct DupCluster {
 ///
 /// Both the CLI handlers and the MCP `find_duplicates` tool call this with the chunks +
 /// neighbours they each gathered, so the union-find lives in exactly one place.
+///
+/// `seed_paths`, when `Some`, restricts which chunks may SEED a cluster to those whose
+/// path is in the set (e.g. the files a PR changed). Neighbour search still spans the
+/// whole DB, so a seeded chunk still clusters with the EXISTING code it duplicates — the
+/// restriction only stops untouched chunks from seeding. This turns the scan into "does
+/// the changed code duplicate anything already indexed?", which a count-delta gate misses
+/// when new slop joins an already-existing cluster. `None` = the whole-DB scan.
 pub fn cluster_duplicates(
     chunks: &[(Hit, Vec<f32>)],
     neighbours: &[Vec<Hit>],
     min_score: f32,
     min_cluster_size: usize,
     max_clusters: usize,
+    seed_paths: Option<&HashSet<String>>,
 ) -> Vec<DupCluster> {
     let n = chunks.len();
     // Stable index per chunk id for union-find.
@@ -80,6 +88,14 @@ pub fn cluster_duplicates(
     for (i, nbrs) in neighbours.iter().enumerate() {
         // A chunk that opted out of clustering forms no edges as a seed.
         if chunks[i].0.no_duplicate {
+            continue;
+        }
+        // With a seed set, only the listed (e.g. PR-changed) chunks may seed a cluster.
+        // This is applied to the SEED only, never the neighbour `j` below, so a seeded
+        // chunk still pulls in the untouched code it duplicates.
+        if let Some(seeds) = seed_paths
+            && !seeds.contains(&chunks[i].0.path)
+        {
             continue;
         }
         for nb in nbrs {
@@ -175,6 +191,12 @@ fn build_cluster(
 /// Runs on the backend worker thread: BOTH the CLI `duplicates` subcommand and the
 /// MCP `sai_find_duplicates` tool reach this through a `FindDuplicates` request on
 /// [`crate::worker::BackendHandle`].
+///
+/// `seed_paths` (see [`cluster_duplicates`]) restricts which chunks may seed a cluster.
+/// As an optimisation it also skips the nearest-neighbour query for non-seed chunks —
+/// they can still be PULLED IN as a seed's neighbour, but never seed a cluster themselves,
+/// so their own neighbour list is never consulted. A PR gate thus does O(changed) vector
+/// queries instead of O(whole index).
 pub async fn find_duplicates(
     backend: &Backend,
     min_score: f32,
@@ -182,10 +204,16 @@ pub async fn find_duplicates(
     top_k: u64,
     max_clusters: usize,
     path_glob: Option<&str>,
+    seed_paths: Option<&HashSet<String>>,
 ) -> Result<Vec<DupCluster>> {
     let chunks = backend.all_chunks_with_vectors(path_glob).await?;
     let mut neighbours: Vec<Vec<Hit>> = Vec::with_capacity(chunks.len());
     for (hit, vec) in &chunks {
+        // Only seed chunks need their neighbours; skip the query for the rest.
+        if seed_paths.is_some_and(|seeds| !seeds.contains(&hit.path)) {
+            neighbours.push(Vec::new());
+            continue;
+        }
         let nbrs = backend.query_by_vector(vec, top_k, Some(hit.id)).await?;
         neighbours.push(nbrs);
     }
@@ -195,6 +223,7 @@ pub async fn find_duplicates(
         min_score,
         min_cluster_size.max(1),
         max_clusters,
+        seed_paths,
     ))
 }
 
@@ -307,7 +336,9 @@ mod tests {
             MockRow::new(3, "src/dup3.ts", 1, vec![0.998, 0.0, 0.02, 0.0]),
             MockRow::new(4, "src/other.ts", 1, vec![0.0, 0.0, 0.0, 1.0]),
         ]);
-        let clusters = find_duplicates(&b, 0.95, 2, 10, 50, None).await.unwrap();
+        let clusters = find_duplicates(&b, 0.95, 2, 10, 50, None, None)
+            .await
+            .unwrap();
         assert_eq!(clusters.len(), 1, "exactly one near-duplicate cluster");
         assert_eq!(clusters[0].size, 3, "the three near-identical chunks");
         let paths: Vec<&str> = clusters[0]
@@ -331,7 +362,9 @@ mod tests {
             MockRow::new(2, "src/b.ts", 1, vec![0.7, 0.7, 0.0, 0.0]),
         ]);
         // cosine ~0.707 < 0.99 → no edges kept.
-        let clusters = find_duplicates(&b, 0.99, 2, 10, 50, None).await.unwrap();
+        let clusters = find_duplicates(&b, 0.99, 2, 10, 50, None, None)
+            .await
+            .unwrap();
         assert!(clusters.is_empty(), "no edges survive a high threshold");
     }
 
@@ -455,7 +488,7 @@ mod tests {
             vec![hit(2, "src/b.ts", 0.99, false)],
             vec![hit(1, "src/a.ts", 0.99, false)],
         ];
-        let clusters = cluster_duplicates(&chunks, &neighbours, 0.95, 2, 50);
+        let clusters = cluster_duplicates(&chunks, &neighbours, 0.95, 2, 50, None);
         assert_eq!(clusters.len(), 1, "unflagged near-identical chunks cluster");
 
         // WITH chunk 2 flagged no_duplicate: it forms no edge as a seed and is skipped as a
@@ -468,10 +501,91 @@ mod tests {
             vec![hit(2, "src/b.ts", 0.99, false)],
             vec![hit(1, "src/a.ts", 0.99, false)],
         ];
-        let clusters = cluster_duplicates(&chunks, &neighbours, 0.95, 2, 50);
+        let clusters = cluster_duplicates(&chunks, &neighbours, 0.95, 2, 50, None);
         assert!(
             clusters.is_empty(),
             "a no_duplicate chunk is excluded from clustering (as seed and neighbour)"
+        );
+    }
+
+    /// `seed_paths` restricts which chunks may SEED a cluster: a changed chunk still
+    /// clusters with the untouched code it duplicates, but a pre-existing duplicate pair
+    /// among untouched files (neither chunk seeded) never surfaces.
+    #[test]
+    fn cluster_duplicates_seeds_only_changed_paths() {
+        // a.ts (changed) duplicates b.ts (untouched); c.ts/d.ts are an untouched
+        // pre-existing duplicate pair that must NOT be reported by a seeded scan.
+        let chunks = vec![
+            (hit(1, "src/a.ts", 0.0, false), vec![1.0, 0.0]),
+            (hit(2, "src/b.ts", 0.0, false), vec![1.0, 0.0]),
+            (hit(3, "src/c.ts", 0.0, false), vec![0.0, 1.0]),
+            (hit(4, "src/d.ts", 0.0, false), vec![0.0, 1.0]),
+        ];
+        let neighbours = vec![
+            vec![hit(2, "src/b.ts", 0.99, false)],
+            vec![hit(1, "src/a.ts", 0.99, false)],
+            vec![hit(4, "src/d.ts", 0.99, false)],
+            vec![hit(3, "src/c.ts", 0.99, false)],
+        ];
+
+        let seeds: HashSet<String> = [String::from("src/a.ts")].into_iter().collect();
+        let clusters = cluster_duplicates(&chunks, &neighbours, 0.95, 2, 50, Some(&seeds));
+        assert_eq!(
+            clusters.len(),
+            1,
+            "only the changed file's duplicate surfaces"
+        );
+        let paths: Vec<&str> = clusters[0]
+            .members
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+        assert!(paths.contains(&"src/a.ts"), "the changed seed is present");
+        assert!(
+            paths.contains(&"src/b.ts"),
+            "the untouched code it duplicates is pulled in as a neighbour"
+        );
+        assert!(
+            !paths.contains(&"src/c.ts") && !paths.contains(&"src/d.ts"),
+            "the untouched pre-existing pair is not reported"
+        );
+
+        // Sanity: with no seed set the whole-DB scan still reports BOTH pairs.
+        let clusters = cluster_duplicates(&chunks, &neighbours, 0.95, 2, 50, None);
+        assert_eq!(
+            clusters.len(),
+            2,
+            "whole-DB scan reports both duplicate pairs"
+        );
+    }
+
+    /// End-to-end over the Mock backend: a `seed_paths` set scopes the scan to changed
+    /// files while the neighbour search still spans the whole index.
+    #[tokio::test]
+    async fn find_duplicates_seed_paths_restricts_to_changed() {
+        let b = seeded(vec![
+            // "changed" file — duplicates the existing one below.
+            MockRow::new(1, "src/new.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
+            MockRow::new(2, "src/existing.ts", 1, vec![0.999, 0.01, 0.0, 0.0]),
+            // untouched pre-existing duplicate pair.
+            MockRow::new(3, "src/old_a.ts", 1, vec![0.0, 0.0, 1.0, 0.0]),
+            MockRow::new(4, "src/old_b.ts", 1, vec![0.0, 0.0, 0.999, 0.01]),
+        ]);
+        let seeds: HashSet<String> = [String::from("src/new.ts")].into_iter().collect();
+        let clusters = find_duplicates(&b, 0.95, 2, 10, 50, None, Some(&seeds))
+            .await
+            .unwrap();
+        assert_eq!(clusters.len(), 1, "only the changed file's duplicate");
+        let paths: Vec<&str> = clusters[0]
+            .members
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+        assert!(paths.contains(&"src/new.ts"));
+        assert!(paths.contains(&"src/existing.ts"));
+        assert!(
+            !paths.contains(&"src/old_a.ts"),
+            "the untouched pre-existing pair is excluded"
         );
     }
 
