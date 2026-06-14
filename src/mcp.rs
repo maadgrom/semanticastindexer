@@ -385,6 +385,9 @@ impl SaiServer {
                 top_k,
                 max_clusters,
                 args.path_glob.clone(),
+                // The MCP server is not git-aware; callers scope with `path_glob` instead
+                // of a changed-file seed set (which the CLI `--since` provides).
+                None,
             )
             .await
             .map_err(internal)?;
@@ -573,7 +576,7 @@ impl SaiServer {
         }
         let since = args.since.as_deref().unwrap_or("HEAD~1");
         let changed =
-            crate::git::changed_files(since, args.staged, &args.paths).map_err(internal)?;
+            crate::git::changed_files(Some(since), args.staged, &args.paths).map_err(internal)?;
         if changed.is_empty() {
             return Ok(CallToolResult::structured(
                 json!({ "refreshed": [], "removed": [], "note": "no changed files" }),

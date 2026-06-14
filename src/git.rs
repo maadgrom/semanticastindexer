@@ -53,10 +53,11 @@ fn is_dirty() -> bool {
         .unwrap_or(true)
 }
 
-/// Files changed according to git — shared by the CLI `sync` command and the MCP `sai_sync`
-/// tool. A non-empty `explicit` list overrides git detection; otherwise the working tree is
-/// diffed against `since` (or the staged set when `staged`). Returns repo-relative paths.
-pub fn changed_files(since: &str, staged: bool, explicit: &[String]) -> Result<Vec<String>> {
+/// Files changed according to git — shared by the CLI `sync`/`duplicates --since` commands
+/// and the MCP `sai_sync` tool. A non-empty `explicit` list overrides git detection; otherwise
+/// the working tree is diffed against `since` (or the staged set when `staged`; or plain
+/// `git diff` when `since` is `None`). Returns repo-relative paths.
+pub fn changed_files(since: Option<&str>, staged: bool, explicit: &[String]) -> Result<Vec<String>> {
     if !explicit.is_empty() {
         return Ok(explicit.to_vec());
     }
@@ -64,7 +65,7 @@ pub fn changed_files(since: &str, staged: bool, explicit: &[String]) -> Result<V
     cmd.args(["diff", "--name-only"]);
     if staged {
         cmd.arg("--cached");
-    } else {
+    } else if let Some(since) = since {
         cmd.arg(since);
     }
     let output = cmd
@@ -92,7 +93,7 @@ mod tests {
     #[test]
     fn changed_files_returns_explicit_paths_verbatim() {
         let explicit = vec!["a.rs".to_string(), "b/c.ts".to_string()];
-        let got = changed_files("HEAD~1", false, &explicit).unwrap();
+        let got = changed_files(Some("HEAD~1"), false, &explicit).unwrap();
         assert_eq!(got, explicit);
     }
 }

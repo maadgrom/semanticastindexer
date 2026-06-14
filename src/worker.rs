@@ -25,6 +25,8 @@
 //! This is backend-agnostic: Qdrant's backend has no blocking I/O, but routing every
 //! backend uniformly through the one worker keeps both call sites identical.
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 use tokio::sync::{mpsc, oneshot};
 
@@ -107,6 +109,8 @@ pub enum Request {
         top_k: u64,
         max_clusters: usize,
         path_glob: Option<String>,
+        /// When set, only chunks in these (e.g. PR-changed) paths may seed a cluster.
+        seed_paths: Option<HashSet<String>>,
         reply: oneshot::Sender<Result<Vec<DupCluster>>>,
     },
     /// Neighbours of a snippet or an existing chunk (the shared
@@ -257,6 +261,7 @@ impl BackendHandle {
         top_k: u64,
         max_clusters: usize,
         path_glob: Option<String>,
+        seed_paths: Option<HashSet<String>>,
     ) -> Result<Vec<DupCluster>> {
         self.call(|reply| Request::FindDuplicates {
             min_score,
@@ -264,6 +269,7 @@ impl BackendHandle {
             top_k,
             max_clusters,
             path_glob,
+            seed_paths,
             reply,
         })
         .await
@@ -414,6 +420,7 @@ async fn worker_loop(
                 top_k,
                 max_clusters,
                 path_glob,
+                seed_paths,
                 reply,
             } => {
                 let res = crate::search::find_duplicates(
@@ -423,6 +430,7 @@ async fn worker_loop(
                     top_k,
                     max_clusters,
                     path_glob.as_deref(),
+                    seed_paths.as_ref(),
                 )
                 .await;
                 let _ = reply.send(res);

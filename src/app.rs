@@ -9,6 +9,7 @@
 //! [`crate::indexer`] and the similarity core in [`crate::search`].
 
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::process::Command;
 
@@ -358,7 +359,8 @@ async fn index_sources(handle: &BackendHandle, plan: &Plan, ctx: &git::GitContex
 /// uses: one begin/end_bulk window around per-path delete + re-chunk + re-embed +
 /// upsert, with the HNSW index rebuilt even when a path fails mid-batch.
 async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
-    let changed = crate::git::changed_files(&sync_args.since, sync_args.staged, &sync_args.files)?;
+    let changed =
+        crate::git::changed_files(Some(&sync_args.since), sync_args.staged, &sync_args.files)?;
     if changed.is_empty() {
         println!("sync: no changed files");
         return Ok(());
@@ -454,6 +456,18 @@ async fn run_duplicates(
     let top_k = args.top_k.unwrap_or_else(|| plan.top_k() as u64);
     let max_clusters = args.max_clusters.unwrap_or(DEFAULT_DUP_MAX_CLUSTERS);
 
+    // Changed-file seeding: when --since/--staged/--file is given, only chunks in those
+    // files may seed a cluster (the neighbour search still spans the whole index). This is
+    // the CI-gate mode — "does the changed code duplicate anything already indexed?" — and
+    // it catches new slop that joins a pre-existing cluster, which a count-delta misses.
+    let seed_paths = if args.since.is_some() || args.staged || !args.files.is_empty() {
+        let changed = crate::git::changed_files(args.since.as_deref(), args.staged, &args.files)?;
+        Some(changed.into_iter().collect::<HashSet<String>>())
+    } else {
+        None
+    };
+    let seeded = seed_paths.is_some();
+
     if warn_on_dirty(handle, silent).await? {
         return Ok(());
     }
@@ -464,8 +478,23 @@ async fn run_duplicates(
             top_k,
             max_clusters,
             args.path_glob.clone(),
+            seed_paths,
         )
         .await?;
+
+    // Machine-readable mode for CI gates: emit even when empty so callers branch on `count`.
+    if args.json {
+        let out = serde_json::json!({
+            "min_score": min_score,
+            "min_cluster_size": min_cluster_size,
+            "top_k": top_k,
+            "seeded": seeded,
+            "count": clusters.len(),
+            "clusters": clusters,
+        });
+        println!("{}", serde_json::to_string(&out)?);
+        return Ok(());
+    }
 
     if clusters.is_empty() {
         println!(

@@ -2,9 +2,14 @@ name: dedup-gate
 
 # Dogfooding PR gate: builds THIS PR's semanticastindexer, indexes the BASE branch
 # into a per-PR Qdrant collection (server-side inference), runs the real
-# `sync --since` to bring the index to the PR head, and fails only when the
-# near-duplicate cluster count in src/ GROWS. Pre-existing duplicates never block.
-# This is the only real end-to-end index run in CI (ci.yml's suite is mock-based).
+# `sync --since` to bring the index to the PR head, then fails when the PR's CHANGED
+# code in src/ near-duplicates code already indexed. It uses `duplicates --since`:
+# clusters are SEEDED only from the files this PR changed, while the neighbour search
+# spans the whole index — so a changed chunk that re-implements existing code is caught
+# even when it joins a pre-existing cluster (a plain cluster-count delta misses that).
+# Pre-existing duplicates among UNTOUCHED files never block; intentional matches can be
+# annotated with `sai-noduplicate`. This is the only real end-to-end index run in CI
+# (ci.yml's suite is mock-based).
 #
 # Requires repository secrets QDRANT_URL and QDRANT_API_KEY. Fork PRs don't
 # receive secrets, so the job is skipped for them (see the job-level `if`).
@@ -65,7 +70,7 @@ jobs:
       - name: Build sai from the PR source
         run: cargo build --locked --features ast
 
-      - name: "Gate: fail only when the PR grows the near-duplicate cluster count"
+      - name: "Gate: fail when the PR's changed code duplicates existing code"
         shell: bash
         run: |
           set -euo pipefail
@@ -78,8 +83,7 @@ jobs:
           # the cluster's Inference tab (the repo's sai-cfg.yml targets the local
           # jina/768 path). Copy it OUTSIDE the repo BEFORE the base checkout below
           # — that commit predates this file, so a tracked --config path would
-          # vanish; $RUNNER_TEMP survives git checkout. One config for both base
-          # and head keeps the duplicate-count comparison self-consistent.
+          # vanish; $RUNNER_TEMP survives git checkout.
           CI_CFG="$RUNNER_TEMP/dedup-gate.sai-cfg.yml"
           cp .github/dedup-gate.sai-cfg.yml "$CI_CFG"
 
@@ -87,67 +91,40 @@ jobs:
           # clap-global). duplicates/flush parse-but-ignore --root/--ext.
           SAI=(target/debug/semanticastindexer --config "$CI_CFG" --backend qdrant --collection "$SAI_COLLECTION" --root src --ext rs)
 
-          # `sync` shells out to `git diff --name-only <since>`. With rename
-          # detection a rename lists only the NEW path, leaving the old path's
-          # points stale. Disable: renames become delete+add, both refreshed.
+          # `sync`/`duplicates --since` shell out to `git diff --name-only <since>`. With
+          # rename detection a rename lists only the NEW path, leaving the old path's
+          # points stale. Disable: renames become delete+add, both refreshed/seeded.
           git config diff.renames false
 
-          # First line of `duplicates` output -> cluster count.
-          #   "no near-duplicate clusters (min_score ...)"   -> 0
-          #   "N near-duplicate cluster(s) (min_score ...):" -> N
-          # Anything else fails loudly rather than silently passing.
-          count_clusters() {
-            local first n
-            first=${1%%$'\n'*}
-            if [[ "$first" == "no near-duplicate clusters"* ]]; then
-              printf '0'; return 0
-            fi
-            n=$(grep -oE '^[0-9]+' <<<"$first" || true)
-            if [[ -z "$n" ]]; then
-              echo "::error title=dedup-gate::unrecognized duplicates output: ${first}" >&2
-              return 1
-            fi
-            printf '%s' "$n"
-          }
-
-          # --max-clusters lifts the default cap of 50 (would saturate the count).
-          # --path-glob scopes BOTH measurements to src/**: sync re-indexes any
-          # changed file matching --ext regardless of --root (e.g. tests/*.rs),
-          # while the full base index walks only src/ — without the glob the two
-          # measurements would cover different file sets.
-          DUP_ARGS=(duplicates --path-glob 'src/**' --max-clusters 100000 --silent)
-
-          # 1) Index the BASE branch with the PR's own binary. --recreate drops
-          #    any leftover collection from a cancelled prior run, guaranteeing
-          #    a clean slate. target/ is gitignored, so it survives the checkouts.
+          # 1) Index the BASE tree with the PR's own binary — the whole-DB haystack the
+          #    changed code is searched against. --recreate drops any leftover collection
+          #    from a cancelled prior run. target/ is gitignored, so it survives checkouts.
           git -c advice.detachedHead=false checkout --quiet "$BASE_SHA"
           "${SAI[@]}" --recreate --silent
 
-          # 2) Return the tree to the merge commit BEFORE the baseline count, so
-          #    both `duplicates` runs resolve thresholds from the PR's sai-cfg.yml
-          #    (a PR tuning similarity.* is measured consistently on both sides).
+          # 2) Back to the PR head and run the REAL incremental sync under test
+          #    (base -> PR head). The index now reflects the merged tree.
           git checkout --quiet "$MERGE_SHA"
-
-          base_out=$("${SAI[@]}" "${DUP_ARGS[@]}")
-          base_n=$(count_clusters "$base_out")
-          echo "::group::baseline duplicates on ${BASE_SHA} (${base_n} cluster(s))"
-          printf '%s\n' "$base_out"
-          echo "::endgroup::"
-
-          # 3) THE ACTUAL SYNC under test: incremental base -> PR head.
           "${SAI[@]}" sync --since "$BASE_SHA" --silent
 
-          # 4) Head count — printed in full so reviewers see the clusters.
-          head_out=$("${SAI[@]}" "${DUP_ARGS[@]}")
-          head_n=$(count_clusters "$head_out")
-          echo "duplicates after sync to ${MERGE_SHA} (${head_n} cluster(s)):"
-          printf '%s\n' "$head_out"
+          # 3) THE GATE: seed clustering ONLY from files this PR changed (BASE..HEAD) while
+          #    searching the whole index. Any cluster => the changed code near-duplicates
+          #    code already indexed (existing OR newly added) above the configured
+          #    min_score. Unlike a cluster-count delta, this also catches slop that joins a
+          #    pre-existing cluster. --path-glob scopes the haystack to src/** (sync may
+          #    touch tests/*.rs); --max-clusters lifts the default cap of 50.
+          OUT=$("${SAI[@]}" duplicates --since "$BASE_SHA" --path-glob 'src/**' --max-clusters 100000 --json --silent)
+          COUNT=$(jq -r '.count' <<<"$OUT")
 
-          if (( head_n > base_n )); then
-            echo "::error title=near-duplicate regression::this PR grows near-duplicate clusters in src/ from ${base_n} to ${head_n} (thresholds: sai-cfg.yml similarity.* / built-in min_score 0.93). Cluster details are in the step log above."
+          echo "::group::near-duplicate clusters seeded by changed files (${COUNT})"
+          jq '.clusters' <<<"$OUT"
+          echo "::endgroup::"
+
+          if [[ "$COUNT" != "0" ]]; then
+            echo "::error title=near-duplicate code::this PR's changed code in src/ near-duplicates code already indexed (${COUNT} cluster(s); min_score from .github/dedup-gate.sai-cfg.yml). See the cluster members above. If a match is intentional, annotate the span with sai-noduplicate."
             exit 1
           fi
-          echo "OK: near-duplicate clusters ${base_n} -> ${head_n} (no degradation)"
+          echo "OK: the PR's changed code introduces no near-duplicates of indexed code"
 
       # Delete the per-PR collection so gate runs leave nothing behind on the
       # cluster. `flush` has no confirmation prompt, so it works headless. If a
