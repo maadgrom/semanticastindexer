@@ -9,13 +9,17 @@ This directory contains everything needed to turn `semanticastindexer` into a fi
 ./mcp-setup/setup.sh
 ```
 
-See `SKILL.md` for the full skill description and agent usage patterns.
+See [`.agents/skills/sai/SKILL.md`](../.agents/skills/sai/SKILL.md) for the full skill
+description and agent usage patterns (the portable Agent Skill definition; installers copy it
+into `~/.claude/skills/sai/`).
 
 ## Contents
 
 - `setup.sh` — Main setup script (supports interactive + `--non-interactive` for agents)
-- `SKILL.md` — Skill definition for Grok / Claude-style skill systems
 - `templates/` — Example configuration files
+
+The skill definition itself lives at the repo-root `.agents/skills/sai/SKILL.md` (the
+agentskills.io standard location, portable across Claude Code and other agent runtimes).
 
 ## Philosophy
 

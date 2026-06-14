@@ -19,11 +19,10 @@ restart, jump to [../operations/troubleshooting.md](../operations/troubleshootin
    When built from source the binary lands at `./target/release/semanticastindexer`.
 2. **Index the project once** before starting the server.
 
-The server defaults to `--backend duckdb --embedder ollama` and is **read-only by
-default**. The snippets below pass `--embedder ort` for the fully offline ONNX embedder;
-drop that flag (or set `--embedder ollama`) if you run an Ollama embedding server. The
-server's `cwd` must be the indexed project root so it finds that project's DuckDB index
-and `sai-cfg.yml`.
+The server is **read-only by default**. The backend, embedder, and collection are read
+from `sai-cfg.yml` — edit that file to switch embedders or collections rather than
+passing flags here. The server's `cwd` must be the indexed project root so it finds that
+project's DuckDB index and `sai-cfg.yml`.
 
 ## Using the installer to wire a client
 
@@ -45,15 +44,15 @@ Supported ids: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `continue`
 - On Windows: install the binary first, then paste the printed block into your client's
   config by hand.
 
-The server entry is named `semantic-code-search` in the configs the installer manages.
+The server entry is named `sai` in the configs the installer manages.
 
 ---
 
 ## Claude Code
 
 **Config:** project `.mcp.json` (in the repository you want to search), plus the
-`semantic-code-search-mcp` skill installed into
-`~/.claude/skills/semantic-code-search-mcp/`.
+`sai` skill installed into
+`~/.claude/skills/sai/`.
 
 The `--platform claude-code` install gives you the full skill experience — it wires the
 project `.mcp.json` and installs the skill:
@@ -67,9 +66,9 @@ Server snippet for `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "code-search": {
+    "sai": {
       "command": "/path/to/semanticastindexer/target/release/semanticastindexer",
-      "args": ["mcp", "--backend", "duckdb", "--embedder", "ort", "--collection", "source_code"]
+      "args": ["mcp", "--config", "sai-cfg.yml"]
     }
   }
 }
@@ -106,9 +105,9 @@ Server snippet:
 ```json
 {
   "mcpServers": {
-    "code-search": {
+    "sai": {
       "command": "/path/to/semanticastindexer/target/release/semanticastindexer",
-      "args": ["mcp", "--backend", "duckdb", "--embedder", "ort", "--collection", "source_code"],
+      "args": ["mcp", "--config", "sai-cfg.yml"],
       "cwd": "/absolute/path/to/your/indexed/project"
     }
   }
@@ -143,9 +142,9 @@ Server snippet:
 ```json
 {
   "mcpServers": {
-    "code-search": {
+    "sai": {
       "command": "/path/to/semanticastindexer/target/release/semanticastindexer",
-      "args": ["mcp", "--backend", "duckdb", "--embedder", "ort", "--collection", "source_code"],
+      "args": ["mcp", "--config", "sai-cfg.yml"],
       "cwd": "/absolute/path/to/your/indexed/project"
     }
   }
@@ -176,9 +175,9 @@ Server snippet:
 ```json
 {
   "mcpServers": {
-    "code-search": {
+    "sai": {
       "command": "/path/to/semanticastindexer/target/release/semanticastindexer",
-      "args": ["mcp", "--backend", "duckdb", "--embedder", "ort", "--collection", "source_code"],
+      "args": ["mcp", "--config", "sai-cfg.yml"],
       "cwd": "/absolute/path/to/your/indexed/project"
     }
   }
@@ -209,16 +208,12 @@ Server snippet (YAML):
 
 ```yaml
 mcpServers:
-  - name: code-search
+  - name: sai
     command: /path/to/semanticastindexer/target/release/semanticastindexer
     args:
       - mcp
-      - --backend
-      - duckdb
-      - --embedder
-      - ort
-      - --collection
-      - source_code
+      - --config
+      - sai-cfg.yml
     cwd: /absolute/path/to/your/indexed/project
 ```
 
@@ -234,7 +229,7 @@ mcpServers:
 
 ## Codex CLI
 
-**Config:** `~/.codex/config.toml`, under an `[mcp_servers.semantic-code-search]` table
+**Config:** `~/.codex/config.toml`, under an `[mcp_servers.sai]` table
 (TOML).
 
 Install command:
@@ -246,9 +241,9 @@ curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash -s --
 Server snippet (TOML):
 
 ```toml
-[mcp_servers.semantic-code-search]
+[mcp_servers.sai]
 command = "/path/to/semanticastindexer/target/release/semanticastindexer"
-args = ["mcp", "--backend", "duckdb", "--embedder", "ort", "--collection", "source_code"]
+args = ["mcp", "--config", "sai-cfg.yml"]
 cwd = "/absolute/path/to/your/indexed/project"
 ```
 
@@ -277,9 +272,9 @@ Then paste the printed block into your client's MCP config. The shape is the sam
 ```json
 {
   "mcpServers": {
-    "code-search": {
+    "sai": {
       "command": "/path/to/semanticastindexer/target/release/semanticastindexer",
-      "args": ["mcp", "--backend", "duckdb", "--embedder", "ort", "--collection", "source_code"],
+      "args": ["mcp", "--config", "sai-cfg.yml"],
       "cwd": "/absolute/path/to/your/indexed/project"
     }
   }
@@ -289,7 +284,7 @@ Then paste the printed block into your client's MCP config. The shape is the sam
 The rules are the same for any client:
 
 - `command` points at the binary (absolute path is safest).
-- `args` starts with `mcp` and selects backend, embedder, and collection.
+- `args` starts with `mcp`; backend, embedder, and collection are read from `sai-cfg.yml`.
 - `cwd` is the indexed project root.
 
 Restart the client, confirm the `sai_` tools load, and run a `sai_search_code` query as a
@@ -303,7 +298,7 @@ without it, the index is opened read-only and `sai_refresh` returns
 `server is read-only; restart with --allow-write`. To enable it, add the flag to `args`:
 
 ```json
-"args": ["mcp", "--backend", "duckdb", "--embedder", "ort", "--collection", "source_code", "--allow-write"]
+"args": ["mcp", "--config", "sai-cfg.yml", "--allow-write"]
 ```
 
 See [../reference/mcp-server.md](../reference/mcp-server.md) for what `sai_refresh` does

@@ -5,7 +5,7 @@ exposing SAI's semantic code search to agentic coding tools (Claude Code, Cursor
 Codex, and others). It is built on the official Rust MCP SDK (`rmcp`, Cargo feature `mcp`).
 
 This page is the authoritative reference for the server and every tool it exposes. The
-`mcp-setup/SKILL.md` agent skill defers to this page for the canonical tool contracts.
+`.agents/skills/sai/SKILL.md` agent skill defers to this page for the canonical tool contracts.
 
 For per-client wiring (Claude Code, Cursor, Windsurf, Codex, …) see
 [MCP clients](../integrations/mcp-clients.md). For the exact JSON shapes each tool returns,
@@ -13,10 +13,9 @@ see [Output schemas](../reference/output-schemas.md).
 
 ## Server behavior
 
-- **Read-only by default.** The server exposes no index/upsert/flush tools. Only
-  `sai_refresh` writes, and only when explicitly enabled (see below).
-- **Defaults to `--backend duckdb --embedder ollama`.** Pass `--embedder ort` to use the
-  fully offline ONNX embedder. See [Backends and embedders](../reference/backends-and-embedders.md).
+- **Read-only by default.** Search exposes no index/upsert/flush tools. Only `sai_refresh`
+  and `sai_sync` write, and only when explicitly enabled (see below).
+- **Backend, embedder, and collection come from `sai-cfg.yml`.** See [Backends and embedders](../reference/backends-and-embedders.md).
 - **Backend built once at startup.** The backend and embedder are constructed a single time
   and reused across every tool call.
 - **Tools are `sai_`-prefixed** so they stand apart from other MCP servers' tools in the
@@ -45,8 +44,8 @@ Two resolution rules apply throughout the tools:
 
 ## Tools
 
-The server exposes six tools. Four are read-only; `sai_refresh` writes and `sai_prepare_mcp_setup`
-can execute a setup script — both are gated behind explicit flags.
+The server exposes seven tools. Four are read-only; `sai_refresh` and `sai_sync` write and
+`sai_prepare_mcp_setup` can execute a setup script — all gated behind explicit flags.
 
 | Tool | Purpose | Gating |
 |------|---------|--------|
@@ -56,6 +55,7 @@ can execute a setup script — both are gated behind explicit flags.
 | `sai_index_status` | Index metadata (backend, model, dim, count, …) | none (read-only) |
 | `sai_prepare_mcp_setup` | Return setup commands; optionally run the setup script | execution requires `--allow-setup` |
 | `sai_refresh` | Re-index specific files in place (delete + re-embed) | requires `--allow-write` |
+| `sai_sync` | Reconcile the index with the working tree (git-changed set), like CLI `sync` | requires `--allow-write` |
 
 ### `sai_search_code`
 
@@ -135,7 +135,7 @@ script runs.
 | `backend` | string | optional | `"duckdb"` (or `"qdrant"`) |
 | `embedder` | string | optional | `"ollama"` (or `"ort"` for fully offline) |
 | `use_ast_chunker` | boolean | optional | `false` (requires a binary built with `--features ast`) |
-| `install_globally` | boolean | optional | `false` (installs into `~/.local/bin` as a `code-search-mcp` wrapper) |
+| `install_globally` | boolean | optional | `false` (installs into `~/.local/bin` as a `sai` wrapper) |
 | `execute` | boolean | optional | `false` (only runs the script when also started with `--allow-setup`) |
 
 The response includes the recommended setup command, an `mcp_server_config_example`, and a
@@ -164,6 +164,23 @@ An empty `paths` array returns `refresh requires at least one path`; more than 2
 returns `too many paths (max 200)`. On success the tool returns the refreshed paths (with
 chunk counts) and the removed paths.
 
+### `sai_sync`
+
+**Write tool.** Reconcile the index with the working tree, the MCP analog of the CLI `sync`
+command: it resolves the git-changed file set and runs them through the same per-file reconcile
+as `sai_refresh` (survivors re-chunked/re-embedded, deleted or now-excluded paths removed).
+
+| Arg | Type | Required | Default |
+|-----|------|----------|---------|
+| `since` | string | optional | `HEAD~1` (changed set = working tree vs `<since>`) |
+| `staged` | boolean | optional | `false` (use `git diff --cached` instead of `--since`) |
+| `paths` | array of string | optional | — (explicit set; overrides git detection) |
+
+Gating: like `sai_refresh`, requires `--allow-write` (else `server is read-only; restart with
+--allow-write to enable sync`). When git finds nothing the tool returns an empty result with a
+`note`; more than 200 changed files returns an error suggesting a narrower `since` or explicit
+`paths`. On success it returns the same `{refreshed, removed}` shape as `sai_refresh`.
+
 ## Wiring (`.mcp.json`)
 
 Point `command` at the built binary (an absolute path is safest) and set `cwd` to the indexed
@@ -172,9 +189,9 @@ project root so the server finds that project's index and `sai-cfg.yml`:
 ```json
 {
   "mcpServers": {
-    "code-search": {
+    "sai": {
       "command": "/path/to/semanticastindexer/target/release/semanticastindexer",
-      "args": ["mcp", "--backend", "duckdb", "--embedder", "ollama", "--collection", "source_code"],
+      "args": ["mcp", "--config", "sai-cfg.yml"],
       "cwd": "/path/to/your/project"
     }
   }
@@ -188,9 +205,9 @@ script, add `--allow-setup`:
 ```json
 {
   "mcpServers": {
-    "code-search": {
+    "sai": {
       "command": "/path/to/semanticastindexer/target/release/semanticastindexer",
-      "args": ["mcp", "--backend", "duckdb", "--embedder", "ollama", "--allow-write"],
+      "args": ["mcp", "--config", "sai-cfg.yml", "--allow-write"],
       "cwd": "/path/to/your/project"
     }
   }

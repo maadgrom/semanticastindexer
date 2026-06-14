@@ -1,12 +1,10 @@
 {
   "mcpServers": {
-    "semantic-code-search": {
+    "sai": {
       "command": "/absolute/path/to/semanticastindexer",
       "args": [
         "mcp",
-        "--backend", "duckdb",
-        "--embedder", "ollama",
-        "--collection", "source_code"
+        "--config", "sai-cfg.yml"
       ],
       "cwd": "/Users/you/your-project"
     }

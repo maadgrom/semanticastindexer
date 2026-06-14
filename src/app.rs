@@ -358,7 +358,7 @@ async fn index_sources(handle: &BackendHandle, plan: &Plan, ctx: &git::GitContex
 /// uses: one begin/end_bulk window around per-path delete + re-chunk + re-embed +
 /// upsert, with the HNSW index rebuilt even when a path fails mid-batch.
 async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
-    let changed = changed_files(sync_args)?;
+    let changed = crate::git::changed_files(&sync_args.since, sync_args.staged, &sync_args.files)?;
     if changed.is_empty() {
         println!("sync: no changed files");
         return Ok(());
@@ -385,51 +385,15 @@ async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the changed-file list from explicit args or `git diff`.
-fn changed_files(sync_args: &SyncArgs) -> Result<Vec<String>> {
-    if !sync_args.files.is_empty() {
-        return Ok(sync_args.files.clone());
-    }
-    let mut cmd = Command::new("git");
-    cmd.args(["diff", "--name-only"]);
-    if sync_args.staged {
-        cmd.arg("--cached");
-    } else {
-        cmd.arg(&sync_args.since);
-    }
-    let output = cmd
-        .output()
-        .context("failed to run `git diff` (is git on PATH?)")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "git diff failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect())
-}
-
-/// Run the read-only MCP server over stdio. Defaults backend=duckdb + embedder=ollama
-/// (the offline, no-quota path) unless the user overrode `--backend`/`--embedder` (or set
-/// them in the config). Builds the backend + embedder ONCE, opens DuckDB read-only, then
-/// serves rmcp until EOF.
+/// Run the read-only MCP server over stdio. Backend/embedder resolve as `--flag > config >
+/// duckdb/ort` (the fully-offline default), so `--config sai-cfg.yml` alone drives the server.
+/// Builds the backend + embedder ONCE, opens DuckDB read-only, then serves rmcp until EOF.
 #[cfg(feature = "mcp")]
 async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()> {
-    // Apply the MCP-specific defaults: when the user did not pass `--backend`/`--embedder`,
-    // prefer duckdb + ollama (the indexer's global defaults are qdrant + ort). Explicit
-    // CLI flags still win; config values are honored via the normal merge in `build_plan`.
-    let mut mcp_args = args.clone();
-    if mcp_args.backend.is_none() {
-        mcp_args.backend = Some("duckdb".to_string());
-    }
-    if mcp_args.embedder.is_none() {
-        mcp_args.embedder = Some("ollama".to_string());
-    }
-    let plan = build_plan(&mcp_args)?;
+    // The MCP offline defaults (duckdb + ort) sit BELOW the config, not above it: they apply
+    // only when neither the flag nor `sai-cfg.yml` sets backend/embedder. See
+    // `config::build_mcp_plan`.
+    let plan = crate::config::build_mcp_plan(args)?;
     indexer::ensure_chunker_available(&plan)?;
     // --allow-write opens the index WRITABLE (normal `connect`, incl. HNSW persistence) so
     // the `refresh` tool can delete + re-embed. Default is read-only: `refresh` then errors.

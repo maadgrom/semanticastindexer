@@ -1,9 +1,9 @@
 ---
-name: semantic-code-search-mcp
+name: sai
 description: Installs and configures semanticastindexer as a near-duplicate detector and semantic code search MCP server for any agentic coding system (Claude, Cursor, Windsurf, Continue, etc.). Provides local, private, high-precision duplication detection with optional AST awareness.
 version: "1.0.0"
 author: semanticastindexer project
-tags: [mcp, near-duplicate, deslop, code-search, embeddings, agentic]
+tags: [mcp, near-duplicate, deslop, sai, embeddings, agentic]
 ---
 
 # Semantic Code Search MCP Setup Skill
@@ -13,7 +13,7 @@ This skill turns the `semanticastindexer` binary into a first-class MCP server t
 ## What You Get
 
 - High-precision near-duplicate detection across functions (`sai_find_duplicates`)
-- Local-first semantic search (DuckDB + Ollama or fully offline ONNX via ort)
+- Local-first semantic search (DuckDB + fully offline ONNX via ort, or Ollama)
 - Optional symbol-aware chunking with tree-sitter (AST)
 - Works great with Claude Code, Cursor, Windsurf/Cascade, Continue.dev, and any stdio MCP client
 - Private — nothing leaves your machine unless you choose Qdrant Cloud
@@ -22,7 +22,7 @@ This skill turns the `semanticastindexer` binary into a first-class MCP server t
 
 ```bash
 cd /path/to/semanticastindexer
-./mcp-setup/setup.sh --non-interactive --backend duckdb --embedder ollama
+./mcp-setup/setup.sh --non-interactive --backend duckdb --embedder ort
 ```
 
 Then index the current project:
@@ -43,14 +43,14 @@ Options the script supports:
 - `--backend duckdb|qdrant`
 - `--embedder ort|ollama` (ort = fully offline, bigger build)
 - `--non-interactive` (perfect for agent-driven setup)
-- `--install-global` (puts binary in `~/.local/bin` + creates `code-search-mcp` wrapper)
+- `--install-global` (puts binary in `~/.local/bin` + creates `sai` wrapper)
 - `--target-dir`, `--collection`, `--features`
 
 ## Generated Artifacts
 
 The script creates (in the target project):
 
-- `sai-cfg.yml` — tuned for agentic code search (smart excludes, good similarity thresholds)
+- `sai-cfg.yml` — tuned for agentic code search (smart excludes, good similarity thresholds). The MCP server reads it for backend/embedder/collection, so its `args` are just `["mcp", "--config", "sai-cfg.yml"]`.
 - `.mcp.json.example` — ready for Claude Code / generic MCP clients
 - `claude-desktop-config.example.json`
 
@@ -78,7 +78,8 @@ binary.
    - `sai_find_duplicates`
    - `sai_index_status`
    - `sai_prepare_mcp_setup` (can be called later to help set up semantic search in new projects)
-   - `sai_refresh` (when started with `--allow-write`)
+   - `sai_refresh` (re-index specific files; requires `--allow-write`)
+   - `sai_sync` (reconcile the index with the working tree, like the CLI `sync`; requires `--allow-write`)
 
 When the semanticastindexer MCP server is running with `--allow-setup`, the `sai_prepare_mcp_setup` tool can actually execute the setup script on demand.
 
@@ -86,19 +87,19 @@ When the semanticastindexer MCP server is running with `--allow-setup`, the `sai
 
 - Default recommendation is **local DuckDB** (nothing leaves the machine).
 - Qdrant Cloud path requires `QDRANT_URL` + `QDRANT_API_KEY` in the environment.
-- The MCP server is **read-only by default**. Write access (`refresh` tool) requires explicit `--allow-write` flag when starting the server.
+- Search is **read-only by default**. The write tools (`sai_refresh`, `sai_sync`) require the explicit `--allow-write` flag when starting the server.
 
-## Files in This Skill
+## Files
 
-- `setup.sh` — The main robust, agent-friendly setup script
-- `templates/` — Example configuration templates
-- `SKILL.md` — This file (self-documenting skill)
+- `.agents/skills/sai/SKILL.md` — this file (the portable Agent Skill definition; Claude Code installs a copy into `~/.claude/skills/sai/`)
+- `mcp-setup/setup.sh` — the robust, agent-friendly setup script
+- `mcp-setup/templates/` — example configuration templates
 
 ## Related Project Documentation
 
-- [Installation & per-platform setup](../book/src/installation.md)
-- [MCP server: tools, thresholds, wiring](../book/src/reference/mcp-server.md)
-- [Chunking strategies](../book/src/reference/chunking.md) and [similarity tuning](../book/src/reference/configuration.md)
+- [Installation & per-platform setup](../../../book/src/installation.md)
+- [MCP server: tools, thresholds, wiring](../../../book/src/reference/mcp-server.md)
+- [Chunking strategies](../../../book/src/reference/chunking.md) and [similarity tuning](../../../book/src/reference/configuration.md)
 - Hosted install page: <https://maadgrom.github.io/semanticastindexer/>
 
 This skill is maintained as part of the semanticastindexer repository.

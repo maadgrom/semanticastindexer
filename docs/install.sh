@@ -16,11 +16,11 @@ set -euo pipefail
 OWNER="maadgrom"
 REPO="semanticastindexer"
 BINARY_NAME="semanticastindexer"
-SERVER_NAME="semantic-code-search"
+SERVER_NAME="sai"
 RELEASE_INSTALLER="https://github.com/${OWNER}/${REPO}/releases/latest/download/${BINARY_NAME}-installer.sh"
 RAW_BASE="https://raw.githubusercontent.com/${OWNER}/${REPO}/main"
 PAGES_URL="https://${OWNER}.github.io/${REPO}/"
-ALL_AGENTS="claude-code claude-desktop cursor windsurf continue codex hermes ollama"
+ALL_AGENTS="claude-code claude-desktop cursor windsurf continue codex hermes"
 
 # Colors (disabled when not a tty)
 if [ -t 1 ]; then
@@ -48,11 +48,9 @@ Agent selection (skip the prompt):
   --non-interactive    Don't prompt; just install the binary + print a generic MCP block
 
 Supported platform ids:
-  claude-code  claude-desktop  cursor  windsurf  continue  codex  hermes  ollama  generic
+  claude-code  claude-desktop  cursor  windsurf  continue  codex  hermes  generic
 
 Other options:
-  --collection <name>  Collection name (default: source_code)
-  --embedder <id>      ort | ollama (default: ort; the 'ollama' client forces ollama)
   --write              Merge config into the client's file (JSON clients only; best-effort, backs up)
   --skip-binary        Don't install the binary (just emit config)
   --help, -h           Show this help
@@ -69,8 +67,6 @@ PLATFORM=""
 PLATFORM_SET=false
 ALL=false
 NON_INTERACTIVE=false
-COLLECTION="source_code"
-EMBEDDER="ort"
 WRITE=false
 SKIP_BINARY=false
 while [ $# -gt 0 ]; do
@@ -78,8 +74,6 @@ while [ $# -gt 0 ]; do
         --platform)   PLATFORM="${2:-}"; PLATFORM_SET=true; shift 2 ;;
         --all)        ALL=true; shift ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
-        --collection) COLLECTION="${2:-}"; shift 2 ;;
-        --embedder)   EMBEDDER="${2:-}"; shift 2 ;;
         --write)      WRITE=true; shift ;;
         --skip-binary) SKIP_BINARY=true; shift ;;
         --help|-h)    print_help; exit 0 ;;
@@ -125,8 +119,8 @@ resolve_binary() {
     printf '%s' "$HOME/.cargo/bin/$BINARY_NAME"
 }
 
-# --- Config snippet builders ($1=binary path, $2=embedder) ---
-mcp_args_json() { printf '["mcp", "--backend", "duckdb", "--embedder", "%s", "--collection", "%s"]' "$1" "$COLLECTION"; }
+# --- Config snippet builders ($1=binary path) ---
+mcp_args_json() { printf '["mcp", "--config", "sai-cfg.yml"]'; }
 
 json_snippet() {
     cat <<EOF
@@ -134,7 +128,7 @@ json_snippet() {
   "mcpServers": {
     "${SERVER_NAME}": {
       "command": "$1",
-      "args": $(mcp_args_json "$2"),
+      "args": $(mcp_args_json),
       "cwd": "${PROJECT_DIR}"
     }
   }
@@ -146,7 +140,7 @@ toml_snippet() {
     cat <<EOF
 [mcp_servers.${SERVER_NAME}]
 command = "$1"
-args = ["mcp", "--backend", "duckdb", "--embedder", "$2", "--collection", "${COLLECTION}"]
+args = ["mcp", "--config", "sai-cfg.yml"]
 cwd = "${PROJECT_DIR}"
 EOF
 }
@@ -156,23 +150,23 @@ yaml_snippet() {
 mcpServers:
   - name: ${SERVER_NAME}
     command: "$1"
-    args: ["mcp", "--backend", "duckdb", "--embedder", "$2", "--collection", "${COLLECTION}"]
+    args: ["mcp", "--config", "sai-cfg.yml"]
     cwd: "${PROJECT_DIR}"
 EOF
 }
 
 # Best-effort merge of the JSON snippet into an existing JSON config (python3); else print.
-# $1 = target path, $2 = binary path, $3 = embedder
+# $1 = target path, $2 = binary path
 write_json_config() {
-    local target="$1" bin="$2" emb="$3"
+    local target="$1" bin="$2"
     if ! command -v python3 >/dev/null 2>&1; then
         warn "python3 not found — printing snippet instead of merging."
-        print_block "$target" "$(json_snippet "$bin" "$emb")"
+        print_block "$target" "$(json_snippet "$bin")"
         return
     fi
     mkdir -p "$(dirname "$target")"
     [ -f "$target" ] && cp "$target" "${target}.bak" && log "Backed up existing config to ${target}.bak"
-    SERVER_NAME="$SERVER_NAME" BIN="$bin" EMBEDDER="$emb" COLLECTION="$COLLECTION" CWD="$PROJECT_DIR" \
+    SERVER_NAME="$SERVER_NAME" BIN="$bin" CWD="$PROJECT_DIR" \
     python3 - "$target" <<'PY'
 import json, os, sys
 target = sys.argv[1]
@@ -184,7 +178,7 @@ except (FileNotFoundError, json.JSONDecodeError):
 cfg.setdefault("mcpServers", {})
 cfg["mcpServers"][os.environ["SERVER_NAME"]] = {
     "command": os.environ["BIN"],
-    "args": ["mcp", "--backend", "duckdb", "--embedder", os.environ["EMBEDDER"], "--collection", os.environ["COLLECTION"]],
+    "args": ["mcp", "--config", "sai-cfg.yml"],
     "cwd": os.environ["CWD"],
 }
 with open(target, "w") as f:
@@ -204,9 +198,19 @@ print_block() { # $1 = where it goes, $2 = content
 }
 
 install_claude_skill() {
-    local skill_dir="$HOME/.claude/skills/semantic-code-search-mcp"
+    # Upgrade cleanup: remove old-named artifacts so upgraders are not stranded.
+    if [ -e "$HOME/.local/bin/code-search-mcp" ]; then
+        rm -f "$HOME/.local/bin/code-search-mcp"
+        success "Removed old wrapper $HOME/.local/bin/code-search-mcp"
+    fi
+    if [ -d "$HOME/.claude/skills/semantic-code-search-mcp" ]; then
+        rm -rf "$HOME/.claude/skills/semantic-code-search-mcp"
+        success "Removed old skill dir $HOME/.claude/skills/semantic-code-search-mcp"
+    fi
+
+    local skill_dir="$HOME/.claude/skills/sai"
     mkdir -p "$skill_dir"
-    if curl -fsSL "${RAW_BASE}/mcp-setup/SKILL.md" -o "${skill_dir}/SKILL.md"; then
+    if curl -fsSL "${RAW_BASE}/.agents/skills/sai/SKILL.md" -o "${skill_dir}/SKILL.md"; then
         success "Installed skill → ${skill_dir}/SKILL.md"
     else
         warn "Could not download SKILL.md (offline?). Skipping skill file."
@@ -224,36 +228,41 @@ desktop_config_path() {
 # Wire up one client. $1 = platform id, $2 = binary path.
 configure_platform() {
     local id="$1" bin="$2"
-    local emb="$EMBEDDER"; [ "$id" = "ollama" ] && emb="ollama"
     printf '\n%b• %s%b\n' "$BOLD" "$id" "$NC"
     case "$id" in
         claude-code)
             install_claude_skill
-            if [ "$WRITE" = true ]; then write_json_config "${PROJECT_DIR}/.mcp.json" "$bin" "$emb"
-            else print_block "${PROJECT_DIR}/.mcp.json (in the project you want to search)" "$(json_snippet "$bin" "$emb")"; fi ;;
+            if [ "$WRITE" = true ]; then
+                # Prefer the official Claude Code CLI (writes a project-scoped .mcp.json);
+                # fall back to a hand-merged JSON config if `claude` is absent or errors.
+                if command -v claude >/dev/null 2>&1 \
+                    && ( cd "$PROJECT_DIR" && claude mcp add sai --scope project --transport stdio -- "$bin" mcp --config sai-cfg.yml ) >/dev/null 2>&1; then
+                    success "Registered 'sai' via 'claude mcp add' → ${PROJECT_DIR}/.mcp.json"
+                else
+                    write_json_config "${PROJECT_DIR}/.mcp.json" "$bin"
+                fi
+            else
+                print_block "${PROJECT_DIR}/.mcp.json (in the project you want to search)" "$(json_snippet "$bin")"
+                command -v claude >/dev/null 2>&1 && log "Tip: re-run with --write to register automatically via 'claude mcp add'."
+            fi ;;
         claude-desktop)
             local p; p="$(desktop_config_path)"
-            if [ "$WRITE" = true ]; then write_json_config "$p" "$bin" "$emb"; else print_block "$p" "$(json_snippet "$bin" "$emb")"; fi ;;
+            if [ "$WRITE" = true ]; then write_json_config "$p" "$bin"; else print_block "$p" "$(json_snippet "$bin")"; fi ;;
         cursor)
-            if [ "$WRITE" = true ]; then write_json_config "$HOME/.cursor/mcp.json" "$bin" "$emb"; else print_block "$HOME/.cursor/mcp.json" "$(json_snippet "$bin" "$emb")"; fi ;;
+            if [ "$WRITE" = true ]; then write_json_config "$HOME/.cursor/mcp.json" "$bin"; else print_block "$HOME/.cursor/mcp.json" "$(json_snippet "$bin")"; fi ;;
         windsurf)
-            if [ "$WRITE" = true ]; then write_json_config "$HOME/.codeium/windsurf/mcp_config.json" "$bin" "$emb"; else print_block "$HOME/.codeium/windsurf/mcp_config.json" "$(json_snippet "$bin" "$emb")"; fi ;;
+            if [ "$WRITE" = true ]; then write_json_config "$HOME/.codeium/windsurf/mcp_config.json" "$bin"; else print_block "$HOME/.codeium/windsurf/mcp_config.json" "$(json_snippet "$bin")"; fi ;;
         continue)
-            print_block "$HOME/.continue/config.yaml" "$(yaml_snippet "$bin" "$emb")"
+            print_block "$HOME/.continue/config.yaml" "$(yaml_snippet "$bin")"
             [ "$WRITE" = true ] && warn "--write supports JSON clients only; paste the YAML above into Continue's config." ;;
         codex)
-            print_block "$HOME/.codex/config.toml" "$(toml_snippet "$bin" "$emb")"
+            print_block "$HOME/.codex/config.toml" "$(toml_snippet "$bin")"
             [ "$WRITE" = true ] && warn "--write supports JSON clients only; paste the TOML above into ~/.codex/config.toml." ;;
         hermes)
             warn "Hermes config location is client-specific — paste this generic MCP block into its MCP config."
-            print_block "your Hermes MCP config" "$(json_snippet "$bin" "$emb")" ;;
-        ollama)
-            warn "Ollama is the embedding backend, not an MCP client. Make sure it is running:"
-            echo "    ollama serve"
-            echo "    ollama pull nomic-embed-text"
-            print_block "your MCP client config (uses --embedder ollama)" "$(json_snippet "$bin" "$emb")" ;;
+            print_block "your Hermes MCP config" "$(json_snippet "$bin")" ;;
         generic)
-            print_block "your MCP client config" "$(json_snippet "$bin" "$emb")" ;;
+            print_block "your MCP client config" "$(json_snippet "$bin")" ;;
         *)
             warn "Unknown platform '$id' — skipping." ;;
     esac
@@ -269,8 +278,8 @@ prompt_agents() {
         echo "Which coding agent(s) should I connect? (the binary works as a CLI regardless)"
         echo ""
         echo "   1) Claude Code       4) Windsurf        7) Hermes"
-        echo "   2) Claude Desktop    5) Continue.dev    8) Ollama"
-        echo "   3) Cursor            6) Codex CLI       9) Generic / manual"
+        echo "   2) Claude Desktop    5) Continue.dev    8) Generic / manual"
+        echo "   3) Cursor            6) Codex CLI"
         echo ""
         printf "Enter numbers (e.g. 1 3), 'all', or press Enter to skip: "
     } >/dev/tty
@@ -291,8 +300,7 @@ prompt_agents() {
             5) out="$out continue" ;;
             6) out="$out codex" ;;
             7) out="$out hermes" ;;
-            8) out="$out ollama" ;;
-            9) out="$out generic" ;;
+            8) out="$out generic" ;;
             *) printf "Ignoring unknown choice: %s\n" "$tok" >/dev/tty ;;
         esac
     done
