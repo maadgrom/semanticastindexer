@@ -367,6 +367,9 @@ impl CodeSearchServer {
                 top_k,
                 max_clusters,
                 args.path_glob.clone(),
+                // The MCP server is not git-aware; callers scope with `path_glob` instead
+                // of a changed-file seed set (which the CLI `--since` provides).
+                None,
             )
             .await
             .map_err(internal)?;

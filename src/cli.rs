@@ -152,6 +152,21 @@ pub struct DuplicatesArgs {
     /// Max clusters to print (largest first). Default 50.
     #[arg(long)]
     pub max_clusters: Option<usize>,
+    /// Only report clusters SEEDED by files changed since this git revision
+    /// (`<since>..HEAD`). The neighbour search still spans the whole index, so this
+    /// answers "does the changed code duplicate anything already indexed?" — catching
+    /// AI-written slop that re-implements existing code, which a count-delta gate misses.
+    #[arg(long)]
+    pub since: Option<String>,
+    /// Seed from staged changes (`git diff --cached`) instead of `--since`.
+    #[arg(long, default_value_t = false)]
+    pub staged: bool,
+    /// Explicit changed file path(s) to seed from, repeatable. Overrides git detection.
+    #[arg(long = "file")]
+    pub files: Vec<String>,
+    /// Emit clusters as JSON (machine-readable, for CI gates). Default: human text.
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
 }
 
 /// `similar` subcommand args. Provide EXACTLY ONE of --code OR (--path AND --line).
