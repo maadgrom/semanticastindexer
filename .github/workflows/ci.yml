@@ -59,6 +59,15 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      # The ort embedder test pulls Xenova/multilingual-e5-small from HuggingFace
+      # at runtime. HF_HOME relocates the HF cache to a path we persist across runs
+      # (see the cache step below); HF_TOKEN (optional repo secret) authenticates
+      # the pull so HF's anonymous 429 rate limit can't flake the cold-cache run.
+      # If the secret is unset it resolves to empty → anonymous download, still
+      # covered by the on-disk cache (warm runs) and the in-code retry/backoff.
+      HF_HOME: ${{ github.workspace }}/.hf-home
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       # Same prelude as the dist-generated release.yml build jobs: Windows needs
       # long-path support, and bundled DuckDB's build (tar extraction + cl.exe over
@@ -78,6 +87,14 @@ jobs:
           # v2 bump: cc-rs does not reliably rerun C++ build scripts when only
           # _CL_/CXXFLAGS change, so restored caches could replay stale /MT objects.
           prefix-key: v2-rust
+      # Persist the HuggingFace model the ort embedder test downloads at runtime
+      # (~120 MB). Warm runs skip the network entirely; the model is immutable so a
+      # static key is correct. Bump the -v1 suffix to force a fresh download.
+      - name: cache HuggingFace model
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf-home
+          key: hf-model-${{ runner.os }}-multilingual-e5-small-v1
       # Default (debug) profile: the suite is mock-based and runs in seconds, while a
       # release build (opt-level 3 + thin LTO over bundled DuckDB's C++) took >2h on
       # the Windows runner. Release codegen is exercised where it ships: the
