@@ -74,6 +74,26 @@ The server exposes seven tools. Four are read-only; `sai_refresh` and `sai_sync`
 | `sai_refresh` | Re-index specific files in place (delete + re-embed) | requires `--allow-write` |
 | `sai_sync` | Reconcile the index with the working tree (git-changed set), like CLI `sync` | requires `--allow-write` |
 
+### Skills & subagents that drive these tools
+
+The MCP server gives an agent the *capability*; two companion artifacts (both
+installed by `mcp-setup/setup.sh`) give it the *judgment* to use the tools well:
+
+- **`sai-deslop`** (`.agents/skills/sai-deslop/SKILL.md`) — a portable Agent Skill
+  (Claude Code, Cursor, Windsurf, …) covering *when* to call each tool while coding
+  and a **triage protocol** that forces the agent to read each finding's real
+  source and classify it (real / boilerplate / intentional / fragment) before
+  proposing a verified consolidation. It treats a cluster as a hypothesis, not a
+  conclusion.
+- **`dedup-auditor`** (`.claude/agents/dedup-auditor.md`) — a Claude Code subagent
+  that runs the heavyweight repo-wide `sai_find_duplicates` sweep and per-member
+  reads in an **isolated context**, applies the same triage protocol, and returns a
+  classified digest instead of a raw cluster dump.
+
+Skills are the portable, behavior-shaping layer; the subagent is the
+context-isolating worker for repo-wide audits. Both ultimately call the `sai_`
+tools below.
+
 ### `sai_search_code`
 
 General semantic search over the indexed code. The query is embedded **as a query** and the
@@ -145,6 +165,11 @@ exact commands and an MCP config snippet to run; it executes the setup script **
 `execute: true` **and** the server was started with `--allow-setup`. Without `--allow-setup`,
 an `execute: true` call is reported as blocked (`Server not started with --allow-setup`) and no
 script runs.
+
+The `recommended_command` includes `--target-dir` and an explicitly-derived `--features` list.
+For a **prebuilt/release** binary — where `mcp-setup/setup.sh` is not on disk beside it — the
+command falls back to the `install.sh` one-liner instead, and an `execute: true` call is reported
+as blocked (building from source needs a source checkout).
 
 | Arg | Type | Required | Default |
 |-----|------|----------|---------|

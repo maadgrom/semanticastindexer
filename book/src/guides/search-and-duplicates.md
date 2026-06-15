@@ -219,6 +219,16 @@ deliberately-repeated helper never pollutes the report. See
 - **You want a repository-wide repetition audit** → find-duplicates
   (`sai_find_duplicates` / `duplicates`).
 
+## Using these tools from an agent
+
+For the agent-facing workflow — *when* to reach for each tool while coding, and a triage
+protocol that judges every duplicate/similarity finding (read the real source → classify
+real / boilerplate / intentional / fragment → propose a verified fix) before acting — see the
+**`sai-deslop`** skill (`.agents/skills/sai-deslop/`). For a repo-wide audit in Claude Code,
+delegate to the **`dedup-auditor`** subagent (`.claude/agents/`), which runs the sweep in an
+isolated context and returns a classified digest. Both are summarized under
+[MCP server → Skills & subagents](../reference/mcp-server.md#skills--subagents-that-drive-these-tools).
+
 ## See also
 
 - [Tuning similarity](./tuning-similarity.md) — picking model-appropriate
