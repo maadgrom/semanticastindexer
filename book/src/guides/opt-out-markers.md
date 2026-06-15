@@ -56,7 +56,7 @@ What a single marker affects depends on the chunker (see
   applies at **window granularity**. A marker near a window boundary may only drop the
   window(s) whose line range contains it — the overlapping neighbour window can survive.
 
-For predictable results, prefer the AST chunker when your code is TS/TSX/Rust/Go, and
+For predictable results, prefer the AST chunker when your code is TS/TSX/Rust/Go/Python, and
 put the marker right next to the function it should govern.
 
 ## Examples

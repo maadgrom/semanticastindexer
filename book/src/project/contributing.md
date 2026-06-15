@@ -67,7 +67,7 @@ are `default` (a minimal Qdrant-only build) and `all` (everything).
 | `duckdb` | `duckdb` (bundled) | **DuckDB** storage backend (VSS/HNSW). Needs an embedder feature to produce vectors |
 | `ort` | `ort`, `tokenizers`, `ndarray`, `hf-hub` (**implies `duckdb`**) | local ONNX embedder via raw ONNX Runtime, offline |
 | `ollama` | `reqwest` (**implies `duckdb`**) | remote Ollama HTTP embedder |
-| `ast` | `tree-sitter` + grammars for TS/TSX, Rust, Go | AST chunker (backend-free; gated only to keep heavy grammars out of the default build) |
+| `ast` | `tree-sitter` + grammars for TS/TSX, Rust, Go, Python | AST chunker (backend-free; gated only to keep heavy grammars out of the default build) |
 | `mcp` | `rmcp`, `schemars` (**implies `duckdb` + `ollama`**) | MCP server (`semanticastindexer mcp`), read-only, over stdio |
 | `all` = `["qdrant","ort","ollama","ast","mcp"]` | — | the full binary (qdrant + duckdb + ort + ollama + ast + mcp) |
 
