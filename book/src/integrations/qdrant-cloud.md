@@ -20,11 +20,14 @@ a `Document`, embedded server-side, then used for nearest-neighbour lookup.
 Stored chunks are embedded as `passage: <code>` and queries as `query: <text>`,
 matching E5's asymmetric prefix scheme.
 
-> ⚠️ **Plain OSS / local Qdrant has no inference engine.** The `Document` API only
-> works against Qdrant Cloud (or another inference-enabled deployment). If you point
-> the `qdrant` backend at a vanilla local Qdrant, upserts and queries that rely on
-> the `Document` API will fail. To run fully locally, use the `duckdb` backend
-> instead — see [backends and embedders](../reference/backends-and-embedders.md).
+> ⚠️ **Server-side inference requires Qdrant Cloud (or an inference-enabled deployment).**
+> The `Document` API used by the default `embedder: qdrant` path does not exist in plain
+> OSS / self-hosted Qdrant. If you point the `qdrant` backend at a vanilla local Qdrant
+> without switching to local-embed mode, upserts and queries will fail. To use the `qdrant`
+> backend with OSS / self-hosted Qdrant, set `embedder: ort` (or `ollama`) — see
+> [Local-embed mode](#local-embed-mode-self-hosted--oss-qdrant) below. To avoid running
+> Qdrant at all, use the `duckdb` backend instead — see
+> [backends and embedders](../reference/backends-and-embedders.md).
 
 ## Cluster requirements
 
@@ -127,6 +130,52 @@ run create it.
 
 See the [CLI reference](../reference/cli.md) for the `index` command and
 `--recreate` flag.
+
+## Local-embed mode (self-hosted / OSS Qdrant)
+
+Setting `embedder: ort` (or `ollama`) switches the `qdrant` backend from Qdrant Cloud's
+`Document` API to local embedding. (`embedder: qdrant`, the default for this backend, is the
+server-side path.) In local-embed mode SAI embeds code and queries locally (using the `ort`
+or `ollama` embedder) and upserts raw `Vec<f32>` vectors directly — no server-side inference
+engine is required. This unlocks self-hosted / OSS Qdrant instances, which have no inference
+engine, and lets code-trained models such as `jinaai/jina-embeddings-v2-base-code` run
+against a local cluster with no Cloud billing.
+
+### Configuration
+
+```yaml
+backend: qdrant
+embedder: ort            # ort or ollama — selects the local embedder (qdrant = server-side)
+model: jinaai/jina-embeddings-v2-base-code
+vector_dim: 768          # MUST match the model
+prefix_style: none       # symmetric code model — no passage:/query: prefix
+qdrant:
+  url: http://localhost:6334   # gRPC port :6334
+```
+
+The `embedder` field is the single knob: `qdrant` (default) means Qdrant Cloud server-side
+inference; `ort`/`ollama` mean embed locally. There is no separate `qdrant.inference` knob.
+
+### Build requirement
+
+Local-embed mode requires the `ort` or `ollama` Cargo feature:
+
+```bash
+cargo build --release --features qdrant,ort
+# or, for Ollama:
+cargo build --release --features qdrant,ollama
+```
+
+Selecting `embedder: ort`/`ollama` for the qdrant backend in a binary compiled without either
+feature fails with a clear error that tells you to rebuild with the appropriate feature flag.
+
+### OSS Qdrant notes
+
+- Use the **gRPC port `:6334`**, not the REST port.
+- No API key is needed for an unauthenticated OSS Qdrant instance — omit `QDRANT_API_KEY`.
+- The `duplicates` sweep (`sai_find_duplicates` / `duplicates` CLI subcommand) was already
+  inference-free and is unaffected by this setting; it always operates on raw stored vectors.
+- To run OSS Qdrant locally: `docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant`.
 
 ## Related pages
 

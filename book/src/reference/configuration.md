@@ -21,7 +21,7 @@ Type, default, and resolution for every recognized key. "Has CLI flag" means a `
 | Key (full path) | Type | Default | Resolution | CLI flag? |
 | --- | --- | --- | --- | --- |
 | `backend` | string | `qdrant` | CLI > config > default | has `--backend` |
-| `embedder` | string | `ort` | CLI > config > default | has `--embedder` |
+| `embedder` | `ort` \| `ollama` \| `qdrant` | backend-aware: `qdrant` → `qdrant`, `duckdb` → `ort` | CLI > config > backend-aware default | has `--embedder` |
 | `chunker` | string | smart: `ast` for ts/tsx/rs/go/py when built `--features ast`, else `lines` | CLI > config > smart default | has `--chunker` |
 | `collection` | string | `source_code` | CLI > config > default | has `--collection` |
 | `model` | string | `ort` → `jinaai/jina-embeddings-v2-base-code`; otherwise `intfloat/multilingual-e5-small` | CLI > config > embedder-aware default | has `--model` |
@@ -48,14 +48,23 @@ Type, default, and resolution for every recognized key. "Has CLI flag" means a `
 
 ## Backend and embedder
 
-`backend` selects the vector store: `qdrant` (default) or `duckdb`. Qdrant embeds server-side using its Inference tab; DuckDB embeds locally and stores vectors in a DuckDB file with a VSS/HNSW index.
+`backend` selects the vector store: `qdrant` (default) or `duckdb`. `embedder` is the **single knob** for where and how embeddings are produced. Its default is **backend-aware**: the `qdrant` backend defaults to `embedder: qdrant` (server-side inference); the `duckdb` backend defaults to `embedder: ort` (local ONNX).
 
-`embedder` applies only to the DuckDB backend (Qdrant ignores it because it embeds server-side):
+`embedder` accepts three values:
 
-- `ort` (default) — local ONNX Runtime; downloads the model from `duckdb.model_repo`.
+- `ort` — local ONNX Runtime; downloads the model from `duckdb.model_repo`. The default on the `duckdb` backend.
 - `ollama` — remote Ollama HTTP server (see [`ollama`](#ollama)).
+- `qdrant` — Qdrant Cloud **server-side inference** (the `Document` API). **Only valid with `backend: qdrant`** (a `duckdb` backend with `embedder: qdrant` is a config error); it is that backend's default.
 
-DuckDB and the embedders are feature-gated — the binary must be built with `--features ort`, `--features ollama`, or `--features all`.
+How the two combine:
+
+- **`backend: qdrant`, `embedder: qdrant`** (default) — code/queries are sent as `Document`s and the cluster embeds them. Requires Cloud (or an inference-enabled deployment) with `model` enabled in the Inference tab. This is the unchanged, pre-existing behavior.
+- **`backend: qdrant`, `embedder: ort`/`ollama`** — embed **on-device** and upsert raw vectors. Works against **self-hosted / OSS Qdrant** (no Inference engine, no API key needed) and any local model (e.g. `jinaai/jina-embeddings-v2-base-code`, 768-d). Requires a binary built with `--features qdrant,ort` (or `qdrant,ollama`); selecting a local embedder without that feature fails with a clear rebuild hint. `vector_dim` must match the chosen model exactly (validated at runtime).
+- **`backend: duckdb`, `embedder: ort`/`ollama`** — embed locally and store vectors in a DuckDB file with a VSS/HNSW index.
+
+DuckDB and the local embedders are feature-gated — the binary must be built with `--features ort`, `--features ollama`, or `--features all`.
+
+See [Qdrant Cloud → Local-embed mode](../integrations/qdrant-cloud.md#local-embed-mode-self-hosted--oss-qdrant).
 
 ## Chunker
 

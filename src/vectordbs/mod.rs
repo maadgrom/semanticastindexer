@@ -138,8 +138,12 @@ pub struct Hit {
 
 /// The vector backend. Match-dispatched.
 pub enum Backend {
+    // Boxed UNCONDITIONALLY (mirrors `DuckDb`): in local-embed mode (`embedder: ort`/`ollama`) the
+    // variant carries an optional `Embedder` (ONNX session for ort), so it is large. Boxing
+    // both heavy variants keeps the enum small by construction and stops a clippy
+    // `large_enum_variant` flip (CI is `-D warnings`) from silently churning the public shape.
     #[cfg(feature = "qdrant")]
-    Qdrant(qdrant::QdrantBackend),
+    Qdrant(Box<qdrant::QdrantBackend>),
     // Boxed: DuckDbBackend embeds an Embedder (ONNX session/tokenizer for ort) and is
     // far larger than the Qdrant variant (clippy::large_enum_variant).
     #[cfg(feature = "duckdb")]
@@ -323,8 +327,9 @@ impl Backend {
     }
 
     /// Embed a search query (asymmetric `query:` side) using the backend's embedder.
-    /// DuckDB delegates to its owned local embedder; Qdrant has no local embedder
-    /// (server-side inference), so the MCP server uses `query()` for it instead.
+    /// DuckDB delegates to its owned local embedder; Qdrant delegates to its OPTIONAL local
+    /// embedder (`embedder: ort`/`ollama`) and bails in server mode (the qdrant method is a
+    /// cfg-pair, so the arm resolves in every build, including bare `--features qdrant`).
     #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     // Qdrant-only builds compile just the server-side-inference arm (which ignores `text`).
     #[cfg_attr(not(any(feature = "duckdb", test)), allow(unused_variables))]
@@ -332,9 +337,7 @@ impl Backend {
         // sai-noduplicate: asymmetric query-side twin of embed_passage (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
-            Backend::Qdrant(_) => {
-                anyhow::bail!("qdrant backend embeds server-side; no local query embedding")
-            }
+            Backend::Qdrant(b) => b.embed_query(text).await,
             #[cfg(feature = "duckdb")]
             Backend::DuckDb(b) => b.embed_query(text).await,
             #[cfg(test)]
@@ -343,7 +346,8 @@ impl Backend {
     }
 
     /// Embed code as a stored PASSAGE (asymmetric `passage:` side / code-vs-code space).
-    /// Used by `find_similar { code }` (CLI `similar --code` and the MCP tool).
+    /// Used by `find_similar { code }` (CLI `similar --code` and the MCP tool). Qdrant
+    /// delegates to its OPTIONAL local embedder (cfg-pair; bails in server mode).
     #[cfg_attr(not(any(feature = "duckdb", feature = "qdrant")), allow(dead_code))]
     // Qdrant-only builds compile just the server-side-inference arm (which ignores `text`).
     #[cfg_attr(not(any(feature = "duckdb", test)), allow(unused_variables))]
@@ -351,9 +355,7 @@ impl Backend {
         // sai-noduplicate: asymmetric passage-side twin of embed_query (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
-            Backend::Qdrant(_) => {
-                anyhow::bail!("qdrant backend embeds server-side; no local passage embedding")
-            }
+            Backend::Qdrant(b) => b.embed_passage(text).await,
             #[cfg(feature = "duckdb")]
             Backend::DuckDb(b) => b.embed_passage(text).await,
             #[cfg(test)]
@@ -382,7 +384,28 @@ pub fn factory(plan: &Plan, access: Access) -> Result<Backend> {
         "qdrant" => {
             #[cfg(feature = "qdrant")]
             {
-                Ok(Backend::Qdrant(qdrant::QdrantBackend::connect(plan)?))
+                // The embedder value drives where embedding happens: `qdrant` =
+                // server-side inference (the Document API, no local embedder feature
+                // needed); `ort`/`ollama` = embed locally and upsert raw vectors.
+                let backend = match plan.embedder.as_str() {
+                    "qdrant" => qdrant::QdrantBackend::connect(plan)?,
+                    "ort" | "ollama" => {
+                        #[cfg(any(feature = "ort", feature = "ollama"))]
+                        {
+                            qdrant::QdrantBackend::connect_local(plan, build_embedder(plan)?)?
+                        }
+                        #[cfg(not(any(feature = "ort", feature = "ollama")))]
+                        {
+                            anyhow::bail!(
+                                "local embedding for qdrant requires a local embedder — rebuild with --features qdrant,ort (or qdrant,ollama)"
+                            )
+                        }
+                    }
+                    other => anyhow::bail!(
+                        "unknown embedder '{other}' for the qdrant backend (expected 'qdrant', 'ort', or 'ollama')"
+                    ),
+                };
+                Ok(Backend::Qdrant(Box::new(backend)))
             }
             #[cfg(not(feature = "qdrant"))]
             {

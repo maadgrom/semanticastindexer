@@ -1,12 +1,23 @@
-//! Qdrant Cloud backend using E5-small via **server-side inference**.
+//! Qdrant backend. Two embedding modes, selected by the `embedder` field:
 //!
-//! Embeddings are produced inside the Qdrant Cloud cluster (Inference enabled) by
-//! passing `Document::new(text, model)` — no client-side model is loaded here.
-//! Stored chunks are embedded as `passage: <code>` and queries as `query: <text>`.
+//! - **`embedder: qdrant` (default):** embeddings are produced inside the Qdrant Cloud
+//!   cluster (Inference enabled) by passing `Document::new(text, model)` — no client-side
+//!   model is loaded here. Stored chunks are embedded as `passage: <code>` and queries as
+//!   `query: <text>`. This is the historical, backward-compatible path.
+//! - **`embedder: ort` / `ollama` (needs `--features qdrant,ort` / `qdrant,ollama`):**
+//!   embeddings are produced locally via the shared [`Embedder`], and RAW `Vec<f32>` points
+//!   are upserted (`PointStruct::new(id, vec, payload)`). The query side embeds locally and
+//!   delegates to the single [`QdrantBackend::query_by_vector`] NN core. This unlocks
+//!   OSS/self-hosted Qdrant (no inference engine) and code models without Cloud billing.
+//!   Both modes build structurally byte-identical payloads via the shared
+//!   [`QdrantBackend::payload_for`].
 
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::collections::HashMap;
+
+#[cfg(any(feature = "ort", feature = "ollama"))]
+use crate::vectordbs::embedder::Embedder;
 
 use qdrant_client::Payload;
 use qdrant_client::Qdrant;
@@ -38,34 +49,72 @@ pub struct QdrantBackend {
     /// Embedding prefix policy (Qdrant's model is e5, but route through the shared
     /// helper so it stays consistent with the local embedders).
     prefix_style: PrefixStyle,
+    /// Local embedder for the `embedder: ort` / `ollama` modes. `None` = server-side
+    /// inference (the default/historical `embedder: qdrant` path). Only exists when an
+    /// embedder feature is compiled in; a bare `--features qdrant` build contains only the
+    /// server-side path.
+    #[cfg(any(feature = "ort", feature = "ollama"))]
+    embedder: Option<Embedder>,
+}
+
+/// Build a Qdrant client. The cluster URL comes from the `QDRANT_URL` env var (which
+/// wins) or `qdrant.url` in `sai-cfg.yml`. The API key is a SECRET and is read ONLY
+/// from `QDRANT_API_KEY` in the environment (never from YAML). Shared by both
+/// [`QdrantBackend::connect`] (server-side) and [`QdrantBackend::connect_local`].
+fn build_client(plan: &Plan) -> Result<Qdrant> {
+    let url = std::env::var("QDRANT_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| plan.qdrant_url.clone())
+        .context(
+            "set the Qdrant URL via the QDRANT_URL env var or `qdrant.url` in sai-cfg.yml, \
+             e.g. https://<id>.<region>.aws.cloud.qdrant.io:6334",
+        )?;
+    let mut builder = Qdrant::from_url(&url);
+    match std::env::var("QDRANT_API_KEY") {
+        Ok(key) if !key.is_empty() => builder = builder.api_key(key),
+        _ => {
+            eprintln!("warning: QDRANT_API_KEY not set — Qdrant Cloud will reject the request")
+        }
+    }
+    Ok(builder.build()?)
 }
 
 impl QdrantBackend {
-    /// Build a Qdrant client. The cluster URL comes from the `QDRANT_URL` env var (which
-    /// wins) or `qdrant.url` in `sai-cfg.yml`. The API key is a SECRET and is read ONLY
-    /// from `QDRANT_API_KEY` in the environment (never from YAML).
+    /// Build a Qdrant client in SERVER-side inference mode (the historical default). The
+    /// cluster URL comes from `QDRANT_URL` (which wins) or `qdrant.url` in `sai-cfg.yml`;
+    /// the API key is read ONLY from `QDRANT_API_KEY` (never from YAML).
     pub fn connect(plan: &Plan) -> Result<Self> {
-        let url = std::env::var("QDRANT_URL")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .or_else(|| plan.qdrant_url.clone())
-            .context(
-                "set the Qdrant URL via the QDRANT_URL env var or `qdrant.url` in sai-cfg.yml, \
-                 e.g. https://<id>.<region>.aws.cloud.qdrant.io:6334",
-            )?;
-        let mut builder = Qdrant::from_url(&url);
-        match std::env::var("QDRANT_API_KEY") {
-            Ok(key) if !key.is_empty() => builder = builder.api_key(key),
-            _ => {
-                eprintln!("warning: QDRANT_API_KEY not set — Qdrant Cloud will reject the request")
-            }
-        }
         Ok(Self {
-            client: builder.build()?,
+            client: build_client(plan)?,
             collection: plan.collection.clone(),
             model: plan.model.clone(),
             vector_dim: plan.vector_dim,
             prefix_style: plan.prefix_style,
+            // Server-side inference: no local embedder.
+            #[cfg(any(feature = "ort", feature = "ollama"))]
+            embedder: None,
+        })
+    }
+
+    /// Build a Qdrant backend in LOCAL-EMBED mode (`embedder: ort` / `ollama`): the same
+    /// client/collection/dim setup as [`connect`], but it owns a local [`Embedder`] used to
+    /// embed passages on upsert and queries on search, upserting RAW `Vec<f32>` points. This
+    /// is what makes OSS/self-hosted Qdrant (no inference engine) usable. The embedder is
+    /// built by the factory only when this mode is selected.
+    #[cfg(any(feature = "ort", feature = "ollama"))]
+    pub fn connect_local(plan: &Plan, embedder: Embedder) -> Result<Self> {
+        eprintln!(
+            "qdrant: local-embed mode (embedder={}, model {}, {} dims)",
+            plan.embedder, plan.model, plan.vector_dim
+        );
+        Ok(Self {
+            client: build_client(plan)?,
+            collection: plan.collection.clone(),
+            model: plan.model.clone(),
+            vector_dim: plan.vector_dim,
+            prefix_style: plan.prefix_style,
+            embedder: Some(embedder),
         })
     }
 
@@ -114,9 +163,55 @@ impl QdrantBackend {
         Ok(())
     }
 
-    /// Upsert a batch of chunks as `passage:`-prefixed Documents (server-side inference).
+    /// Runtime guard: a locally-produced vector's length MUST equal the configured
+    /// `vector_dim` (the collection is a single dense cosine vector of that size). A
+    /// mismatch means the chosen model does not match the config. Mirrors the DuckDB
+    /// `check_dim` (same actionable message). Server mode never calls this — server-side
+    /// inference always matches the collection model.
+    #[cfg_attr(not(any(feature = "ort", feature = "ollama")), allow(dead_code))]
+    fn check_dim(&self, produced: usize) -> Result<()> {
+        // sai-noduplicate: intentional mirror of duckdb::check_dim (same dim-guard message);
+        // the two backends are separate feature-gated modules with no shared home for it.
+        // (Marker must live INSIDE the fn body so the AST chunk's span carries it.)
+        if produced as u64 != self.vector_dim {
+            anyhow::bail!(
+                "embedder produced {produced}-d vectors but vector_dim={} — set vector_dim to match the model (e5-small=384, nomic-embed-text=768, mxbai-embed-large=1024)",
+                self.vector_dim
+            );
+        }
+        Ok(())
+    }
+
+    /// Build the payload for a chunk. SINGLE SOURCE OF TRUTH shared by BOTH the server
+    /// (`Document`) and local (raw-vector) build paths, so payloads are byte-identical
+    /// across modes (same key order, same conditional `symbol` insertion) — only the
+    /// vector source differs.
+    fn payload_for(c: &CodeChunk) -> Result<Payload> {
+        let mut payload_json = json!({
+            "path": c.path,
+            "language": c.language,
+            "start_line": c.start_line as i64,
+            "end_line": c.end_line as i64,
+            "text": c.text,
+            "commit": c.commit_sha,
+            "dirty": c.dirty,
+            "no_duplicate": c.no_duplicate,
+        });
+        if let Some(symbol) = &c.symbol {
+            payload_json["symbol"] = json!(symbol);
+        }
+        Payload::try_from(payload_json).context("failed to build Qdrant payload from chunk")
+    }
+
+    /// Upsert a batch of chunks. In SERVER mode each point is a `passage:`-prefixed
+    /// `Document` (server-side inference). In LOCAL mode the chunk slice is embedded AS-IS
+    /// via the owned [`Embedder`] (callers already pass bounded ≤`UPSERT_BATCH` slices, so
+    /// no second batching layer), each vector is dim-checked, and RAW `Vec<f32>` points are
+    /// upserted. Network upserts use the existing `UPSERT_BATCH` batches in both modes.
     pub async fn upsert(&self, chunks: &[CodeChunk]) -> Result<()> {
-        let points = self.build_points(chunks);
+        let points = self.build_points(chunks).await?;
+        // Local mode embeds without server inference; server mode relies on it.
+        let local = self.is_local();
         for batch in points.chunks(UPSERT_BATCH) {
             let n = batch.len();
             self.client
@@ -125,39 +220,70 @@ impl QdrantBackend {
                 )
                 .await
                 .with_context(|| {
-                    format!("upsert of {n} points failed (is Inference enabled on the cluster?)")
+                    if local {
+                        format!("upsert of {n} points failed")
+                    } else {
+                        format!(
+                            "upsert of {n} points failed (is Inference enabled on the cluster?)"
+                        )
+                    }
                 })?;
         }
         Ok(())
     }
 
-    /// Build Document points from chunks. Passage prefix is the shared model-aware
-    /// helper (e5 for Qdrant); raw code stays in the payload. The optional `symbol`
-    /// (AST chunker) is added only when present, keeping the line path's payload
-    /// byte-identical.
-    fn build_points(&self, chunks: &[CodeChunk]) -> Vec<PointStruct> {
-        chunks
-            .iter()
-            .filter_map(|c| {
-                let mut payload_json = json!({
-                    "path": c.path,
-                    "language": c.language,
-                    "start_line": c.start_line as i64,
-                    "end_line": c.end_line as i64,
-                    "text": c.text,
-                    "commit": c.commit_sha,
-                    "dirty": c.dirty,
-                    "no_duplicate": c.no_duplicate,
-                });
-                if let Some(symbol) = &c.symbol {
-                    payload_json["symbol"] = json!(symbol);
-                }
-                let payload = Payload::try_from(payload_json).ok()?;
-                let document =
-                    Document::new(format_passage(self.prefix_style, &c.text), &self.model);
-                Some(PointStruct::new(c.id, document, payload))
-            })
-            .collect()
+    /// Whether this backend embeds locally (`embedder: ort` / `ollama`). Always `false` in
+    /// a build without an embedder feature (server-side inference only).
+    fn is_local(&self) -> bool {
+        #[cfg(any(feature = "ort", feature = "ollama"))]
+        {
+            self.embedder.is_some()
+        }
+        #[cfg(not(any(feature = "ort", feature = "ollama")))]
+        {
+            false
+        }
+    }
+
+    /// Build points from chunks. SERVER mode builds `Document` points (server-side
+    /// inference); LOCAL mode embeds passages locally and builds RAW `Vec<f32>` points,
+    /// dim-checking each vector BEFORE constructing the `PointStruct`. Both modes share
+    /// [`Self::payload_for`], so the payload is byte-identical across modes.
+    async fn build_points(&self, chunks: &[CodeChunk]) -> Result<Vec<PointStruct>> {
+        #[cfg(any(feature = "ort", feature = "ollama"))]
+        if let Some(embedder) = &self.embedder {
+            if chunks.is_empty() {
+                return Ok(Vec::new());
+            }
+            // Embed the received slice as-is — callers already bound it to ≤UPSERT_BATCH
+            // and the embedder batches internally; do NOT add a second batching layer.
+            let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+            let vectors = embedder.embed_passages(&texts).await?;
+            if vectors.len() != chunks.len() {
+                anyhow::bail!(
+                    "embedder returned {} vectors for {} chunks",
+                    vectors.len(),
+                    chunks.len()
+                );
+            }
+            let mut points = Vec::with_capacity(chunks.len());
+            for (c, vec) in chunks.iter().zip(vectors) {
+                self.check_dim(vec.len())?;
+                let payload = Self::payload_for(c)?;
+                // `Vec<f32>` implements `Into<Vectors>`: a raw dense vector, no Document.
+                points.push(PointStruct::new(c.id, vec, payload));
+            }
+            return Ok(points);
+        }
+        // Server mode: `Document::new(...)` points (server-side inference). Same payload
+        // helper as local, so only the vector source differs.
+        let mut points = Vec::with_capacity(chunks.len());
+        for c in chunks {
+            let payload = Self::payload_for(c)?;
+            let document = Document::new(format_passage(self.prefix_style, &c.text), &self.model);
+            points.push(PointStruct::new(c.id, document, payload));
+        }
+        Ok(points)
     }
 
     /// Delete every point whose `path` payload equals `path`.
@@ -173,8 +299,18 @@ impl QdrantBackend {
         Ok(())
     }
 
-    /// Nearest-neighbour search using a `query:`-prefixed Document (server-side inference).
+    /// Nearest-neighbour search. In LOCAL mode embed the query locally (`embed_query` +
+    /// `check_dim`) and DELEGATE to the single [`Self::query_by_vector`] NN core — so CLI
+    /// `query` (local) and the MCP `SearchByQuery` path return identical results (same
+    /// over-fetch/dedup). In SERVER mode use a `query:`-prefixed `Document` (server-side
+    /// inference), the historical path. The `Backend::query` signature is unchanged.
     pub async fn query(&self, q: &str, limit: u64) -> Result<Vec<Hit>> {
+        #[cfg(any(feature = "ort", feature = "ollama"))]
+        if self.embedder.is_some() {
+            // `embed_query` already calls `check_dim`. One NN core: query_by_vector.
+            let vec = self.embed_query(q).await?;
+            return self.query_by_vector(&vec, limit, None).await;
+        }
         let response = self
             .client
             .query(
@@ -399,6 +535,62 @@ impl QdrantBackend {
         Ok(false)
     }
 
+    /// Embed a search query (asymmetric `query:` side) through the owned local embedder, or
+    /// bail when the backend is in server mode (no local embedder). cfg-pair: the real impl
+    /// exists only when an embedder feature is compiled in; the stub keeps the
+    /// `Backend::Qdrant(_)` arm resolvable in a bare `--features qdrant` build. Mirrors the
+    /// DuckDB twin (which `check_dim`s the result).
+    #[cfg(any(feature = "ort", feature = "ollama"))]
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+    pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        // sai-noduplicate: asymmetric query-side twin of embed_passage
+        let embedder = self.embedder.as_ref().context(
+            "qdrant backend embeds server-side; no local query embedding (set embedder: ort or ollama)",
+        )?;
+        let v = embedder.embed_query(text).await?;
+        self.check_dim(v.len())?;
+        Ok(v)
+    }
+
+    /// Bare `--features qdrant` stub: no embedder field exists, so there is no local query
+    /// embedding. Keeps `Backend::embed_query`'s qdrant arm resolvable.
+    #[cfg(not(any(feature = "ort", feature = "ollama")))]
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+    pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        // sai-noduplicate: asymmetric query-side twin of embed_passage
+        let _ = text;
+        anyhow::bail!(
+            "qdrant backend embeds server-side; no local query embedding (rebuild with --features qdrant,ort or qdrant,ollama)"
+        )
+    }
+
+    /// Embed code as a stored PASSAGE (asymmetric `passage:` side) through the owned local
+    /// embedder, or bail in server mode. cfg-pair (see [`Self::embed_query`]). Mirrors the
+    /// DuckDB twin (which `check_dim`s the result). Feeds MCP `sai_find_similar { code }`.
+    #[cfg(any(feature = "ort", feature = "ollama"))]
+    pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
+        // sai-noduplicate: asymmetric passage-side twin of embed_query
+        let embedder = self.embedder.as_ref().context(
+            "qdrant backend embeds server-side; no local passage embedding (set embedder: ort or ollama)",
+        )?;
+        let mut v = embedder.embed_passages(&[text.to_string()]).await?;
+        let v = v
+            .pop()
+            .context("embedder returned no vector for the passage")?;
+        self.check_dim(v.len())?;
+        Ok(v)
+    }
+
+    /// Bare `--features qdrant` stub for [`Self::embed_passage`] (see [`Self::embed_query`]).
+    #[cfg(not(any(feature = "ort", feature = "ollama")))]
+    pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
+        // sai-noduplicate: asymmetric passage-side twin of embed_query
+        let _ = text;
+        anyhow::bail!(
+            "qdrant backend embeds server-side; no local passage embedding (rebuild with --features qdrant,ort or qdrant,ollama)"
+        )
+    }
+
     /// Delete the whole collection (flush all vectors).
     pub async fn flush(&self) -> Result<()> {
         if self.client.collection_exists(&self.collection).await? {
@@ -448,6 +640,24 @@ impl QdrantBackend {
                 );
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Test-only backend with a lazily-built dummy client (no network until a request is
+    /// made). Lets the offline unit tests exercise `check_dim`/`payload_for` without a live
+    /// cluster. Server mode (no local embedder).
+    #[cfg(test)]
+    fn test_backend(vector_dim: u64) -> Self {
+        Self {
+            client: Qdrant::from_url("http://127.0.0.1:6334")
+                .build()
+                .expect("dummy qdrant client builds (lazy channel, no connect)"),
+            collection: "test_collection".to_string(),
+            model: "intfloat/multilingual-e5-small".to_string(),
+            vector_dim,
+            prefix_style: PrefixStyle::E5,
+            #[cfg(any(feature = "ort", feature = "ollama"))]
+            embedder: None,
         }
     }
 }
@@ -526,6 +736,110 @@ fn extract_vector(vectors: Option<VectorsOutput>) -> Result<Vec<f32>> {
                 );
             }
             Ok(legacy)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vectordbs::CodeChunk;
+
+    /// A representative chunk with all optional fields populated.
+    fn chunk_with_symbol() -> CodeChunk {
+        CodeChunk {
+            id: 42,
+            path: "src/foo.rs".to_string(),
+            language: "rs".to_string(),
+            start_line: 10,
+            end_line: 20,
+            text: "fn foo() {}".to_string(),
+            symbol: Some("foo".to_string()),
+            commit_sha: Some("abc123".to_string()),
+            dirty: true,
+            no_duplicate: true,
+        }
+    }
+
+    /// A chunk with no symbol (line chunker).
+    fn chunk_no_symbol() -> CodeChunk {
+        CodeChunk {
+            symbol: None,
+            ..chunk_with_symbol()
+        }
+    }
+
+    /// `payload_for` is the SINGLE source of truth shared by the server (Document) and
+    /// local (raw-vector) build paths, so calling it for the same chunk is byte-identical
+    /// BY CONSTRUCTION — proving cross-mode payload identity without a live embedder.
+    #[test]
+    fn payload_for_is_byte_identical_across_calls() {
+        let c = chunk_with_symbol();
+        let a = QdrantBackend::payload_for(&c).unwrap();
+        let b = QdrantBackend::payload_for(&c).unwrap();
+        assert_eq!(a, b, "shared payload_for must produce identical payloads");
+    }
+
+    /// `payload_for` carries every stored field with the right kind, and the optional
+    /// `symbol` is present only when the chunk has one (line-path byte-identity).
+    #[test]
+    fn payload_for_includes_symbol_only_when_present() {
+        let with = QdrantBackend::payload_for(&chunk_with_symbol()).unwrap();
+        let map: HashMap<String, Value> = with.into();
+        assert_eq!(payload_str(&map, "path"), "src/foo.rs");
+        assert_eq!(payload_str(&map, "language"), "rs");
+        assert_eq!(payload_int(&map, "start_line"), 10);
+        assert_eq!(payload_int(&map, "end_line"), 20);
+        assert_eq!(payload_str(&map, "text"), "fn foo() {}");
+        assert_eq!(payload_str(&map, "commit"), "abc123");
+        assert_eq!(
+            map.get("dirty").and_then(|v| v.as_bool()),
+            Some(true),
+            "dirty stored as a bool"
+        );
+        assert_eq!(
+            map.get("no_duplicate").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(payload_str_opt(&map, "symbol"), Some("foo".to_string()));
+
+        let without = QdrantBackend::payload_for(&chunk_no_symbol()).unwrap();
+        let map: HashMap<String, Value> = without.into();
+        assert!(
+            !map.contains_key("symbol"),
+            "no symbol key when the chunk has none"
+        );
+    }
+
+    /// `check_dim` passes when the produced length equals `vector_dim`, and bails with the
+    /// actionable DuckDB-mirrored message otherwise — the guard that stops a wrong-dim
+    /// vector from ever reaching a `PointStruct`.
+    #[test]
+    fn check_dim_guards_vector_length() {
+        let backend = QdrantBackend::test_backend(768);
+        assert!(backend.check_dim(768).is_ok(), "matching dim passes");
+
+        let err = match backend.check_dim(384) {
+            Ok(()) => panic!("expected a dim-mismatch error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("produced 384-d vectors"), "got: {err}");
+        assert!(err.contains("vector_dim=768"), "got: {err}");
+    }
+
+    /// In server mode (no local embedder) `build_points` produces `Document` points (not
+    /// raw vectors) with the shared payload — the historical, backward-compatible path.
+    #[tokio::test]
+    async fn server_build_points_uses_documents_with_shared_payload() {
+        let backend = QdrantBackend::test_backend(384);
+        assert!(!backend.is_local(), "test backend defaults to server mode");
+        let chunks = vec![chunk_with_symbol(), chunk_no_symbol()];
+        let points = backend.build_points(&chunks).await.unwrap();
+        assert_eq!(points.len(), 2);
+        // Each point's payload equals the shared payload_for output (byte-identity).
+        for (p, c) in points.iter().zip(chunks.iter()) {
+            let expected: HashMap<String, Value> = QdrantBackend::payload_for(c).unwrap().into();
+            assert_eq!(p.payload, expected, "server payload uses payload_for");
         }
     }
 }

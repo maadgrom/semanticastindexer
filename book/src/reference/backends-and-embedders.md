@@ -14,7 +14,7 @@ The same five MCP tools and the same CLI subcommands work over either backend:
 
 | Backend | Embeddings | Storage | Search | Network on first run |
 | ------- | ---------- | ------- | ------ | -------------------- |
-| **qdrant** | Qdrant Cloud **server-side inference** (`Document` API — no local model) | Qdrant Cloud collection (cosine `VectorParams`) | server-side HNSW cosine | none locally; needs the cluster |
+| **qdrant** | `embedder: qdrant` → Qdrant Cloud **server-side inference** (`Document` API — no local model); `embedder: ort`/`ollama` → **local embedder**, raw-vector upsert | Qdrant collection (cosine `VectorParams`) — Cloud **or** self-hosted/OSS | server-side HNSW cosine | server mode: needs the cluster; local mode: downloads the ONNX model once |
 | **duckdb** | local, via an **embedder** (see below) | single DuckDB file + **VSS/HNSW** cosine index | local `array_cosine_distance` over the HNSW index | embedder-dependent + the DuckDB VSS extension |
 
 Select the backend in `sai-cfg.yml` (`backend: qdrant | duckdb`) or override per run with
@@ -28,10 +28,15 @@ backend 'qdrant' selected but this binary was built without the 'qdrant' feature
 
 An unknown backend name fails with `unknown backend '<name>' (expected 'qdrant' or 'duckdb')`.
 
-### qdrant — server-side inference
+### qdrant — server-side or local embedding
 
-The Qdrant backend never loads a model locally. Stored code and queries are sent as
-`Document::new(text, model)` and the **cluster** produces the embedding. The backend:
+The `embedder` field (default `qdrant` for this backend) decides **where** embeddings are
+produced; the storage and search paths are identical either way (a plain dense cosine
+collection).
+
+**`embedder: qdrant` (default).** The backend never loads a model locally. Stored code and
+queries are sent as `Document::new(text, model)` and the **cluster** produces the embedding.
+The backend:
 
 - Creates the collection (when missing) with `VectorParams(vector_dim, Distance::Cosine)`
   and a keyword payload index on `path` (so delete-by-path during `sync` is fast).
@@ -43,8 +48,21 @@ The Qdrant backend never loads a model locally. Stored code and queries are sent
 - Validates an existing collection's vector dimension on open; a mismatch errors and tells
   you to re-run with `--recreate` (or delete the collection in the Qdrant Cloud UI).
 
-> ℹ️ Plain OSS/local Qdrant has **no** inference engine — the `Document` API only works
-> against Qdrant Cloud (or an inference-enabled deployment). See
+**`embedder: ort`/`ollama`.** The backend embeds **on-device** with the configured
+`ort`/`ollama` embedder (exactly like the DuckDB path) and upserts **raw `Vec<f32>`** points
+— no `Document`, no server-side inference. The payload is byte-identical to the server path;
+only the vector source differs. The query side embeds locally too and reuses the same
+raw-vector NN path (`query_by_vector`). This makes the qdrant backend work against
+**self-hosted / OSS Qdrant** and lets you use any local model (e.g. the code-trained
+`jinaai/jina-embeddings-v2-base-code`, 768-d) without Cloud billing. Requires a binary built
+with `--features qdrant,ort` (or `qdrant,ollama`); selecting a local embedder without that
+feature fails with a clear rebuild hint. Walkthrough:
+[Qdrant Cloud → Local-embed mode](../integrations/qdrant-cloud.md#local-embed-mode-self-hosted--oss-qdrant).
+
+> ℹ️ Plain OSS/local Qdrant has **no** inference engine — the `Document` API
+> (`embedder: qdrant`) only works against Qdrant Cloud (or an inference-enabled
+> deployment). To run against **self-hosted/OSS Qdrant, use `embedder: ort`/`ollama`**
+> (above), which embeds on-device and never calls the `Document` API. See
 > [Qdrant Cloud](../integrations/qdrant-cloud.md) for setup.
 
 ### duckdb — local VSS/HNSW
@@ -225,6 +243,11 @@ See [Choosing a model](../guides/choosing-a-model.md) for the full comparison an
 > [Troubleshooting and FAQ](../operations/troubleshooting.md).
 
 ## Qdrant requirements
+
+These apply to **`embedder: qdrant`** (Qdrant Cloud server-side inference). With
+**`embedder: ort`/`ollama`** you need neither Cloud Inference nor an API key — any reachable
+Qdrant (including a local `docker run qdrant/qdrant`) works, since embedding happens
+on-device; just set `QDRANT_URL` to the gRPC endpoint (`:6334`).
 
 - A Qdrant Cloud cluster with **Inference enabled** and the `intfloat/multilingual-e5-small`
   model available (Cluster → *Inference* tab). Vector size **384**, context window **512

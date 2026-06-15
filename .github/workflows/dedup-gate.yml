@@ -130,6 +130,10 @@ jobs:
       # cluster. `flush` has no confirmation prompt, so it works headless. If a
       # cancelled run skips this, the next run's --recreate cleans up; and
       # dedup-gate-cleanup.yml flushes once more when the PR finally closes.
+      # No --config/--embedder needed: this runs at the repo root, so it auto-discovers the
+      # local duckdb sai-cfg.yml — but embedder resolution is backend-scoped, so that config's
+      # `embedder: ort` does NOT leak into this `--backend qdrant` override; it resolves to
+      # server-side `qdrant`. A bare `--features ast` (qdrant-only) binary thus flushes fine.
       - name: Cleanup per-PR collection
         if: always()
         shell: bash

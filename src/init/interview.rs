@@ -21,7 +21,8 @@ use crate::config::{
 pub struct Answers {
     /// Vector backend: "duckdb" or "qdrant".
     pub backend: String,
-    /// Embedder (duckdb backend only): "ort" or "ollama".
+    /// Embedder. For the qdrant backend: "qdrant" (server-side inference, default), "ort",
+    /// or "ollama" (local embed). For the duckdb backend: "ort" (default) or "ollama".
     pub embedder: String,
     /// Target collection (Qdrant) / table (DuckDB).
     pub collection: String,
@@ -88,7 +89,20 @@ pub fn interview<R: BufRead, W: Write>(input: &mut R, out: &mut W) -> Result<Ans
         &["duckdb", "qdrant"],
         "duckdb",
     )?;
-    let embedder = if backend == "duckdb" {
+
+    // The embedder is the single knob for WHERE+HOW embedding happens. For qdrant the
+    // choices include `qdrant` (Cloud server-side inference, the default) plus the local
+    // `ort`/`ollama` options (OSS/self-hosted Qdrant; needs --features qdrant,ort or
+    // qdrant,ollama). For duckdb the choices are the local `ort`/`ollama` only.
+    let embedder = if backend == "qdrant" {
+        ask_choice(
+            input,
+            out,
+            "Embedder — qdrant (Qdrant Cloud server-side inference) or ort/ollama (embed locally, self-hosted/OSS Qdrant)",
+            &["qdrant", "ort", "ollama"],
+            "qdrant",
+        )?
+    } else {
         ask_choice(
             input,
             out,
@@ -96,9 +110,6 @@ pub fn interview<R: BufRead, W: Write>(input: &mut R, out: &mut W) -> Result<Ans
             &["ort", "ollama"],
             "ort",
         )?
-    } else {
-        // Qdrant embeds server-side; the embedder field is ignored there.
-        "ort".to_string()
     };
 
     let collection = ask_string(
@@ -108,9 +119,11 @@ pub fn interview<R: BufRead, W: Write>(input: &mut R, out: &mut W) -> Result<Ans
         DEFAULT_COLLECTION,
     )?;
 
-    let default_model = match (backend.as_str(), embedder.as_str()) {
-        ("qdrant", _) => DEFAULT_QDRANT_MODEL,
-        (_, "ollama") => DEFAULT_OLLAMA_MODEL,
+    // Model default: the `qdrant` server-side embedder uses the lightweight Cloud e5;
+    // local embedders follow the embedder (ollama → mxbai; ort → jina code).
+    let default_model = match embedder.as_str() {
+        "qdrant" => DEFAULT_QDRANT_MODEL,
+        "ollama" => DEFAULT_OLLAMA_MODEL,
         _ => DEFAULT_ORT_MODEL,
     };
     let model = ask_string(input, out, "Embedding model", default_model)?;
@@ -294,21 +307,50 @@ mod tests {
         assert_eq!(res.unwrap(), Answers::default());
     }
 
-    /// Qdrant path: no embedder question; the model default switches to e5-small
-    /// (auto 384 dims) and the optional URL question is asked.
+    /// Qdrant SERVER path: embedder=qdrant (Cloud server-side inference) → the model
+    /// default is e5-small (auto 384 dims) and the optional URL question is asked.
     #[test]
-    fn qdrant_flow_asks_url_and_skips_embedder() {
-        let (res, prompts) = run("qdrant\nmy_code\n\nhttps://c1.eu.cloud:6334\nvendor, examples\n");
+    fn qdrant_server_flow_uses_qdrant_embedder() {
+        // backend=qdrant, embedder=<blank→qdrant>, collection=my_code, model=<blank→e5>,
+        // qdrant_url, excludes.
+        let (res, prompts) =
+            run("qdrant\n\nmy_code\n\nhttps://c1.eu.cloud:6334\nvendor, examples\n");
         let a = res.unwrap();
         assert_eq!(a.backend, "qdrant");
+        assert_eq!(
+            a.embedder, "qdrant",
+            "default qdrant embedder = server-side"
+        );
         assert_eq!(a.collection, "my_code");
         assert_eq!(a.model, DEFAULT_QDRANT_MODEL);
         assert_eq!(a.vector_dim, 384, "e5-small dim auto-detected");
         assert_eq!(a.qdrant_url.as_deref(), Some("https://c1.eu.cloud:6334"));
         assert_eq!(a.extra_exclude_dirs, vec!["vendor", "examples"]);
+        assert!(prompts.contains("Embedder —"));
+        assert!(prompts.contains("Qdrant cluster gRPC URL"));
+    }
+
+    /// Qdrant LOCAL path: embedder=ort asks the model (defaults to the jina code model →
+    /// 768 dims), then the Qdrant URL. No duckdb_path question (the qdrant backend has no
+    /// local file).
+    #[test]
+    fn qdrant_local_flow_with_ort_embedder() {
+        // backend=qdrant, embedder=ort, collection=<blank>, model=<blank→jina>,
+        // qdrant_url, exclude=<blank>
+        let (res, prompts) = run("qdrant\nort\n\n\nhttp://localhost:6334\n\n");
+        let a = res.unwrap();
+        assert_eq!(a.backend, "qdrant");
+        assert_eq!(a.embedder, "ort");
+        assert_eq!(
+            a.model, DEFAULT_ORT_MODEL,
+            "qdrant-local follows the ort default"
+        );
+        assert_eq!(a.vector_dim, 768, "jina code model dim auto-detected");
+        assert_eq!(a.qdrant_url.as_deref(), Some("http://localhost:6334"));
+        assert!(prompts.contains("Embedder —"));
         assert!(
-            !prompts.contains("Embedder —"),
-            "qdrant embeds server-side: no embedder question"
+            !prompts.contains("DuckDB index file path"),
+            "qdrant-local has no duckdb file"
         );
         assert!(prompts.contains("Qdrant cluster gRPC URL"));
     }
