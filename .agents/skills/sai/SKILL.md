@@ -41,18 +41,50 @@ cd /path/to/your/project
 Options the script supports:
 
 - `--backend duckdb|qdrant`
-- `--embedder ort|ollama` (ort = fully offline, bigger build)
+- `--embedder ort|ollama` (ort = fully offline, default)
 - `--non-interactive` (perfect for agent-driven setup)
+- `--platform <id>` — also wire up a client: `claude-code`, `claude-desktop`, `cursor`,
+  `windsurf`, `continue`, `codex`, `hermes`, `generic` (repeatable)
+- `--write` — merge the config into the client's file directly (JSON clients; backs up first)
 - `--install-global` (puts binary in `~/.local/bin` + creates `sai` wrapper)
 - `--target-dir`, `--collection`, `--features`
+
+This is the **build-from-source** path. To install a **prebuilt** binary instead and wire a
+client in one line (no Rust toolchain), use the released installer:
+
+```bash
+curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash -s -- --platform cursor --write
+```
+
+Both paths share the same MCP client-wiring module, so the experience is identical.
 
 ## Generated Artifacts
 
 The script creates (in the target project):
 
-- `sai-cfg.yml` — tuned for agentic code search (smart excludes, good similarity thresholds). The MCP server reads it for backend/embedder/collection, so its `args` are just `["mcp", "--config", "sai-cfg.yml"]`.
-- `.mcp.json.example` — ready for Claude Code / generic MCP clients
-- `claude-desktop-config.example.json`
+- `sai-cfg.yml` — copied from `mcp-setup/templates/sai-cfg.yml` (the single source of truth),
+  patched for the chosen backend/embedder/collection. The MCP server reads it, so its `args`
+  are just `["mcp", "--config", "sai-cfg.yml"]`.
+- `.mcp.json.example` / `claude-desktop-config.example.json` — generated from the same shared
+  builder used by the installer (so they never drift).
+
+## Wiring any client (not just Claude)
+
+The MCP server is **vendor-agnostic** (stdio, `sai_`-prefixed tools). Pass `--platform`/`--write`
+to wire a client automatically, or paste the snippet into the right file yourself:
+
+| Client | Config file |
+|--------|-------------|
+| Claude Code | `<project>/.mcp.json` (or `claude mcp add sai …`) |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
+| Cursor | `~/.cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Continue | `~/.continue/config.yaml` (YAML form) |
+| Codex | `~/.codex/config.toml` (TOML form) |
+
+The portable Agent Skills live in `.agents/skills/` — Claude Code auto-loads copies from
+`~/.claude/skills/`; other tools read the same `SKILL.md` from the repo. See
+[mcp-clients](../../../book/src/integrations/mcp-clients.md) for the authoritative per-client guide.
 
 ## Recommended Feature Sets
 
@@ -83,16 +115,25 @@ binary.
 
 When the semanticastindexer MCP server is running with `--allow-setup`, the `sai_prepare_mcp_setup` tool can actually execute the setup script on demand.
 
+5. To use those tools **well**, follow the companion **`sai-deslop`** skill
+   ([.agents/skills/sai-deslop/SKILL.md](../sai-deslop/SKILL.md)) — it covers when to call each
+   tool and a triage protocol for judging duplicate/similarity findings before acting. For
+   repo-wide audits in Claude Code, delegate to the **`dedup-auditor`** subagent
+   ([.claude/agents/dedup-auditor.md](../../../.claude/agents/dedup-auditor.md)).
+
 ## Security & Privacy Notes
 
 - Default recommendation is **local DuckDB** (nothing leaves the machine).
 - Qdrant Cloud path requires `QDRANT_URL` + `QDRANT_API_KEY` in the environment.
 - Search is **read-only by default**. The write tools (`sai_refresh`, `sai_sync`) require the explicit `--allow-write` flag when starting the server.
+- **Do not add `--allow-setup` (or `--allow-write`) to a default/committed MCP config.** `--allow-setup` lets `sai_prepare_mcp_setup` run a build script (`bash -c …`); it is high-trust and should only be enabled deliberately, interactively, when you actually want the agent to run setup.
 
 ## Files
 
 - `.agents/skills/sai/SKILL.md` — this file (the portable Agent Skill definition; Claude Code installs a copy into `~/.claude/skills/sai/`)
-- `mcp-setup/setup.sh` — the robust, agent-friendly setup script
+- `.agents/skills/sai-deslop/SKILL.md` — the **usage + triage** skill: when to reach for the `sai_` tools while coding and how to triage every duplicate/similarity finding before acting (portable; installed to `~/.claude/skills/sai-deslop/`)
+- `.claude/agents/dedup-auditor.md` — Claude Code subagent that runs the repo-wide near-duplicate sweep with the triage protocol in an isolated context and returns a classified digest (installed to `~/.claude/agents/`)
+- `mcp-setup/setup.sh` — the robust, agent-friendly setup script (installs the binary, all skills, and the subagent)
 - `mcp-setup/templates/` — example configuration templates
 
 ## Related Project Documentation

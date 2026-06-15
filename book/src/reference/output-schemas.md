@@ -169,7 +169,7 @@ setup script and adds execution fields.
 ```json
 {
   "target_directory": "/path/to/project",
-  "recommended_command": "/path/to/mcp-setup/setup.sh --non-interactive --backend duckdb --embedder ollama",
+  "recommended_command": "/path/to/mcp-setup/setup.sh --non-interactive --backend duckdb --embedder ollama --target-dir \"/path/to/project\" --features \"mcp,duckdb,ollama\"",
   "mcp_server_config_example": {
     "mcpServers": {
       "sai": {
@@ -186,14 +186,14 @@ setup script and adds execution fields.
     "4. Add the mcp_server_config_example to your agent's MCP settings.",
     "5. Restart your agentic tool."
   ],
-  "notes": "For fully offline use, prefer embedder=ort (much longer first build). The setup script lives next to the binary in mcp-setup/setup.sh."
+  "notes": "For fully offline use, prefer embedder=ort (much longer first build). The setup script was found next to this binary and the recommended_command is ready to run."
 }
 ```
 
 | Field                       | Type   | Notes |
 |-----------------------------|--------|-------|
 | `target_directory`          | string | The directory being set up (defaults to the server's current working directory). |
-| `recommended_command`       | string | Exact `setup.sh` invocation, reflecting the chosen `backend`, `embedder`, and the `--install-global` / AST flags. |
+| `recommended_command`       | string | Exact `setup.sh` invocation — includes `--target-dir` and an explicitly-derived `--features` list, and reflects the chosen `backend`/`embedder` and the `--install-global` / AST flags. **Prebuilt/release binary (no local `setup.sh`):** this is the `install.sh` curl one-liner instead. |
 | `mcp_server_config_example` | object | Drop-in `mcpServers` block; `command` is a placeholder to replace with the real binary path. |
 | `next_steps`                | array of strings | Ordered instructions. |
 | `notes`                     | string | Offline / setup-script guidance. |
@@ -206,8 +206,8 @@ setup script and adds execution fields.
 | `stdout` / `stderr`       | string  | Captured script output (on a successful spawn). |
 | `success`                 | boolean | Exit status of the script. |
 | `error`                   | string  | The script could not be spawned. |
-| `execution_blocked`       | boolean | `execute: true` was requested but the server was **not** started with `--allow-setup`. |
-| `execution_blocked_reason`| string  | `"Server not started with --allow-setup"`. |
+| `execution_blocked`       | boolean | `execute: true` was requested but could not run: either the server was **not** started with `--allow-setup`, or this is a prebuilt/release binary with no local `mcp-setup/setup.sh`. |
+| `execution_blocked_reason`| string  | Why it was blocked — `"Server not started with --allow-setup"`, or a message noting `setup.sh` was not found beside the binary (run the curl installer manually). |
 
 ## CLI text output
 

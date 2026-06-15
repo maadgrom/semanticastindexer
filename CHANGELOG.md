@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `sai-deslop` agent skill (`.agents/skills/sai-deslop/`): when to reach for the `sai_` tools
+  while coding, plus a triage protocol that judges each duplicate/similarity finding (read the
+  real source → classify real / boilerplate / intentional / fragment → propose a verified fix)
+  before acting.
+- `dedup-auditor` Claude Code subagent (`.claude/agents/`): runs the repo-wide
+  `sai_find_duplicates` sweep with that triage protocol in an isolated context and returns a
+  classified digest instead of a raw cluster dump.
+- `mcp-setup/setup.sh` gains `--platform <id>` / `--write` to wire any MCP client
+  (claude-code, claude-desktop, cursor, windsurf, continue, codex, hermes, generic) — the same
+  multi-client experience as the one-line `install.sh`, via a shared `mcp-setup/lib/mcp-config.sh`.
+- `mcp-setup/tests/test_setup.sh` (run by `make test` / `make test-setup`): asserts artifact
+  paths, generated config fields, command strings, and `install.sh`↔`lib` snippet parity.
+
+### Changed
+
+- `mcp-setup/setup.sh` now generates `sai-cfg.yml` by copying the canonical
+  `mcp-setup/templates/sai-cfg.yml` (duckdb + `ort` + jina-768 + AST + tuned thresholds) and
+  patching only backend/embedder/collection, instead of emitting its own divergent inline YAML.
+  The default `--embedder` is now `ort` (fully offline), matching the template and the book.
+- `mcp-setup/setup.sh` and `docs/install.sh` now install both the `sai` and `sai-deslop` skills
+  (plus the `dedup-auditor` subagent); the skill installer is renamed `install_agent_skill`.
+
+### Fixed
+
+- `sai_prepare_mcp_setup` now includes `--target-dir` in `recommended_command` (so a copied
+  command targets the intended project) and a correct, explicitly-derived `--features` list
+  (previously a dead variable plus a hardcoded `mcp,duckdb,ollama,ast` that ignored `ort`/`qdrant`).
+  For prebuilt/release binaries where `mcp-setup/setup.sh` is not on disk, `recommended_command`
+  falls back to the `install.sh` one-liner and an `execute: true` call is reported as blocked
+  rather than running a stale path.
+
 ## [0.1.4] - 2026-06-15
 
 ### Fixed
