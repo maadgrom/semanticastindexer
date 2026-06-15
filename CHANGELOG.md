@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-06-15
+
+### Fixed
+
+- `ort` embedder: retry transient HuggingFace model downloads (e.g. HTTP 429) instead of
+  failing the run, and cache the downloaded model in CI to avoid repeated fetches. (#10)
+
+### Documentation
+
+- Promote Python AST chunking across the landing page and the book. Python AST support
+  shipped in 0.1.2, but the static site and several book pages still advertised only
+  TypeScript/TSX, Rust, and Go. (#11)
+- The documentation site and book now default to a light theme; dark is still served to
+  visitors whose browser or OS prefers it. (#11)
+
 ## [0.1.3] - 2026-06-15
 
 ### Added
