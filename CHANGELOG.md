@@ -6,8 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-16
+
 ### Added
 
+- **Qdrant local-embed mode** — `embedder: ort`/`ollama` on the `qdrant` backend now embeds
+  on-device (via the existing ONNX/Ollama embedder) and upserts raw `Vec<f32>` points, instead of
+  requiring Qdrant Cloud server-side inference. This makes the `qdrant` backend work with
+  **self-hosted / OSS Qdrant** (which has no inference engine) and lets code models such as
+  `jinaai/jina-embeddings-v2-base-code` (768-d) run against a local cluster without Cloud billing.
+  The default `embedder: qdrant` keeps server-side inference, so existing Qdrant Cloud configs are
+  unchanged. (#12)
 - `sai-deslop` agent skill (`.agents/skills/sai-deslop/`): when to reach for the `sai_` tools
   while coding, plus a triage protocol that judges each duplicate/similarity finding (read the
   real source → classify real / boilerplate / intentional / fragment → propose a verified fix)
@@ -23,6 +32,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- `embedder` is now backend-scoped: it selects how the `qdrant` backend embeds (`qdrant` =
+  server-side inference, `ort`/`ollama` = local), and a config's `embedder` no longer leaks across
+  a `--backend` override — the override re-derives the backend's natural default (qdrant →
+  server-side, every other backend → `ort`). (#12)
 - `mcp-setup/setup.sh` now generates `sai-cfg.yml` by copying the canonical
   `mcp-setup/templates/sai-cfg.yml` (duckdb + `ort` + jina-768 + AST + tuned thresholds) and
   patching only backend/embedder/collection, instead of emitting its own divergent inline YAML.
