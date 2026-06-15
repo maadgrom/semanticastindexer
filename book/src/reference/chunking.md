@@ -8,7 +8,7 @@ For the terms used here (chunk, symbol, embedder), see the [glossary](../concept
 
 When you do **not** explicitly set `--chunker` (CLI) or `chunker:` (in `sai-cfg.yml`), SAI defaults as follows:
 
-- Languages with good AST support — currently **`ts`, `tsx`, `rs`, and `go`** — **and** a binary built with `--features ast` default to the symbol-aware `ast` chunker.
+- Languages with good AST support — currently **`ts`, `tsx`, `rs`, `go`, and `py`** — **and** a binary built with `--features ast` default to the symbol-aware `ast` chunker.
 - Everything else defaults to the reliable `lines` chunker.
 
 You can force a specific chunker:

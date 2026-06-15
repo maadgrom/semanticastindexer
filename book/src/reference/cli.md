@@ -46,7 +46,7 @@ With no subcommand, SAI walks `--root`, chunks each matching file, embeds the ch
 | ---- | ---- | ------- | -------- |
 | `--root <dir>` | string | `src` | Directory to walk for source files. |
 | `--ext <list>` | comma list | `ts,tsx` | Comma-separated extensions (no dots; leading dots are stripped). Each chunk's `language` payload label is derived **per file** from its extension (`.ts` → `ts`, `.tsx` → `tsx`). |
-| `--chunker <s>` | string | config, else auto | `lines` or `ast` (tree-sitter). When omitted, `ast` is auto-selected **only if** the binary was built with the `ast` feature **and** any requested extension has a grammar (`ts`, `tsx`, `rs`, `go`); otherwise `lines`. An explicit `--chunker` always wins. `ast` requires the `ast` feature or the run errors early. |
+| `--chunker <s>` | string | config, else auto | `lines` or `ast` (tree-sitter). When omitted, `ast` is auto-selected **only if** the binary was built with the `ast` feature **and** any requested extension has a grammar (`ts`, `tsx`, `rs`, `go`, `py`); otherwise `lines`. An explicit `--chunker` always wins. `ast` requires the `ast` feature or the run errors early. |
 | `--model <s>` | string | config, else model-default | Inference/embedding model. The default depends on the embedder: `ort` → `jinaai/jina-embeddings-v2-base-code`; otherwise `intfloat/multilingual-e5-small`. Overrides config. |
 | `--query <s>` | string | — | Run a semantic query **after** indexing. Prints the top `--limit` hits as `score  path:start-end`. |
 | `--query-only` | flag | `false` | Skip indexing; only run `--query` against the existing collection. (Opens the backend read-write but never re-indexes.) |

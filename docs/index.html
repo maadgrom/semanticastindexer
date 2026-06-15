@@ -4,51 +4,51 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>semanticastindexer - near-duplicate detection for your AI coding agent</title>
-<meta name="description" content="Index your codebase once, then surface near-duplicate functions or search it in plain English. A local-first MCP server and CLI. Symbol-aware for TypeScript, Rust, and Go; line-based for any other language. One-line install for macOS, Linux, and Windows." />
+<meta name="description" content="Index your codebase once, then surface near-duplicate functions or search it in plain English. A local-first MCP server and CLI. Symbol-aware for TypeScript, Rust, Go, and Python; line-based for any other language. One-line install for macOS, Linux, and Windows." />
 <meta property="og:title" content="semanticastindexer" />
-<meta property="og:description" content="Near-duplicate detection and semantic code search as an MCP server + CLI. Symbol-aware for TypeScript, Rust, and Go. One-line install per OS." />
+<meta property="og:description" content="Near-duplicate detection and semantic code search as an MCP server + CLI. Symbol-aware for TypeScript, Rust, Go, and Python. One-line install per OS." />
 <meta property="og:type" content="website" />
 <link rel="icon" type="image/jpeg" href="assets/sai-s-logo.jpg" />
 <style>
   :root {
-    color-scheme: dark;
-    --bg: #0c0e10;
-    --bg-raised: #14181b;
-    --bg-input: #0a0c0d;
-    --line: #232a2e;
-    --line-soft: #1b2125;
-    --text: #e7ecea;
-    --text-dim: #97a3a0;
-    --text-faint: #828d89;
-    --accent: #3fb950;
-    --accent-border: rgba(63,185,80,0.34);
-    --accent-tint: rgba(63,185,80,0.07);
-    --dot-ring: rgba(63,185,80,0.14);
-    --glow: rgba(63,185,80,0.08);
-    --hover-bg: rgba(255,255,255,0.03);
-    --tab-tint: rgba(255,255,255,0.015);
+    color-scheme: light;
+    --bg: #f7f9f7;
+    --bg-raised: #ffffff;
+    --bg-input: #f1f4f1;
+    --line: #dde3de;
+    --line-soft: #e9ede9;
+    --text: #11201a;
+    --text-dim: #51605a;
+    --text-faint: #586762;
+    --accent: #1a7f37;
+    --accent-border: rgba(26,127,55,0.40);
+    --accent-tint: rgba(26,127,55,0.08);
+    --dot-ring: rgba(26,127,55,0.16);
+    --glow: rgba(26,127,55,0.05);
+    --hover-bg: rgba(0,0,0,0.045);
+    --tab-tint: rgba(0,0,0,0.018);
     --radius: 12px;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", "Consolas", monospace;
     --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   }
-  @media (prefers-color-scheme: light) {
+  @media (prefers-color-scheme: dark) {
     :root {
-      color-scheme: light;
-      --bg: #f7f9f7;
-      --bg-raised: #ffffff;
-      --bg-input: #f1f4f1;
-      --line: #dde3de;
-      --line-soft: #e9ede9;
-      --text: #11201a;
-      --text-dim: #51605a;
-      --text-faint: #586762;
-      --accent: #1a7f37;
-      --accent-border: rgba(26,127,55,0.40);
-      --accent-tint: rgba(26,127,55,0.08);
-      --dot-ring: rgba(26,127,55,0.16);
-      --glow: rgba(26,127,55,0.05);
-      --hover-bg: rgba(0,0,0,0.045);
-      --tab-tint: rgba(0,0,0,0.018);
+      color-scheme: dark;
+      --bg: #0c0e10;
+      --bg-raised: #14181b;
+      --bg-input: #0a0c0d;
+      --line: #232a2e;
+      --line-soft: #1b2125;
+      --text: #e7ecea;
+      --text-dim: #97a3a0;
+      --text-faint: #828d89;
+      --accent: #3fb950;
+      --accent-border: rgba(63,185,80,0.34);
+      --accent-tint: rgba(63,185,80,0.07);
+      --dot-ring: rgba(63,185,80,0.14);
+      --glow: rgba(63,185,80,0.08);
+      --hover-bg: rgba(255,255,255,0.03);
+      --tab-tint: rgba(255,255,255,0.015);
     }
   }
   * { box-sizing: border-box; }
@@ -308,6 +308,7 @@
       <span class="pill">TypeScript</span>
       <span class="pill">Rust</span>
       <span class="pill">Go</span>
+      <span class="pill">Python</span>
       <span class="lang-more">JavaScript and every other language: line-based.</span>
     </div>
   </section>
