@@ -463,15 +463,18 @@ impl SaiServer {
         let recommended_command = if let Some(script) = &setup_script_path {
             let mut cmd = format!(
                 "{} --non-interactive --backend {} --embedder {} --target-dir \"{}\" --features \"{}\"",
-                script.to_string_lossy(), backend, embedder, target, features_str
+                script.to_string_lossy(),
+                backend,
+                embedder,
+                target,
+                features_str
             );
             if args.install_globally {
                 cmd.push_str(" --install-global");
             }
             cmd
         } else {
-            "curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash"
-                .to_string()
+            "curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash".to_string()
         };
 
         let mcp_config = json!({
