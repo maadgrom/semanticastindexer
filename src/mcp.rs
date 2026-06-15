@@ -434,35 +434,45 @@ impl SaiServer {
         let backend = args.backend.unwrap_or_else(|| "duckdb".to_string());
         let embedder = args.embedder.unwrap_or_else(|| "ollama".to_string());
 
-        let mut features = vec!["mcp".to_string(), "duckdb".to_string()];
+        // Build the correct feature list from actual inputs.
+        let mut features = vec!["mcp".to_string()];
+        features.push(backend.clone());
         if backend == "duckdb" {
             features.push(embedder.clone());
         }
         if args.use_ast_chunker {
             features.push("ast".to_string());
         }
-        let _features_str = features.join(","); // for future use / logging
+        let features_str = features.join(",");
 
-        let setup_script_path = std::env::current_exe()
-            .ok()
-            .and_then(|p| {
-                p.parent()
-                    .map(|d| d.join("../../mcp-setup/setup.sh").canonicalize().ok())
-            })
-            .flatten()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or("./mcp-setup/setup.sh".to_string());
+        // Locate mcp-setup/setup.sh relative to the current exe.
+        // Try two candidate paths so both source-checkout and installed layouts are covered.
+        let setup_script_path = std::env::current_exe().ok().and_then(|exe| {
+            let parent = exe.parent()?;
+            let candidates = [
+                parent.join("../../mcp-setup/setup.sh"),
+                parent.join("../mcp-setup/setup.sh"),
+            ];
+            candidates
+                .into_iter()
+                .find_map(|c| c.canonicalize().ok().filter(|p| p.exists()))
+        });
 
-        let mut cmd = format!(
-            "{} --non-interactive --backend {} --embedder {}",
-            setup_script_path, backend, embedder
-        );
-        if args.use_ast_chunker {
-            cmd.push_str(" --features \"mcp,duckdb,ollama,ast\""); // approximate
-        }
-        if args.install_globally {
-            cmd.push_str(" --install-global");
-        }
+        let from_source = setup_script_path.is_some();
+
+        let recommended_command = if let Some(script) = &setup_script_path {
+            let mut cmd = format!(
+                "{} --non-interactive --backend {} --embedder {} --target-dir \"{}\" --features \"{}\"",
+                script.to_string_lossy(), backend, embedder, target, features_str
+            );
+            if args.install_globally {
+                cmd.push_str(" --install-global");
+            }
+            cmd
+        } else {
+            "curl -fsSL https://maadgrom.github.io/semanticastindexer/install.sh | bash"
+                .to_string()
+        };
 
         let mcp_config = json!({
             "mcpServers": {
@@ -474,11 +484,20 @@ impl SaiServer {
             }
         });
 
-        let _should_execute = args.execute && self.inner.allow_setup;
+        let notes = if from_source {
+            "For fully offline use, prefer embedder=ort (much longer first build). \
+             The setup script was found next to this binary and the recommended_command \
+             is ready to run."
+        } else {
+            "mcp-setup/setup.sh was not found next to this binary (release install?). \
+             The recommended_command is a one-liner that downloads and installs a prebuilt \
+             binary and wires up the MCP client. Building from source via mcp-setup/setup.sh \
+             requires a source checkout of the repository."
+        };
 
         let mut result = json!({
             "target_directory": target,
-            "recommended_command": cmd,
+            "recommended_command": recommended_command,
             "mcp_server_config_example": mcp_config,
             "next_steps": [
                 "1. Run the recommended_command in a terminal (it can take 5-20 minutes the first time).",
@@ -487,15 +506,22 @@ impl SaiServer {
                 "4. Add the mcp_server_config_example to your agent's MCP settings.",
                 "5. Restart your agentic tool."
             ],
-            "notes": "For fully offline use, prefer embedder=ort (much longer first build). The setup script lives next to the binary in mcp-setup/setup.sh."
+            "notes": notes,
         });
 
         if args.execute {
-            if self.inner.allow_setup {
+            if !from_source {
+                // Release install: setup.sh is not present; refuse to pipe curl | bash.
+                result["execution_blocked"] = json!(true);
+                result["execution_blocked_reason"] = json!(
+                    "mcp-setup/setup.sh not found next to this binary (release install?); \
+                     run the curl installer manually"
+                );
+            } else if self.inner.allow_setup {
                 // Attempt to execute (this can be very long-running)
                 let output = std::process::Command::new("bash")
                     .arg("-c")
-                    .arg(&cmd)
+                    .arg(&recommended_command)
                     .current_dir(&target)
                     .output();
 

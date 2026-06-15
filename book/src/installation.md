@@ -136,6 +136,11 @@ Then run the one-command setup script to register the MCP server:
 ./mcp-setup/setup.sh --non-interactive --backend duckdb --embedder ort
 ```
 
+This builds the binary, writes `sai-cfg.yml`, and installs the `sai` + `sai-deslop` skills (and
+the `dedup-auditor` subagent). Add `--platform <id>` (`claude-code`, `cursor`, `windsurf`,
+`continue`, `codex`, …) and `--write` to also wire that client's MCP config automatically — the
+same wiring the one-line `install.sh` does. See [MCP clients](./integrations/mcp-clients.md).
+
 ## Security
 
 - The Qdrant **API key** is read only from the `QDRANT_API_KEY` environment variable (a

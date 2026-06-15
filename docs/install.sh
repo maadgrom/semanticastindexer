@@ -197,7 +197,11 @@ print_block() { # $1 = where it goes, $2 = content
     echo "----------------------------------------------------------------------"
 }
 
-install_claude_skill() {
+# Agent skills are PORTABLE (Claude Code, Cursor, Windsurf, …). Claude Code auto-loads
+# them from ~/.claude/skills/, so for that client we drop copies there; other clients
+# read the same SKILL.md files from the repo's .agents/skills/ tree. Also delivers the
+# Claude Code `dedup-auditor` subagent. All best-effort (warns, never fails the install).
+install_agent_skill() {
     # Upgrade cleanup: remove old-named artifacts so upgraders are not stranded.
     if [ -e "$HOME/.local/bin/code-search-mcp" ]; then
         rm -f "$HOME/.local/bin/code-search-mcp"
@@ -208,12 +212,23 @@ install_claude_skill() {
         success "Removed old skill dir $HOME/.claude/skills/semantic-code-search-mcp"
     fi
 
-    local skill_dir="$HOME/.claude/skills/sai"
-    mkdir -p "$skill_dir"
-    if curl -fsSL "${RAW_BASE}/.agents/skills/sai/SKILL.md" -o "${skill_dir}/SKILL.md"; then
-        success "Installed skill → ${skill_dir}/SKILL.md"
+    local skill
+    for skill in sai sai-deslop; do
+        local skill_dir="$HOME/.claude/skills/$skill"
+        mkdir -p "$skill_dir"
+        if curl -fsSL "${RAW_BASE}/.agents/skills/${skill}/SKILL.md" -o "${skill_dir}/SKILL.md"; then
+            success "Installed skill → ${skill_dir}/SKILL.md"
+        else
+            warn "Could not download ${skill} SKILL.md (offline, or not yet on main?). Skipping."
+        fi
+    done
+
+    local agent_dir="$HOME/.claude/agents"
+    mkdir -p "$agent_dir"
+    if curl -fsSL "${RAW_BASE}/.claude/agents/dedup-auditor.md" -o "${agent_dir}/dedup-auditor.md"; then
+        success "Installed subagent → ${agent_dir}/dedup-auditor.md"
     else
-        warn "Could not download SKILL.md (offline?). Skipping skill file."
+        warn "Could not download dedup-auditor subagent (offline, or not yet on main?). Skipping."
     fi
 }
 
@@ -231,7 +246,7 @@ configure_platform() {
     printf '\n%b• %s%b\n' "$BOLD" "$id" "$NC"
     case "$id" in
         claude-code)
-            install_claude_skill
+            install_agent_skill
             if [ "$WRITE" = true ]; then
                 # Prefer the official Claude Code CLI (writes a project-scoped .mcp.json);
                 # fall back to a hand-merged JSON config if `claude` is absent or errors.
@@ -354,4 +369,8 @@ main() {
     echo "  Docs: ${PAGES_URL}"
 }
 
-main "$@"
+# Run main when executed or piped (curl | bash), but NOT when sourced for tests
+# (the drift test sets SAI_INSTALL_SH_NO_MAIN=1 to load the snippet generators only).
+if [ -z "${SAI_INSTALL_SH_NO_MAIN:-}" ]; then
+    main "$@"
+fi

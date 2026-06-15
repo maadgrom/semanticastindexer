@@ -96,8 +96,11 @@ duplicates: build ## Near-duplicate clusters (full build has all backends/embedd
 similar: build ## Nearest neighbours (full build has all backends/embedders)
 	cd $(TARGET) && $(BIN) --collection $(COLLECTION) --backend $(BACKEND) --embedder $(EMBEDDER) similar $(SIM_ARGS)
 
-test: ## Run unit tests (uses --features all)
+test: test-setup ## Run unit tests (uses --features all) + setup-tooling shell tests
 	cargo test --release --manifest-path $(MANIFEST) --features all
+
+test-setup: ## Shell tests for the MCP setup tooling (no build required)
+	bash $(THIS_DIR)/mcp-setup/tests/test_setup.sh
 
 test-all: ## Run unit tests (uses --features all)
 	cargo test --release --manifest-path $(MANIFEST) --features all
