@@ -125,6 +125,34 @@ pub mod ort_impl {
         prefix_style: PrefixStyle,
     }
 
+    /// Retry a HuggingFace download with exponential backoff. HF rate-limits
+    /// anonymous requests with HTTP 429, which otherwise flakes CI on the model
+    /// pull; a few short retries (plus an `HF_TOKEN` when available, and the HF
+    /// cache on repeat runs) clears the transient failures. Permanent errors
+    /// (e.g. 404) just exhaust the attempts and surface unchanged.
+    fn with_download_retry<T, E: std::fmt::Display>(
+        what: &str,
+        mut op: impl FnMut() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        const MAX_ATTEMPTS: u32 = 4;
+        let mut attempt: u32 = 1;
+        loop {
+            match op() {
+                Ok(value) => return Ok(value),
+                Err(err) if attempt < MAX_ATTEMPTS => {
+                    let backoff = std::time::Duration::from_millis(1000u64 * 2u64.pow(attempt - 1));
+                    eprintln!(
+                        "hf-hub: {what} failed (attempt {attempt}/{MAX_ATTEMPTS}): {err}; \
+                         retrying in {backoff:?}"
+                    );
+                    std::thread::sleep(backoff);
+                    attempt += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     impl OrtEmbedder {
         /// Download (or reuse from cache) the model + tokenizer for `model_repo` and
         /// build the ONNX session. `model_cache` sets the HF cache dir for offline reuse.
@@ -144,12 +172,14 @@ pub mod ort_impl {
                 .context("failed to initialize the HuggingFace Hub client")?;
             let repo = api.model(model_repo.to_string());
 
-            let model_path = repo.get("onnx/model.onnx").with_context(|| {
-                format!("failed to download onnx/model.onnx from {model_repo} (check network or set duckdb.model_cache to a pre-populated dir)")
-            })?;
-            let tokenizer_path = repo
-                .get("tokenizer.json")
-                .with_context(|| format!("failed to download tokenizer.json from {model_repo}"))?;
+            let model_path = with_download_retry("onnx/model.onnx", || repo.get("onnx/model.onnx"))
+                .with_context(|| {
+                    format!("failed to download onnx/model.onnx from {model_repo} (check network or set duckdb.model_cache to a pre-populated dir)")
+                })?;
+            let tokenizer_path =
+                with_download_retry("tokenizer.json", || repo.get("tokenizer.json")).with_context(
+                    || format!("failed to download tokenizer.json from {model_repo}"),
+                )?;
 
             Self::from_files(&model_path, &tokenizer_path, prefix_style)
         }
