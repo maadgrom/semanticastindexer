@@ -132,7 +132,7 @@ async fn with_worker<T, F>(backend: Backend, plan: &Plan, f: F) -> Result<T>
 where
     F: AsyncFnOnce(&BackendHandle) -> Result<T>,
 {
-    let (handle, thread) = worker::spawn(backend, plan.clone(), plan.backend == "duckdb")?;
+    let (handle, thread) = worker::spawn(backend, plan.clone(), plan.can_embed_locally())?;
     let result = f(&handle).await;
     drop(handle);
     if thread.join().is_err() {
@@ -410,7 +410,7 @@ async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()
     // DuckDB backend is not). Unlike the CLI paths we do NOT join the worker thread on
     // shutdown: the rmcp service owns handle clones, and a leaked clone must not be able
     // to wedge server exit after stdio EOF — process exit reaps the thread instead.
-    let can_embed_locally = plan.backend == "duckdb";
+    let can_embed_locally = plan.can_embed_locally();
     let (handle, _thread) = worker::spawn(backend, plan.clone(), can_embed_locally)?;
     crate::mcp::serve_inner(handle, &plan, allow_write, allow_setup).await
 }

@@ -63,12 +63,13 @@ fn init_interview_over_piped_stdin() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("binary must spawn");
-    // backend=qdrant, collection=my_code, model=default, url=set, excludes=vendor.
+    // backend=qdrant, embedder=qdrant (server-side), collection=my_code, model=default,
+    // url=set, excludes=vendor.
     child
         .stdin
         .take()
         .unwrap()
-        .write_all(b"qdrant\nmy_code\n\nhttps://c1.eu.cloud:6334\nvendor\n")
+        .write_all(b"qdrant\nqdrant\nmy_code\n\nhttps://c1.eu.cloud:6334\nvendor\n")
         .unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success(), "interview must succeed: {out:?}");

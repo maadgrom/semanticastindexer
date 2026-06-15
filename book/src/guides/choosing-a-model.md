@@ -24,8 +24,11 @@ Pick `ort` when you want a self-contained, offline-after-first-run binary. Pick
 `ollama` when you already run Ollama and want to reuse its model library (or want
 a larger, higher-dimension model than the bundled ONNX defaults).
 
-> The third backend, **qdrant**, does not use a local embedder at all — it relies
-> on Qdrant Cloud server-side inference. See
+> The third backend, **qdrant**, defaults to `embedder: qdrant` — Qdrant Cloud
+> server-side inference (no local embedder). But with `embedder: ort` (or `ollama`) it
+> embeds on-device and upserts raw vectors — so a **code model like
+> `jinaai/jina-embeddings-v2-base-code` (768-d) is usable against self-hosted / OSS
+> Qdrant**, not just the Cloud path. See
 > [Backends & embedders](../reference/backends-and-embedders.md) and
 > [Qdrant Cloud](../integrations/qdrant-cloud.md).
 

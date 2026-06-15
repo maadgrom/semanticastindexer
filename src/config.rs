@@ -26,6 +26,9 @@ pub(crate) const DEFAULT_ORT_MODEL: &str = "jinaai/jina-embeddings-v2-base-code"
 const DEFAULT_VECTOR_DIM: u64 = 384;
 pub(crate) const DEFAULT_ORT_VECTOR_DIM: u64 = 768;
 const DEFAULT_BACKEND: &str = "qdrant";
+/// Default embedder for any non-qdrant (i.e. duckdb) backend: local ONNX. The qdrant
+/// backend instead defaults to the `qdrant` server-side-inference value (see
+/// `build_plan_with_defaults`, which computes the embedder default from the resolved backend).
 const DEFAULT_EMBEDDER: &str = "ort";
 const DEFAULT_CHUNKER: &str = "lines";
 
@@ -92,7 +95,9 @@ const HARD_PRUNE_DIRS: &[&str] = &[
 pub struct Config {
     /// Vector backend: "qdrant" (default) or "duckdb". CLI `--backend` overrides.
     pub backend: Option<String>,
-    /// Embedder for the duckdb backend: "ort" (default) or "ollama". CLI `--embedder` overrides.
+    /// Who computes embeddings — scoped to THIS config's `backend`: `ort`/`ollama` (local) for
+    /// any backend, or `qdrant` (server-side inference) for the qdrant backend. CLI `--embedder`
+    /// overrides; when unset, the resolved backend's default applies (qdrant → `qdrant`, else `ort`).
     pub embedder: Option<String>,
     /// Chunker: "lines" or "ast" (tree-sitter, needs the `ast` feature).
     /// When not explicitly set, we auto-select "ast" for languages we have good
@@ -188,8 +193,9 @@ pub struct Plan {
     pub ext: Vec<String>,
     /// Selected vector backend: "qdrant" or "duckdb".
     pub backend: String,
-    /// Selected embedder (duckdb backend only): "ort" or "ollama".
-    #[cfg_attr(not(feature = "duckdb"), allow(dead_code))]
+    /// Selected embedder. For the qdrant backend: "qdrant" (server-side inference,
+    /// default), "ort", or "ollama" (local embed). For the duckdb backend: "ort"
+    /// (default) or "ollama".
     pub embedder: String,
     /// Selected chunker. When not explicitly provided, this is auto-chosen based
     /// on language + whether the `ast` feature is available at compile time.
@@ -250,6 +256,15 @@ impl Plan {
         (!self.include_active || self.include.is_match(key)) && !self.exclude.is_match(key)
     }
 
+    /// Whether this plan embeds locally (the worker can call `embed_query`/`embed_passage`
+    /// → `query_by_vector` instead of the server text-query path). Single source of truth
+    /// for the three call sites (`app.rs` index/MCP workers, `mcp.rs` server). True for the
+    /// `ort`/`ollama` embedders (duckdb always; qdrant in local-embed mode); false for the
+    /// `qdrant` embedder (Qdrant Cloud server-side inference).
+    pub fn can_embed_locally(&self) -> bool {
+        self.embedder == "ort" || self.embedder == "ollama"
+    }
+
     /// Resolved `find_similar` minimum cosine score (config value or built-in default).
     pub fn find_similar_min_score(&self) -> f32 {
         self.find_similar_min_score
@@ -272,31 +287,28 @@ impl Plan {
 }
 
 /// Merge CLI args over the YAML config into a resolved Plan.
-/// MCP server defaults: duckdb + ort — the fully-offline local path (ONNX model is cached
+/// MCP server default backend: duckdb — the fully-offline local path (ONNX model is cached
 /// on first run; no daemon, no API quota). Applied only when neither the CLI flag nor the
-/// config sets the backend/embedder — i.e. `flag > config > these` — so the MCP server
-/// honors `backend:`/`embedder:` from `sai-cfg.yml`.
+/// config sets the backend — i.e. `flag > config > this` — so the MCP server honors
+/// `backend:` from `sai-cfg.yml`. The embedder default is then derived from the resolved
+/// backend (duckdb → `ort`), so the MCP server still defaults to fully-offline `ort`.
 const MCP_DEFAULT_BACKEND: &str = "duckdb";
-const MCP_DEFAULT_EMBEDDER: &str = "ort";
 
 /// Resolve the runtime [`Plan`]: CLI flags win, then `sai-cfg.yml`, then the global
-/// defaults (`qdrant` + `ort`).
+/// defaults (`qdrant` backend → `qdrant` embedder, i.e. server-side inference).
 pub fn build_plan(args: &Args) -> Result<Plan> {
-    build_plan_with_defaults(args, DEFAULT_BACKEND, DEFAULT_EMBEDDER)
+    build_plan_with_defaults(args, DEFAULT_BACKEND)
 }
 
-/// Like [`build_plan`], but the MCP server's offline defaults (`duckdb` + `ort`) apply only
-/// when neither the CLI flag nor the config specifies the backend/embedder. This keeps the
-/// config authoritative: `--config sai-cfg.yml` alone is enough to drive the server.
+/// Like [`build_plan`], but the MCP server's offline default backend (`duckdb`) applies only
+/// when neither the CLI flag nor the config specifies the backend. This keeps the config
+/// authoritative: `--config sai-cfg.yml` alone is enough to drive the server. The embedder
+/// default follows the resolved backend (duckdb → `ort`).
 pub fn build_mcp_plan(args: &Args) -> Result<Plan> {
-    build_plan_with_defaults(args, MCP_DEFAULT_BACKEND, MCP_DEFAULT_EMBEDDER)
+    build_plan_with_defaults(args, MCP_DEFAULT_BACKEND)
 }
 
-fn build_plan_with_defaults(
-    args: &Args,
-    backend_default: &str,
-    embedder_default: &str,
-) -> Result<Plan> {
+fn build_plan_with_defaults(args: &Args, backend_default: &str) -> Result<Plan> {
     let config = load_config(args)?;
 
     let exclude = build_globset(&config.exclude, "exclude")?;
@@ -306,16 +318,53 @@ fn build_plan_with_defaults(
     let mut exclude_dirs: HashSet<String> = HARD_PRUNE_DIRS.iter().map(|s| s.to_string()).collect();
     exclude_dirs.extend(config.exclude_dirs.iter().cloned());
 
+    // Resolve the storage backend: CLI flag > config > the caller's default.
     let backend = args
         .backend
         .clone()
-        .or(config.backend)
+        .or_else(|| config.backend.clone())
         .unwrap_or_else(|| backend_default.to_string());
+
+    // Embedder resolution is BACKEND-SCOPED. An `embedder:` value describes how the
+    // CONFIG's backend embeds, so it must not leak across a `--backend` override: a duckdb
+    // config's `ort` carried into a `--backend qdrant` run would silently flip qdrant into
+    // local-embed mode (and demand a local embedder for ops that never embed, e.g. flush).
+    // Resolution:
+    //   1. an explicit CLI `--embedder` always wins;
+    //   2. else the config's `embedder`, but ONLY when its backend matches the resolved
+    //      backend (or the config names no backend) — otherwise it described a different
+    //      backend and is dropped;
+    //   3. else the resolved backend's natural default: qdrant → `qdrant` (server-side
+    //      inference), every other backend → `ort` (local ONNX).
+    let config_embedder_applies = match &config.backend {
+        Some(b) => b == &backend,
+        None => true,
+    };
     let embedder = args
         .embedder
         .clone()
-        .or(config.embedder)
-        .unwrap_or_else(|| embedder_default.to_string());
+        .or_else(|| {
+            if config_embedder_applies {
+                config.embedder.clone()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            if backend == "qdrant" {
+                "qdrant".to_string()
+            } else {
+                DEFAULT_EMBEDDER.to_string()
+            }
+        });
+
+    // `embedder: qdrant` is server-side inference and only makes sense for the qdrant
+    // backend; a duckdb (or any non-qdrant) backend must embed locally via ort/ollama.
+    if embedder == "qdrant" && backend != "qdrant" {
+        anyhow::bail!(
+            "embedder 'qdrant' (server-side inference) is only valid with backend: qdrant"
+        );
+    }
 
     // ort (local ONNX via DuckDB) now defaults to the code-specialized Jina model.
     // All other paths (Qdrant server inference, Ollama) keep the lightweight E5 default.
@@ -533,6 +582,7 @@ fn load_config(args: &Args) -> Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use tempfile::TempDir;
 
     /// Resolution order: the standard `sai-cfg.yml` wins over `sai-cfg.yaml`, which
@@ -584,6 +634,133 @@ mod tests {
         // Has a directory component → not bare.
         assert!(!is_bare_default_config_name("configs/sai-cfg.yml"));
         assert!(!is_bare_default_config_name("other.yml"));
+    }
+
+    /// Build a Plan from inline YAML written to a temp config file (no network).
+    fn plan_from_yaml(yaml: &str) -> Result<Plan> {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sai-cfg.yml");
+        std::fs::write(&path, yaml).unwrap();
+        let args = Args::try_parse_from(["sai", "--config", path.to_str().unwrap()]).unwrap();
+        build_plan(&args)
+    }
+
+    /// Backend-aware embedder default: a qdrant config WITHOUT an explicit `embedder`
+    /// resolves to the `qdrant` (server-side inference) embedder and does NOT embed
+    /// locally — today's exact Cloud behavior, now keyed on the embedder.
+    #[test]
+    fn qdrant_backend_defaults_to_qdrant_embedder() {
+        let plan = plan_from_yaml("backend: qdrant\n").unwrap();
+        assert_eq!(plan.embedder, "qdrant");
+        assert!(
+            !plan.can_embed_locally(),
+            "the qdrant (server-side) embedder must keep the Document path"
+        );
+        // e5/384 preserved as the server default (is_ort false → DEFAULT_MODEL).
+        assert_eq!(plan.model, DEFAULT_MODEL);
+        assert_eq!(plan.vector_dim, DEFAULT_VECTOR_DIM);
+    }
+
+    /// `embedder: ort` on the qdrant backend → local-embed mode (jina/768).
+    #[test]
+    fn qdrant_with_ort_embedder_enables_local_embed() {
+        let plan = plan_from_yaml("backend: qdrant\nembedder: ort\n").unwrap();
+        assert_eq!(plan.embedder, "ort");
+        assert!(plan.can_embed_locally());
+        assert_eq!(plan.model, DEFAULT_ORT_MODEL);
+        assert_eq!(plan.vector_dim, DEFAULT_ORT_VECTOR_DIM);
+    }
+
+    /// `embedder: ollama` on the qdrant backend → local-embed mode.
+    #[test]
+    fn qdrant_with_ollama_embedder_enables_local_embed() {
+        let plan = plan_from_yaml("backend: qdrant\nembedder: ollama\n").unwrap();
+        assert_eq!(plan.embedder, "ollama");
+        assert!(plan.can_embed_locally());
+    }
+
+    /// Backend-scoped embedder resolution: a config's `embedder` describes its OWN backend,
+    /// so a `--backend qdrant` override of a duckdb config must NOT leak that config's `ort`
+    /// into the qdrant run — it resolves to qdrant's natural `qdrant` (server-side) default.
+    /// This is the regression the dedup-gate's `flush` cleanup hit; it means flush (and any
+    /// non-embedding op) needs no local embedder on a server-side qdrant override.
+    #[test]
+    fn config_embedder_does_not_leak_across_backend_override() {
+        let args = Args::try_parse_from(["sai", "--backend", "qdrant"]).unwrap();
+        // Stand in for the auto-discovered repo-root duckdb config.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sai-cfg.yml");
+        std::fs::write(&path, "backend: duckdb\nembedder: ort\n").unwrap();
+        let args = Args {
+            config: Some(path.to_string_lossy().to_string()),
+            ..args
+        };
+        let plan = build_plan(&args).unwrap();
+        assert_eq!(plan.backend, "qdrant");
+        assert_eq!(
+            plan.embedder, "qdrant",
+            "the duckdb config's `ort` must not leak into a --backend qdrant run"
+        );
+        assert!(
+            !plan.can_embed_locally(),
+            "server-side qdrant — flush/index need no local embedder"
+        );
+    }
+
+    /// But an `embedder` written in a config whose backend MATCHES the resolved backend is
+    /// honored: a real qdrant config asking for local `ort` embedding still gets it.
+    #[test]
+    fn config_embedder_applies_when_backend_matches() {
+        let plan = plan_from_yaml("backend: qdrant\nembedder: ort\n").unwrap();
+        assert_eq!(plan.embedder, "ort");
+        assert!(
+            plan.can_embed_locally(),
+            "qdrant + ort = local-embed, as written"
+        );
+    }
+
+    /// `embedder: qdrant` with a non-qdrant backend is a hard validation error.
+    #[test]
+    fn qdrant_embedder_with_duckdb_backend_errors() {
+        // `Plan` is not `Debug`, so match the `Err` directly instead of `unwrap_err()`.
+        let err = match plan_from_yaml("backend: duckdb\nembedder: qdrant\n") {
+            Ok(_) => panic!("expected a validation error for embedder qdrant + backend duckdb"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains(
+                "embedder 'qdrant' (server-side inference) is only valid with backend: qdrant"
+            ),
+            "got: {err}"
+        );
+    }
+
+    /// The duckdb backend with no explicit embedder defaults to `ort` (local embed).
+    #[test]
+    fn duckdb_backend_defaults_to_ort_embedder() {
+        let plan = plan_from_yaml("backend: duckdb\n").unwrap();
+        assert_eq!(plan.embedder, "ort");
+        assert!(plan.can_embed_locally());
+        assert_eq!(plan.model, DEFAULT_ORT_MODEL);
+        assert_eq!(plan.vector_dim, DEFAULT_ORT_VECTOR_DIM);
+    }
+
+    /// `can_embed_locally()` keys purely on the embedder value.
+    #[test]
+    fn can_embed_locally_by_embedder() {
+        let mut plan = test_support::minimal_plan();
+
+        plan.embedder = "ort".to_string();
+        assert!(plan.can_embed_locally(), "ort embeds locally");
+
+        plan.embedder = "ollama".to_string();
+        assert!(plan.can_embed_locally(), "ollama embeds locally");
+
+        plan.embedder = "qdrant".to_string();
+        assert!(
+            !plan.can_embed_locally(),
+            "the qdrant embedder is server-side inference"
+        );
     }
 }
 

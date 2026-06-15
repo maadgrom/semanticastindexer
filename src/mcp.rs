@@ -240,7 +240,7 @@ impl SaiServer {
     /// enables the `refresh` write tool (the worker's backend must have been opened
     /// writable by the caller in that case).
     pub fn new(backend: BackendHandle, plan: &Plan, allow_write: bool, allow_setup: bool) -> Self {
-        let can_embed_locally = plan.backend == "duckdb";
+        let can_embed_locally = plan.can_embed_locally();
         Self {
             inner: Arc::new(ServerInner {
                 backend,

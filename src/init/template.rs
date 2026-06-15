@@ -68,10 +68,14 @@ pub fn render(a: &Answers) -> String {
     y.push_str(&format!("backend: {}\n", yaml_scalar(&a.backend)));
 
     y.push_str(
-        "# Embedder for the DuckDB backend (IGNORED by Qdrant, which embeds server-side):\n\
+        "# Embedder — the single knob for WHERE and HOW embeddings are produced:\n\
          #   ort     — local ONNX Runtime; downloads the model from `duckdb.model_repo` (default)\n\
          #   ollama  — remote Ollama HTTP server (see the `ollama:` block; `ollama.model` REQUIRED)\n\
-         # CLI `--embedder <name>` overrides this. Default: ort.\n",
+         #   qdrant  — Qdrant Cloud SERVER-SIDE inference (the `Document` API). ONLY valid with\n\
+         #             backend: qdrant; this is that backend's default.\n\
+         # For the qdrant backend: `qdrant` = server-side inference, `ort`/`ollama` = embed\n\
+         # locally then upsert raw vectors (OSS/self-hosted Qdrant). For duckdb: `ort`/`ollama`.\n\
+         # CLI `--embedder <name>` overrides this. Default: backend-aware (qdrant → qdrant; duckdb → ort).\n",
     );
     y.push_str(&format!("embedder: {}\n", yaml_scalar(&a.embedder)));
 
@@ -121,23 +125,35 @@ pub fn render(a: &Answers) -> String {
     y.push_str(&format!("vector_dim: {}\n", a.vector_dim));
 
     // Qdrant block: an explicit URL is written; otherwise the env-var route is documented.
+    // WHERE embedding happens is carried by the top-level `embedder` field (qdrant =
+    // server-side inference; ort/ollama = local embed), so this block only holds `url`.
     y.push_str(
         "# Qdrant backend settings (only used when backend: qdrant). The API key is NOT here — it\n\
-         # is read only from the QDRANT_API_KEY environment variable (a secret).\n",
+         # is read only from the QDRANT_API_KEY environment variable (a secret). With\n\
+         # `embedder: qdrant` (the default) embeddings are produced by Qdrant Cloud server-side\n\
+         # inference; with `embedder: ort`/`ollama` they are embedded locally and upserted as\n\
+         # raw vectors (OSS/self-hosted Qdrant; needs --features qdrant,ort or qdrant,ollama).\n",
     );
-    match &a.qdrant_url {
-        Some(url) => {
-            y.push_str("qdrant:\n");
-            y.push_str(
-                "  # Qdrant cluster gRPC URL. The QDRANT_URL env var, if set, overrides this.\n",
-            );
-            y.push_str(&format!("  url: {}\n", yaml_scalar(url)));
+    // Render an ACTIVE qdrant block only for the qdrant backend (the interview only sets
+    // qdrant_url there); every other backend gets the commented block so the duckdb default
+    // render stays byte-stable. `qdrant_url` is therefore emitted only under this arm — it
+    // is never rendered for a non-qdrant backend.
+    if a.backend == "qdrant" {
+        y.push_str("qdrant:\n");
+        y.push_str(
+            "  # Qdrant cluster gRPC URL. The QDRANT_URL env var, if set, overrides this.\n",
+        );
+        match &a.qdrant_url {
+            Some(url) => y.push_str(&format!("  url: {}\n", yaml_scalar(url))),
+            None => y.push_str("  # url: https://<cluster-id>.<region>.aws.cloud.qdrant.io:6334\n"),
         }
-        None => y.push_str(
+    } else {
+        // Non-qdrant (duckdb default): keep the historical commented block byte-stable.
+        y.push_str(
             "qdrant:\n\
              # Qdrant cluster gRPC URL. The QDRANT_URL env var, if set, overrides this.\n\
              # url: https://<cluster-id>.<region>.aws.cloud.qdrant.io:6334\n",
-        ),
+        );
     }
 
     // DuckDB block: the path is always written; model_repo only when the chosen ort
@@ -338,6 +354,64 @@ mod tests {
             ..a
         });
         assert_eq!(no_url.qdrant.url, None, "no URL → env var route");
+    }
+
+    /// The `embedder` field carries where embedding happens and round-trips for the qdrant
+    /// backend: `qdrant` (server-side) and `ort` (local) both render and parse back. No
+    /// `qdrant.inference` knob is emitted anymore.
+    #[test]
+    fn embedder_renders_and_round_trips_for_qdrant() {
+        // Local embed: embedder=ort renders/parses.
+        let local = parse(&Answers {
+            backend: "qdrant".to_string(),
+            embedder: "ort".to_string(),
+            ..Answers::default()
+        });
+        assert_eq!(local.backend.as_deref(), Some("qdrant"));
+        assert_eq!(local.embedder.as_deref(), Some("ort"));
+
+        // Server-side: embedder=qdrant renders/parses.
+        let server = parse(&Answers {
+            backend: "qdrant".to_string(),
+            embedder: "qdrant".to_string(),
+            model: "intfloat/multilingual-e5-small".to_string(),
+            vector_dim: 384,
+            ..Answers::default()
+        });
+        assert_eq!(server.embedder.as_deref(), Some("qdrant"));
+    }
+
+    /// The retired `qdrant.inference` knob is never emitted: no render path writes an
+    /// active OR commented `inference:` config line under the qdrant block. (The word
+    /// "inference" still appears in prose, e.g. "server-side inference" — only the
+    /// rendered KEY must be gone.)
+    #[test]
+    fn no_qdrant_inference_line_is_rendered() {
+        for a in [
+            Answers::default(),
+            Answers {
+                backend: "qdrant".to_string(),
+                embedder: "qdrant".to_string(),
+                ..Answers::default()
+            },
+            Answers {
+                backend: "qdrant".to_string(),
+                embedder: "ort".to_string(),
+                ..Answers::default()
+            },
+        ] {
+            let yaml = render(&a);
+            assert!(
+                !yaml.contains("inference: server") && !yaml.contains("inference: local"),
+                "render must not emit a qdrant.inference value (backend={}, embedder={})",
+                a.backend,
+                a.embedder
+            );
+            assert!(
+                !yaml.contains("\n  inference:"),
+                "render must not emit an active qdrant.inference key"
+            );
+        }
     }
 
     /// Ollama answers fill the ollama block (url + model) for the embedder to read.
