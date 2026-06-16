@@ -29,6 +29,10 @@ pub mod app;
 pub mod cli;
 pub mod config;
 pub mod domain;
+// Composition root (clean-arch): builds the read+write services + the shared
+// `Arc<dyn VectorStore>` (qdrant store / duckdb closure-mailbox) for the CLI. The MCP server
+// still uses the old `vectordbs::factory` + `worker` path (rewired/deleted in US-005/006).
+pub mod factory;
 pub mod git;
 pub mod indexer;
 pub mod init;

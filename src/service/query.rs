@@ -43,6 +43,13 @@ impl QueryService {
         self.store.query(q, limit).await
     }
 
+    /// Best-effort check for any dirty-stamped (uncommitted) chunks. Delegates to the store;
+    /// backends without the column (or on error) report `false`. Drives the CLI `duplicates`
+    /// dirty-tree warning (mirrors `app::warn_on_dirty`).
+    pub async fn has_dirty(&self) -> Result<bool> {
+        self.store.has_dirty().await
+    }
+
     /// Resolve a `find_similar` request into ranked neighbours, applying `min_score`.
     /// MIRRORS `search::find_similar`:
     /// - [`SimilarTarget::Code`] embeds the snippet as a PASSAGE then NN-searches by it.

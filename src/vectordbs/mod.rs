@@ -355,8 +355,11 @@ pub fn dim_mismatch_duckdb_path(err: &anyhow::Error) -> Option<String> {
 /// Build the embedder selected by `plan.embedder` for the DuckDB backend. Arms are
 /// cfg-gated: selecting an embedder whose feature was not compiled in yields a clear
 /// error. `ort` is the default; `ollama` is the remote HTTP option.
+// `pub(crate)`: reused by the clean-arch composition root (`crate::factory`) to build the
+// local embedder for the DuckDb store + qdrant local-embed mode. No logic change — the same
+// fn the enum `factory` calls; just widened so the new factory does not duplicate it.
 #[cfg(feature = "duckdb")]
-fn build_embedder(plan: &Plan) -> Result<embedder::Embedder> {
+pub(crate) fn build_embedder(plan: &Plan) -> Result<embedder::Embedder> {
     match plan.embedder.as_str() {
         "ort" => {
             #[cfg(feature = "ort")]
