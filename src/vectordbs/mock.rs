@@ -292,13 +292,11 @@ impl MockBackend {
 
     /// Deterministic canned query vector (length 4). Distinct text → distinct vector.
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric query-side twin of embed_passage
         Ok(canned_vector(text))
     }
 
     /// Deterministic canned passage vector (same scheme as `embed_query`).
     pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric passage-side twin of embed_query
         Ok(canned_vector(text))
     }
 }

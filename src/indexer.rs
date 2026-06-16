@@ -1048,7 +1048,6 @@ const double = (n: number) => n * 2
     #[cfg(feature = "ast")]
     #[test]
     fn ast_rust_captures_only_functions() {
-        // sai-noduplicate: per-language AST capture test (Rust), mirror of the Go case
         use std::path::Path;
 
         let src = "\
@@ -1114,7 +1113,6 @@ impl Widget {
     #[cfg(feature = "ast")]
     #[test]
     fn ast_go_captures_only_functions() {
-        // sai-noduplicate: per-language AST capture test (Go), mirror of the Rust case
         use std::path::Path;
 
         let src = "\
@@ -1179,7 +1177,6 @@ func (w Widget) Method() uint64 {
     #[cfg(feature = "ast")]
     #[test]
     fn ast_python_captures_only_functions() {
-        // sai-noduplicate: per-language AST capture test (Python), mirror of the Rust/Go cases
         use std::path::Path;
 
         let src = "\

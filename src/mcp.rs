@@ -699,7 +699,6 @@ fn internal(e: anyhow::Error) -> McpError {
 
 /// Compile an optional path glob, surfacing a clear `invalid_params` on a bad pattern.
 fn compile_glob_opt(pattern: Option<&str>) -> Result<Option<globset::GlobMatcher>, McpError> {
-    // sai-noduplicate: glob-compile twin of duckdb::compile_glob; different error domain (McpError vs anyhow)
     match pattern {
         None => Ok(None),
         Some(p) => globset::Glob::new(p)

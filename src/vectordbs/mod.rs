@@ -90,6 +90,26 @@ pub fn format_query(style: PrefixStyle, text: &str) -> String {
     }
 }
 
+/// Runtime guard shared by both backends: a locally-produced vector's length MUST equal
+/// the configured `vector_dim`. A mismatch means the chosen model does not match the
+/// config. Single source of truth for the dim-guard message used by the DuckDB table
+/// column (`FLOAT[vector_dim]`) and the Qdrant raw-vector (local-embed) path.
+#[cfg_attr(
+    not(any(
+        feature = "duckdb",
+        all(feature = "qdrant", any(feature = "ort", feature = "ollama"))
+    )),
+    allow(dead_code)
+)]
+pub fn check_dim(produced: usize, vector_dim: u64) -> Result<()> {
+    if produced as u64 != vector_dim {
+        anyhow::bail!(
+            "embedder produced {produced}-d vectors but vector_dim={vector_dim} — set vector_dim to match the model (e5-small=384, nomic-embed-text=768, mxbai-embed-large=1024)"
+        );
+    }
+    Ok(())
+}
+
 /// One embeddable slice of a source file, ready to upsert.
 pub struct CodeChunk {
     pub id: u64,
@@ -168,7 +188,6 @@ impl Backend {
 
     /// Begin a bulk insert window (e.g. drop index). No-op for Qdrant.
     pub async fn begin_bulk(&self) -> Result<()> {
-        // sai-noduplicate: inverse of end_bulk; intentionally symmetric bookend (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
             Backend::Qdrant(b) => b.begin_bulk().await,
@@ -181,7 +200,6 @@ impl Backend {
 
     /// End a bulk insert window (e.g. recreate index). No-op for Qdrant.
     pub async fn end_bulk(&self) -> Result<()> {
-        // sai-noduplicate: inverse of begin_bulk; intentionally symmetric bookend (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
             Backend::Qdrant(b) => b.end_bulk().await,
@@ -334,7 +352,6 @@ impl Backend {
     // Qdrant-only builds compile just the server-side-inference arm (which ignores `text`).
     #[cfg_attr(not(any(feature = "duckdb", test)), allow(unused_variables))]
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric query-side twin of embed_passage (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
             Backend::Qdrant(b) => b.embed_query(text).await,
@@ -352,7 +369,6 @@ impl Backend {
     // Qdrant-only builds compile just the server-side-inference arm (which ignores `text`).
     #[cfg_attr(not(any(feature = "duckdb", test)), allow(unused_variables))]
     pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric passage-side twin of embed_query (Backend dispatch)
         match self {
             #[cfg(feature = "qdrant")]
             Backend::Qdrant(b) => b.embed_passage(text).await,

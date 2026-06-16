@@ -24,9 +24,9 @@ use qdrant_client::Qdrant;
 use qdrant_client::qdrant::value::Kind;
 use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
-    Distance, Document, FieldType, Filter, GetPointsBuilder, PointStruct, Query,
-    QueryPointsBuilder, ScrollPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
-    VectorsOutput,
+    Distance, Document, FieldType, Filter, GetPointsBuilder, OptimizersConfigDiffBuilder,
+    PointStruct, Query, QueryPointsBuilder, ScrollPointsBuilder, UpdateCollectionBuilder,
+    UpsertPointsBuilder, Value, VectorParamsBuilder, VectorsOutput,
 };
 
 use crate::config::Plan;
@@ -34,6 +34,10 @@ use crate::vectordbs::{CodeChunk, Hit, PrefixStyle, format_passage, format_query
 
 /// Upsert batch size — server-side inference runs per request, so keep it modest.
 const UPSERT_BATCH: usize = 32;
+/// Qdrant's default `indexing_threshold` (KB of vectors before the HNSW index builds).
+/// `end_bulk` restores this; we never set a custom value at creation, so it is the server
+/// default. Setting the threshold to `0` (in `begin_bulk`) disables index building.
+const DEFAULT_INDEXING_THRESHOLD: u64 = 20_000;
 /// Over-fetch factor for vector search: HNSW can surface the same id more than once,
 /// so fetch extra candidates, dedup by id, then truncate. Mirrors the DuckDB path.
 const QUERY_OVERFETCH: u64 = 8;
@@ -157,32 +161,36 @@ impl QdrantBackend {
         Ok(())
     }
 
-    /// No-op for Qdrant (server-side inference, no local index maintenance).
+    /// Begin a bulk-insert window: disable HNSW index building (`indexing_threshold = 0`)
+    /// so a large upsert is not slowed by incremental graph maintenance and repeated
+    /// re-indexing of growing segments. Mirrors the DuckDB backend's drop-index-before-bulk
+    /// step; [`end_bulk`](Self::end_bulk) restores the threshold so the index builds once.
+    /// This is Qdrant's documented bulk-upload optimization.
     pub async fn begin_bulk(&self) -> Result<()> {
-        Ok(())
+        self.set_indexing_threshold(0)
+            .await
+            .context("failed to disable indexing for the bulk window")
     }
 
-    /// No-op for Qdrant.
+    /// End a bulk-insert window: restore the default `indexing_threshold`, letting the
+    /// optimizer build the HNSW index in a single pass over the freshly-upserted points.
     pub async fn end_bulk(&self) -> Result<()> {
-        Ok(())
+        self.set_indexing_threshold(DEFAULT_INDEXING_THRESHOLD)
+            .await
+            .context("failed to re-enable indexing after the bulk window")
     }
 
-    /// Runtime guard: a locally-produced vector's length MUST equal the configured
-    /// `vector_dim` (the collection is a single dense cosine vector of that size). A
-    /// mismatch means the chosen model does not match the config. Mirrors the DuckDB
-    /// `check_dim` (same actionable message). Server mode never calls this — server-side
-    /// inference always matches the collection model.
-    #[cfg_attr(not(any(feature = "ort", feature = "ollama")), allow(dead_code))]
-    fn check_dim(&self, produced: usize) -> Result<()> {
-        // sai-noduplicate: intentional mirror of duckdb::check_dim (same dim-guard message);
-        // the two backends are separate feature-gated modules with no shared home for it.
-        // (Marker must live INSIDE the fn body so the AST chunk's span carries it.)
-        if produced as u64 != self.vector_dim {
-            anyhow::bail!(
-                "embedder produced {produced}-d vectors but vector_dim={} — set vector_dim to match the model (e5-small=384, nomic-embed-text=768, mxbai-embed-large=1024)",
-                self.vector_dim
-            );
-        }
+    /// Update the collection's `indexing_threshold` (KB). `0` disables HNSW building
+    /// entirely; the default rebuilds it. Brackets bulk upserts — see
+    /// [`begin_bulk`](Self::begin_bulk) / [`end_bulk`](Self::end_bulk).
+    async fn set_indexing_threshold(&self, threshold: u64) -> Result<()> {
+        self.client
+            .update_collection(
+                UpdateCollectionBuilder::new(&self.collection).optimizers_config(
+                    OptimizersConfigDiffBuilder::default().indexing_threshold(threshold),
+                ),
+            )
+            .await?;
         Ok(())
     }
 
@@ -272,7 +280,7 @@ impl QdrantBackend {
             }
             let mut points = Vec::with_capacity(chunks.len());
             for (c, vec) in chunks.iter().zip(vectors) {
-                self.check_dim(vec.len())?;
+                super::check_dim(vec.len(), self.vector_dim)?;
                 let payload = Self::payload_for(c)?;
                 // `Vec<f32>` implements `Into<Vectors>`: a raw dense vector, no Document.
                 points.push(PointStruct::new(c.id, vec, payload));
@@ -547,12 +555,11 @@ impl QdrantBackend {
     #[cfg(any(feature = "ort", feature = "ollama"))]
     #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric query-side twin of embed_passage
         let embedder = self.embedder.as_ref().context(
             "qdrant backend embeds server-side; no local query embedding (set embedder: ort or ollama)",
         )?;
         let v = embedder.embed_query(text).await?;
-        self.check_dim(v.len())?;
+        super::check_dim(v.len(), self.vector_dim)?;
         Ok(v)
     }
 
@@ -561,7 +568,6 @@ impl QdrantBackend {
     #[cfg(not(any(feature = "ort", feature = "ollama")))]
     #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric query-side twin of embed_passage
         let _ = text;
         anyhow::bail!(
             "qdrant backend embeds server-side; no local query embedding (rebuild with --features qdrant,ort or qdrant,ollama)"
@@ -573,7 +579,6 @@ impl QdrantBackend {
     /// DuckDB twin (which `check_dim`s the result). Feeds MCP `sai_find_similar { code }`.
     #[cfg(any(feature = "ort", feature = "ollama"))]
     pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric passage-side twin of embed_query
         let embedder = self.embedder.as_ref().context(
             "qdrant backend embeds server-side; no local passage embedding (set embedder: ort or ollama)",
         )?;
@@ -581,14 +586,13 @@ impl QdrantBackend {
         let v = v
             .pop()
             .context("embedder returned no vector for the passage")?;
-        self.check_dim(v.len())?;
+        super::check_dim(v.len(), self.vector_dim)?;
         Ok(v)
     }
 
     /// Bare `--features qdrant` stub for [`Self::embed_passage`] (see [`Self::embed_query`]).
     #[cfg(not(any(feature = "ort", feature = "ollama")))]
     pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric passage-side twin of embed_query
         let _ = text;
         anyhow::bail!(
             "qdrant backend embeds server-side; no local passage embedding (rebuild with --features qdrant,ort or qdrant,ollama)"
@@ -665,7 +669,6 @@ impl QdrantBackend {
 
 /// Render a string payload field. Only the kinds we actually store are handled.
 fn payload_str(payload: &HashMap<String, Value>, key: &str) -> String {
-    // sai-noduplicate: twin of payload_str_opt; different return type (String vs Option) and integer coercion
     match payload.get(key).and_then(|v| v.kind.as_ref()) {
         Some(Kind::StringValue(s)) => s.clone(),
         Some(Kind::IntegerValue(i)) => i.to_string(),
@@ -683,7 +686,6 @@ fn payload_int(payload: &HashMap<String, Value>, key: &str) -> usize {
 
 /// Render an optional string payload field (e.g. `symbol`, set only by the AST chunker).
 fn payload_str_opt(payload: &HashMap<String, Value>, key: &str) -> Option<String> {
-    // sai-noduplicate: twin of payload_str; Option-returning, no integer coercion
     match payload.get(key).and_then(|v| v.kind.as_ref()) {
         Some(Kind::StringValue(s)) => Some(s.clone()),
         _ => None,
@@ -812,15 +814,19 @@ mod tests {
         );
     }
 
-    /// `check_dim` passes when the produced length equals `vector_dim`, and bails with the
-    /// actionable DuckDB-mirrored message otherwise — the guard that stops a wrong-dim
+    /// The shared `check_dim` guard passes when the produced length equals `vector_dim`,
+    /// and bails with the actionable message otherwise — the guard that stops a wrong-dim
     /// vector from ever reaching a `PointStruct`.
     #[test]
     fn check_dim_guards_vector_length() {
+        use crate::vectordbs::check_dim;
         let backend = QdrantBackend::test_backend(768);
-        assert!(backend.check_dim(768).is_ok(), "matching dim passes");
+        assert!(
+            check_dim(768, backend.vector_dim).is_ok(),
+            "matching dim passes"
+        );
 
-        let err = match backend.check_dim(384) {
+        let err = match check_dim(384, backend.vector_dim) {
             Ok(()) => panic!("expected a dim-mismatch error"),
             Err(e) => e.to_string(),
         };

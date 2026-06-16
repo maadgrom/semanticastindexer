@@ -131,19 +131,6 @@ impl DuckDbBackend {
         format!("{}_hnsw", self.collection)
     }
 
-    /// Runtime guard: the embedder's output dimensionality MUST equal the configured
-    /// `vector_dim` (the table column is `FLOAT[vector_dim]`). A mismatch means the
-    /// chosen model does not match the config (e5-small=384, nomic=768, mxbai=1024).
-    fn check_dim(&self, produced: usize) -> Result<()> {
-        if produced as u64 != self.vector_dim {
-            anyhow::bail!(
-                "embedder produced {produced}-d vectors but vector_dim={} — set vector_dim to match the model (e5-small=384, nomic-embed-text=768, mxbai-embed-large=1024)",
-                self.vector_dim
-            );
-        }
-        Ok(())
-    }
-
     /// If the collection table already exists, verify that the `embedding` column was
     /// declared with exactly the dimension in our Plan (`FLOAT[N]`). This catches the
     /// very common mistake of changing the embedding model (or vector_dim) without
@@ -279,7 +266,6 @@ impl DuckDbBackend {
     /// first delete/upsert and end_bulk after the last one. Failure to do so leaves
     /// the experimental HNSW index in a degraded-recall state after deletes.
     pub async fn begin_bulk(&self) -> Result<()> {
-        // sai-noduplicate: inverse of end_bulk; intentionally symmetric bookend
         self.conn
             .execute_batch(&format!("DROP INDEX IF EXISTS {};", self.index_name()))
             .context("failed to drop HNSW index for bulk insert")
@@ -289,7 +275,6 @@ impl DuckDbBackend {
     ///
     /// LOGICAL INVARIANT: See begin_bulk. This call is what restores full recall.
     pub async fn end_bulk(&self) -> Result<()> {
-        // sai-noduplicate: inverse of begin_bulk; intentionally symmetric bookend
         self.conn
             .execute_batch(&self.create_index_sql())
             .context("failed to recreate HNSW index after bulk insert")
@@ -322,7 +307,7 @@ impl DuckDbBackend {
         // connection isn't left with a dangling open transaction that poisons later calls.
         let result = (|| {
             for (c, vec) in chunks.iter().zip(vectors.iter()) {
-                self.check_dim(vec.len())?;
+                super::check_dim(vec.len(), self.vector_dim)?;
                 let literal = float_array_literal(vec);
                 // `symbol` is nullable: the line chunker leaves it None (→ SQL NULL); the AST
                 // chunker sets the captured symbol. Additive — the line path is unchanged.
@@ -394,7 +379,7 @@ impl DuckDbBackend {
     /// `score = 1 - array_cosine_distance` (higher is better, matching Qdrant).
     pub async fn query(&self, q: &str, limit: u64) -> Result<Vec<Hit>> {
         let qvec = self.embedder.embed_query(q).await?;
-        self.check_dim(qvec.len())?;
+        super::check_dim(qvec.len(), self.vector_dim)?;
         let literal = float_array_literal(&qvec);
         let sql = format!(
             "SELECT id, path, language, start_line, end_line, text,
@@ -449,7 +434,7 @@ impl DuckDbBackend {
         limit: u64,
         exclude_id: Option<u64>,
     ) -> Result<Vec<Hit>> {
-        self.check_dim(vec.len())?;
+        super::check_dim(vec.len(), self.vector_dim)?;
         let literal = float_array_literal(vec);
         // Over-fetch to survive HNSW duplicate candidates + the excluded self row.
         let fetch = limit.saturating_mul(OVERFETCH).max(limit);
@@ -693,7 +678,7 @@ impl DuckDbBackend {
     #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
         let v = self.embedder.embed_query(text).await?;
-        self.check_dim(v.len())?;
+        super::check_dim(v.len(), self.vector_dim)?;
         Ok(v)
     }
 
@@ -703,7 +688,7 @@ impl DuckDbBackend {
         let v = v
             .pop()
             .context("embedder returned no vector for the passage")?;
-        self.check_dim(v.len())?;
+        super::check_dim(v.len(), self.vector_dim)?;
         Ok(v)
     }
 
@@ -805,7 +790,6 @@ fn dedup_truncate(rows: Vec<Hit>, limit: usize) -> Vec<Hit> {
 
 /// Compile an optional path glob into a matcher, erroring on a bad pattern.
 fn compile_glob(pattern: Option<&str>) -> Result<Option<globset::GlobMatcher>> {
-    // sai-noduplicate: glob-compile twin of mcp::compile_glob_opt; different error domain (anyhow vs McpError)
     match pattern {
         None => Ok(None),
         Some(p) => {
@@ -891,7 +875,6 @@ mod no_duplicate_tests {
     /// has_no_duplicate_col returns false when the column is absent.
     #[test]
     fn has_no_duplicate_col_absent() {
-        // sai-noduplicate: paired column-guard test (absent case), mirror of _present
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("nodup_absent.duckdb");
 
@@ -913,7 +896,6 @@ mod no_duplicate_tests {
     /// has_no_duplicate_col returns true after ensure_ready creates the table with the column.
     #[test]
     fn has_no_duplicate_col_present() {
-        // sai-noduplicate: paired column-guard test (present case), mirror of _absent
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("nodup_present.duckdb");
 
@@ -933,7 +915,6 @@ mod no_duplicate_tests {
     /// all_chunks_with_vectors defaults no_duplicate to false on a table lacking the column.
     #[test]
     fn all_chunks_defaults_no_duplicate_false_on_old_table() {
-        // sai-noduplicate: paired all_chunks test (old-table case)
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("nodup_old.duckdb");
 
@@ -967,7 +948,6 @@ mod no_duplicate_tests {
     /// all_chunks_with_vectors reads the real no_duplicate value from a table that has the column.
     #[test]
     fn all_chunks_reads_no_duplicate_true() {
-        // sai-noduplicate: paired all_chunks test (new-table case)
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("nodup_new.duckdb");
 
@@ -1039,7 +1019,6 @@ mod validation_tests {
 
     #[test]
     fn duckdb_rejects_mismatched_dim_on_existing_table() {
-        // sai-noduplicate: paired dim-validation test (reject case)
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("mismatch.duckdb");
 
@@ -1076,7 +1055,6 @@ mod validation_tests {
 
     #[test]
     fn duckdb_accepts_matching_dim_on_existing_table() {
-        // sai-noduplicate: paired dim-validation test (accept case)
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("match.duckdb");
 
