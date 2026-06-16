@@ -23,12 +23,12 @@ pub struct RefreshReport {
     pub entries: Vec<(String, ReindexOutcome)>,
 }
 
-/// Live indexing progress, emitted once per upsert batch by
-/// [`crate::service::IndexingService::index_sources`].
+/// Live indexing progress, emitted once per upsert batch during indexing.
 ///
-/// `Send` + owned so it can later cross a channel to a UI/progress consumer (US-004 wires
-/// the CLI's TTY progress closure to it). The fields are unread until that wiring lands, so
-/// they carry `#[allow(dead_code)]` to satisfy `clippy -D warnings` in the lib target.
+/// `Send` + owned so it can cross a channel to a UI/progress consumer; the CLI renders it as
+/// the `\r` TTY progress bar. Some fields are read only by that renderer (a binary-side
+/// concern), so they carry `#[allow(dead_code)]` to keep `clippy -D warnings` happy in the
+/// library target.
 #[derive(Clone, Debug)]
 pub struct IndexProgress {
     /// Distinct files crossed into so far (counts up to `files_total`).
@@ -48,9 +48,9 @@ pub struct IndexProgress {
     pub path: String,
 }
 
-/// Summary returned by [`crate::service::IndexingService::index_sources`] — the data the
-/// CLI prints. Fields are unread until US-004 wires the CLI summary line, so they carry
-/// `#[allow(dead_code)]` for `clippy -D warnings` in the lib target.
+/// Summary of an indexing run — the data the CLI prints (chunks/files/skipped). Read only by
+/// the binary-side renderer, so the fields carry `#[allow(dead_code)]` for `clippy -D warnings`
+/// in the library target.
 pub struct IndexReport {
     /// Total chunks upserted.
     #[allow(dead_code)]
