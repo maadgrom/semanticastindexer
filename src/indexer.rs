@@ -215,6 +215,13 @@ pub fn collect_chunks(plan: &Plan) -> (Vec<CodeChunk>, usize, usize) {
 /// We deliberately call `passes_globs` (the single source of truth) for the
 /// actual pass/fail decision, and only use the separate checks to produce
 /// human-friendly exclusion *reasons* for the report. This prevents drift.
+///
+/// The entire `--dry-run` report IS this function's purpose and output: every `println!`
+/// below is intentional DATA output the user/script consumes, so it STAYS on stdout. A
+/// function-level `#[allow(clippy::print_stdout)]` is used here (rather than per-statement)
+/// because the report is a dense, contiguous block of `println!`s — including several
+/// inside `for` loops — and this function does nothing BUT emit that report.
+#[allow(clippy::print_stdout)]
 pub fn dry_run(plan: &Plan) {
     let mut included: Vec<String> = Vec::new();
     let mut excluded: Vec<(String, &'static str)> = Vec::new();

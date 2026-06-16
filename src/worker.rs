@@ -166,6 +166,11 @@ impl BackendHandle {
     }
 
     /// Prepare storage (create collection/table + indexes) if missing.
+    ///
+    /// Spanned at INFO so the wall-clock cost (channel + worker `ensure_ready`) shows up
+    /// at the default log level. Span context does NOT cross the mpsc channel, so the
+    /// inner backend call (if instrumented) appears as a separate root span by design.
+    #[tracing::instrument(level = "info", skip(self), fields(recreate))]
     pub async fn ensure_ready(&self, recreate: bool) -> Result<()> {
         self.call(|reply| Request::EnsureReady { recreate, reply })
             .await
@@ -192,6 +197,15 @@ impl BackendHandle {
     }
 
     /// Text query (the CLI `--query` path): nearest hits for `query`.
+    ///
+    /// Spanned at INFO for wall-clock query timing. `query` is skipped from the auto-fields
+    /// (could be large) and recorded truncated; `limit` is captured as-is. Span context
+    /// does not cross the worker channel (see `ensure_ready`).
+    #[tracing::instrument(
+        level = "info",
+        skip(self, query),
+        fields(query = %query.chars().take(80).collect::<String>(), limit)
+    )]
     pub async fn query(&self, query: String, limit: u64) -> Result<Vec<Hit>> {
         self.call(|reply| Request::Query {
             query,
@@ -292,6 +306,11 @@ impl BackendHandle {
     }
 
     /// Re-index `paths` in place (write path).
+    ///
+    /// Spanned at INFO for wall-clock refresh timing (channel + per-path delete/re-embed
+    /// on the worker). Only the input path count is known at the call site (the
+    /// reindexed/removed breakdown is in the reply); the full path list is skipped.
+    #[tracing::instrument(level = "info", skip(self, paths), fields(paths = paths.len()))]
     pub async fn refresh(&self, paths: Vec<String>) -> Result<RefreshReport> {
         self.call(|reply| Request::Refresh { paths, reply }).await
     }
@@ -327,7 +346,7 @@ pub fn spawn(
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    eprintln!("backend worker: failed to build runtime: {e}");
+                    tracing::error!(error = %e, "backend worker: failed to build runtime");
                     return;
                 }
             };

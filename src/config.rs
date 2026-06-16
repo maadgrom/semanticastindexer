@@ -543,10 +543,10 @@ fn is_bare_default_config_name(p: &str) -> bool {
 /// two no-config paths: no `--config` with no default file present, and an absent bare
 /// default config name.
 fn builtin_defaults_with_note() -> Config {
-    eprintln!(
-        "note: no config at {} — using built-in defaults (only hard dirs pruned). \
-         Run `semanticastindexer init` to generate one.",
-        DEFAULT_CONFIG
+    tracing::warn!(
+        config = DEFAULT_CONFIG,
+        "no config found — using built-in defaults (only hard dirs pruned). \
+         Run `semanticastindexer init` to generate one."
     );
     Config::default()
 }

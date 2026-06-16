@@ -50,6 +50,19 @@ Hugging Face (`jina-embeddings-v2-base-code`, 161M params, 768-dim; or `e5-small
 384-dim) — or point at an **Ollama** server over HTTP, which is convenient in CI/CD. See
 [embeddings](book/src/installation.md#embeddings).
 
+## Logging
+
+Diagnostics (status, progress, warnings, timing) go to **stderr**; stdout is reserved for JSON-RPC
+(MCP) and CLI data output (query hits, `--json`, sync report). Control logging via:
+
+- **`-v, --verbose`** (repeatable; `-vv` for trace level) — increase verbosity from the default `info` level.
+- **`--log-format pretty|json`** — switch between human-readable (default) and JSON-structured logs.
+- **`RUST_LOG=semanticastindexer=debug`** — environment variable override (highest priority; power users).
+- **`--silent`** — suppress all logs (maps to `error` level).
+
+For MCP clients: diagnostics are captured in the client's log file (from stderr), while the JSON-RPC
+stream stays clean (stdout only). This unblocks write-mode (`--allow-write`) with strict clients.
+
 **Uninstall:** `curl -fsSL https://maadgrom.github.io/semanticastindexer/uninstall.sh | bash`
 (removes the binary, skill, and MCP config entries; see [uninstall](book/src/installation.md#uninstall)).
 

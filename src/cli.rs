@@ -2,12 +2,13 @@
 //! orchestration layer in [`crate::app`], and part of the library surface so
 //! integration tests can build an [`Args`] with `Args::try_parse_from`.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::DEFAULT_CONFIG;
 
 #[derive(Parser, Debug, Clone)]
 #[command(
+    version,
     about = "Near-duplicate detection and semantic code search: index source into Qdrant Cloud or local DuckDB, query in natural language, and serve over MCP",
     long_about = "Index source files into a vector backend (Qdrant Cloud server-side inference, or local DuckDB with on-device ONNX/Ollama embeddings) for near-duplicate detection and semantic code search. Run as a CLI or as an MCP server for AI coding agents. Configured by sai-cfg.yml (generate one with `init`); flags override config."
 )]
@@ -81,6 +82,25 @@ pub struct Args {
     /// Suppress timing, progress, dirty warnings, and non-essential notes (ideal for hooks/CI).
     #[arg(long, global = true, default_value_t = false)]
     pub silent: bool,
+
+    /// Increase log verbosity (repeatable): `-v` = debug, `-vv` = trace. Logs go to
+    /// stderr. `RUST_LOG` overrides this; `--silent` forces the quietest level.
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Log output format on stderr: `pretty` (human-readable, default) or `json`
+    /// (structured, one object per line).
+    #[arg(long, global = true, value_enum, default_value_t = LogFormat::Pretty)]
+    pub log_format: LogFormat,
+}
+
+/// Format of the diagnostic logs emitted to stderr (see [`crate::logging`]).
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Human-readable, optionally ANSI-colored when stderr is a terminal.
+    Pretty,
+    /// Structured JSON, one object per line (machine-readable).
+    Json,
 }
 
 #[derive(Subcommand, Debug, Clone)]

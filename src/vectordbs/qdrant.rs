@@ -74,7 +74,7 @@ fn build_client(plan: &Plan) -> Result<Qdrant> {
     match std::env::var("QDRANT_API_KEY") {
         Ok(key) if !key.is_empty() => builder = builder.api_key(key),
         _ => {
-            eprintln!("warning: QDRANT_API_KEY not set — Qdrant Cloud will reject the request")
+            tracing::warn!("QDRANT_API_KEY not set — Qdrant Cloud will reject the request")
         }
     }
     Ok(builder.build()?)
@@ -104,9 +104,11 @@ impl QdrantBackend {
     /// built by the factory only when this mode is selected.
     #[cfg(any(feature = "ort", feature = "ollama"))]
     pub fn connect_local(plan: &Plan, embedder: Embedder) -> Result<Self> {
-        eprintln!(
-            "qdrant: local-embed mode (embedder={}, model {}, {} dims)",
-            plan.embedder, plan.model, plan.vector_dim
+        tracing::info!(
+            embedder = %plan.embedder,
+            model = %plan.model,
+            dims = plan.vector_dim,
+            "qdrant: local-embed mode"
         );
         Ok(Self {
             client: build_client(plan)?,
@@ -120,11 +122,12 @@ impl QdrantBackend {
 
     /// Create the collection if missing (recreate on demand). Vector size/distance from the plan.
     /// Also creates a keyword payload index on `path` so sync's delete-by-path filter is fast.
+    #[tracing::instrument(skip(self), fields(collection = %self.collection))]
     pub async fn ensure_ready(&self, recreate: bool) -> Result<()> {
         let exists = self.client.collection_exists(&self.collection).await?;
         if exists && recreate {
             self.client.delete_collection(&self.collection).await?;
-            println!("dropped existing collection '{}'", self.collection);
+            tracing::info!(collection = %self.collection, "dropped existing collection");
         }
         if !self.client.collection_exists(&self.collection).await? {
             self.client
@@ -142,13 +145,14 @@ impl QdrantBackend {
                     FieldType::Keyword,
                 ))
                 .await?;
-            println!(
-                "created collection '{}' ({} dims, cosine, path index)",
-                self.collection, self.vector_dim
+            tracing::info!(
+                collection = %self.collection,
+                dims = self.vector_dim,
+                "created collection (cosine, path index)"
             );
         } else {
             self.validate_existing_collection_dim().await?;
-            println!("using existing collection '{}'", self.collection);
+            tracing::info!(collection = %self.collection, "using existing collection");
         }
         Ok(())
     }
@@ -595,12 +599,9 @@ impl QdrantBackend {
     pub async fn flush(&self) -> Result<()> {
         if self.client.collection_exists(&self.collection).await? {
             self.client.delete_collection(&self.collection).await?;
-            println!("flushed: deleted collection '{}'", self.collection);
+            tracing::info!(collection = %self.collection, "flushed: deleted collection");
         } else {
-            println!(
-                "nothing to flush: collection '{}' does not exist",
-                self.collection
-            );
+            tracing::info!(collection = %self.collection, "nothing to flush: collection does not exist");
         }
         Ok(())
     }

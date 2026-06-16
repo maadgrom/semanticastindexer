@@ -154,8 +154,10 @@ fn default_seek_falls_back_to_builtin_defaults() {
     let out = run_in(dir.path(), &["--dry-run"]);
     assert!(out.status.success(), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // The fallback note moved to a structured `tracing::warn!` (stderr): the message says
+    // "no config found …" and the filename is now a `config="sai-cfg.yml"` field.
     assert!(
-        stderr.contains("no config at sai-cfg.yml"),
+        stderr.contains("no config") && stderr.contains("sai-cfg.yml"),
         "the note names the standard file: {stderr}"
     );
 }

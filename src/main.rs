@@ -1,3 +1,7 @@
+// Recurrence guard for the MCP stdout bug (see `lib.rs`): diagnostics must use
+// `tracing` (stderr), never `println!`; data-output sites opt out explicitly.
+#![warn(clippy::print_stdout)]
+
 //! Binary entrypoint: parse CLI args and dispatch into the library's [`app`] layer.
 //!
 //! The default backend is Qdrant Cloud with **server-side inference** (using
@@ -26,5 +30,10 @@ use semanticastindexer::{app, cli::Args};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    app::run(Args::parse()).await
+    let args = Args::parse();
+    // Install the stderr `tracing` subscriber before `app::run` — i.e. before MCP
+    // `ensure_ready` and before rmcp takes over stdout — so the data/log boundary
+    // (and thus the MCP stdout fix) holds for the whole run.
+    semanticastindexer::logging::init(&args)?;
+    app::run(args).await
 }

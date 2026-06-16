@@ -6,6 +6,35 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Structured tracing-based logging facade** — All diagnostics now flow through `tracing`
+  to **stderr** (preserving clean **stdout** for JSON-RPC and CLI data). Logs are leveled (`debug`,
+  `info`, `warn`, `error`), filterable via `RUST_LOG`, and honor per-operation timing spans (e.g.
+  `INFO sync{rev=HEAD~1}: … in 1.8s`). New global flags:
+  - `-v, --verbose` (repeatable; `-vv` for trace level)
+  - `--log-format pretty|json` (default `pretty`; JSON for machine consumption)
+  - `--silent` now maps to a quiet log filter (`error` level) in addition to suppressing CLI output
+  
+  Default behavior: `info` level, pretty format, stderr. `RUST_LOG=semanticastindexer=debug`
+  overrides all flags (power-user priority). The `mcp` subcommand now keeps stdout clean of
+  diagnostic noise, enabling write-mode (`--allow-write`) with strict stdio clients (e.g. Grok).
+- **`-V, --version` flag** — print the binary version (was previously unsupported).
+- **`update` skips a no-op reinstall** — `update` now checks the latest GitHub release and exits
+  early ("already the latest release") when the running binary already matches, instead of always
+  re-running the installer. Falls back to a plain reinstall if the version check fails (offline).
+
+### Fixed
+
+- **MCP `--allow-write` stdout corruption** — Write-mode MCP was broken for strict JSON-RPC
+  clients (e.g. Grok) because backend diagnostics (e.g. "using existing collection") were printed
+  to stdout, corrupting the JSON-RPC stream. All such diagnostics now route to **stderr** via
+  `tracing`. In-session `sai_refresh` and `sai_sync` are now usable with strict-client MCP
+  integrations.
+- **Git diagnostics leaking to stderr** — the dirty-state check (`git diff --quiet`) inherited the
+  process stdio, so running outside a git repo (or any git error) leaked raw git text to stderr.
+  Its output is now silenced; diagnostics come only from the `tracing` subscriber.
+
 ## [0.1.5] - 2026-06-16
 
 ### Added

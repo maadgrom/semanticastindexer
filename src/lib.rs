@@ -1,3 +1,9 @@
+// Recurrence guard for the MCP stdout bug: diagnostics must use `tracing` (stderr),
+// never `println!`. Intentional CLI *data*-output sites opt out with an explicit
+// per-statement `#[allow(clippy::print_stdout)]`. `warn` (not `deny`) so a forgotten
+// annotation fails clippy CI loudly without blocking unrelated local `cargo build`.
+#![warn(clippy::print_stdout)]
+
 //! Near-duplicate detection and semantic code search, as a library.
 //!
 //! The binary (`src/main.rs`) is a thin clap wrapper around [`app::run`]. Everything
@@ -25,6 +31,7 @@ pub mod config;
 pub mod git;
 pub mod indexer;
 pub mod init;
+pub mod logging;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 // Shared similarity-search core (union-find clustering + find_similar resolution) and

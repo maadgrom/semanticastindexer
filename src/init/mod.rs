@@ -17,6 +17,9 @@ use interview::Answers;
 
 /// Run `init`: collect answers (pure defaults with `--yes`, interview otherwise),
 /// render the config, sanity-check it parses, and write it to `args.output`.
+// CLI-only command (dispatched before any backend/MCP path): the result lines are
+// intentional data output, so the whole function opts out of the stdout lint.
+#[allow(clippy::print_stdout)]
 pub fn run(args: &InitArgs) -> Result<()> {
     let answers = if args.yes {
         Answers::default()

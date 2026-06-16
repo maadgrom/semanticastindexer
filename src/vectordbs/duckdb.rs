@@ -237,12 +237,13 @@ impl DuckDbBackend {
     }
 
     /// Create table (+index) if missing; `recreate` drops and recreates the table.
+    #[tracing::instrument(skip(self), fields(collection = %self.collection))]
     pub async fn ensure_ready(&self, recreate: bool) -> Result<()> {
         if recreate && self.table_exists()? {
             self.conn
                 .execute_batch(&format!("DROP TABLE IF EXISTS {};", self.collection))
                 .context("failed to drop table for recreate")?;
-            println!("dropped existing collection '{}'", self.collection);
+            tracing::info!(collection = %self.collection, "dropped existing collection");
         }
         let existed = self.table_exists()?;
         self.create_table_and_index()?;
@@ -257,14 +258,14 @@ impl DuckDbBackend {
                 self.collection
             ));
             if !recreate {
-                println!("using existing collection '{}'", self.collection);
+                tracing::info!(collection = %self.collection, "using existing collection");
             }
         } else {
-            println!(
-                "created collection '{}' ({} dims, cosine HNSW) at {}",
-                self.collection,
-                self.vector_dim,
-                self.path.display()
+            tracing::info!(
+                collection = %self.collection,
+                dims = self.vector_dim,
+                path = %self.path.display(),
+                "created collection (cosine HNSW)"
             );
         }
         Ok(())
@@ -712,12 +713,9 @@ impl DuckDbBackend {
             self.conn
                 .execute_batch(&format!("DROP TABLE IF EXISTS {};", self.collection))
                 .context("failed to drop table")?;
-            println!("flushed: dropped table '{}'", self.collection);
+            tracing::info!(collection = %self.collection, "flushed: dropped table");
         } else {
-            println!(
-                "nothing to flush: collection '{}' does not exist",
-                self.collection
-            );
+            tracing::info!(collection = %self.collection, "nothing to flush: collection does not exist");
         }
         Ok(())
     }
