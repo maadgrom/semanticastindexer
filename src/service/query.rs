@@ -43,6 +43,12 @@ impl QueryService {
         self.store.query(q, limit).await
     }
 
+    /// Total stored chunk count (drives the MCP `index_status` tool). Delegates to the store.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub async fn chunk_count(&self) -> Result<u64> {
+        self.store.chunk_count().await
+    }
+
     /// Best-effort check for any dirty-stamped (uncommitted) chunks. Delegates to the store;
     /// backends without the column (or on error) report `false`. Drives the CLI `duplicates`
     /// dirty-tree warning (mirrors `app::warn_on_dirty`).

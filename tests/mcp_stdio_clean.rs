@@ -195,6 +195,180 @@ mod mcp_stdio_tests {
         );
     }
 
+    /// The EXACT set of tool names the MCP server must expose — the contract the
+    /// `dedup-auditor` agent and the `mcp-setup` templates (`.mcp.json`) depend on. Renaming
+    /// or dropping a tool (e.g. during the US-005 service rewire) breaks those callers, so
+    /// this golden set guards the `tools/list` reply against accidental drift.
+    const EXPECTED_TOOLS: [&str; 7] = [
+        "sai_search_code",
+        "sai_find_similar",
+        "sai_find_duplicates",
+        "sai_index_status",
+        "sai_prepare_mcp_setup",
+        "sai_refresh",
+        "sai_sync",
+    ];
+
+    /// GOLDEN (B9): `tools/list` returns EXACTLY the seven `sai_*` tools, each with an
+    /// `inputSchema`. The `#[tool]` descriptions are unchanged string constants, so the
+    /// contract holds by construction after the service rewire — this asserts it explicitly so
+    /// a future rename is caught at test time, not by a broken agent.
+    ///
+    /// Drives the real binary over stdio: `initialize` → `notifications/initialized` →
+    /// `tools/list`, scanning stdout for the `tools/list` JSON-RPC response (id 2). SKIPs on a
+    /// VSS/extension load failure (offline/sandboxed CI), exactly like the clean-stdout test.
+    #[test]
+    fn tools_list_exposes_the_golden_tool_set() {
+        use std::io::BufRead;
+
+        // ── temp workspace (a non-empty root + duckdb/ollama config, network-free handshake) ──
+        let dir = TempDir::new().expect("tempdir must be created");
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).expect("src/ must be created");
+        std::fs::write(src_dir.join("hello.ts"), "export const hello = () => 42;\n")
+            .expect("dummy source file must be written");
+        let collection = format!("test_mcp_tools_{}", std::process::id());
+        let cfg_content = format!("backend: duckdb\nembedder: ollama\ncollection: {collection}\n");
+        let cfg_path = dir.path().join("sai-cfg.yml");
+        std::fs::write(&cfg_path, &cfg_content).expect("sai-cfg.yml must be written");
+
+        // ── spawn ──────────────────────────────────────────────────────────────────
+        // Use --allow-write so the DuckDB store is opened read-WRITE and `ensure_ready`
+        // creates the table (a read-only open fails when no index file exists yet — it never
+        // creates one). The tool SET is identical regardless of write mode (all seven tools
+        // are always registered); --allow-write only gates whether refresh/sync *succeed*.
+        let mut child = Command::new(BIN)
+            .args([
+                "mcp",
+                "--allow-write",
+                "--config",
+                cfg_path.to_str().unwrap(),
+            ])
+            .current_dir(dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("binary must spawn");
+
+        // ── drive the handshake then request tools/list ──────────────────────────────
+        {
+            let stdin = child.stdin.as_mut().expect("stdin must be piped");
+            stdin
+                .write_all(INITIALIZE_REQUEST)
+                .expect("initialize request must be written");
+            stdin
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
+                .expect("initialized notification must be written");
+            stdin
+                .write_all(
+                    b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n",
+                )
+                .expect("tools/list request must be written");
+        }
+
+        // ── read stdout lines until the tools/list response (id 2) or deadline ─────────
+        let mut stdout = child.stdout.take().expect("stdout must be piped");
+        let (tx, rx) = mpsc::channel::<std::io::Result<String>>();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(&mut stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        if tx.send(Ok(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        break;
+                    }
+                }
+            }
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let tools_response: Option<serde_json::Value> = loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break None;
+            }
+            match rx.recv_timeout(remaining) {
+                Ok(Ok(line)) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                        // A non-JSON line on stdout is the *other* test's concern; ignore here.
+                        continue;
+                    };
+                    // The tools/list reply is the response to id 2 (skip the initialize reply).
+                    if value.get("id").and_then(|v| v.as_u64()) == Some(2) {
+                        break Some(value);
+                    }
+                }
+                Ok(Err(_)) | Err(_) => break None,
+            }
+        };
+
+        // ── clean up ───────────────────────────────────────────────────────────────
+        drop(child.stdin.take());
+        let stderr = collect_stderr(&mut child);
+        let _ = child.kill();
+
+        let Some(response) = tools_response else {
+            if looks_like_vss_load_failure(&stderr) {
+                eprintln!(
+                    "[SKIP] tools_list_exposes_the_golden_tool_set: no tools/list response and \
+                     stderr suggests a VSS/extension load failure (offline/sandboxed CI). \
+                     stderr:\n{stderr}"
+                );
+                return;
+            }
+            panic!(
+                "did not receive a tools/list response (id 2) within the deadline.\nstderr:\n{stderr}"
+            );
+        };
+
+        // ── assert: EXACTLY the golden tool set, each with an inputSchema ────────────
+        let tools = response
+            .get("result")
+            .and_then(|r| r.get("tools"))
+            .and_then(|t| t.as_array())
+            .unwrap_or_else(|| {
+                panic!("tools/list response missing result.tools array: {response}")
+            });
+
+        let mut names: Vec<String> = tools
+            .iter()
+            .map(|t| {
+                let name = t
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_else(|| panic!("tool entry missing a string name: {t}"))
+                    .to_string();
+                assert!(
+                    t.get("inputSchema").is_some(),
+                    "tool {name:?} is missing an inputSchema"
+                );
+                name
+            })
+            .collect();
+        names.sort();
+
+        let mut expected: Vec<String> = EXPECTED_TOOLS.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+
+        assert_eq!(
+            names, expected,
+            "tools/list must expose EXACTLY the golden tool set (the dedup-auditor agent + \
+             mcp-setup templates depend on these exact names)"
+        );
+    }
+
     /// Drain `child.stderr` into a `String`.  Called after the reader thread returns or after
     /// a timeout — at that point the child has either exited or been killed, so reading
     /// stderr will complete quickly.

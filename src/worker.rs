@@ -25,6 +25,12 @@
 //! This is backend-agnostic: Qdrant's backend has no blocking I/O, but routing every
 //! backend uniformly through the one worker keeps both call sites identical.
 
+// transitional — this whole module is deleted in US-006 (S5b); allow until then. After the
+// US-005 rewire nothing constructs a `BackendHandle` or spawns the worker, so the private
+// `worker_loop`/`handle_refresh` (and the unused public surface) would trip `dead_code` under
+// `clippy -D warnings`.
+#![allow(dead_code)]
+
 use std::collections::HashSet;
 
 use anyhow::Result;

@@ -21,10 +21,10 @@
 //! - `sai_find_similar {path,line}` / `sai_find_duplicates` → STORED vectors, no re-embed.
 //!
 //! Concurrency: the DuckDB backend is `!Send`/`!Sync`, but rmcp's tool-handler futures
-//! must be `Send`. The backend therefore lives on a dedicated worker thread ([`crate::worker`])
-//! and this server holds only a `Send`+`Sync` [`BackendHandle`] (an mpsc channel). Each
-//! handler builds a request, sends it, and awaits a `oneshot` reply — so the handler future
-//! captures only `Send` types and compiles.
+//! must be `Send`. The backend therefore lives on a dedicated worker thread INSIDE the
+//! `DuckDbStore` (a closure-mailbox behind the `Send`+`Sync` [`crate::repos::VectorStore`]
+//! port), so this server holds only `Arc<IndexingService>` + `Arc<QueryService>` — both
+//! `Send`+`Sync` — and every handler future is `Send` as rmcp requires.
 
 use std::sync::Arc;
 
@@ -42,9 +42,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::Plan;
+use crate::domain::{Hit, SimilarTarget};
 use crate::indexer::ReindexOutcome;
-use crate::vectordbs::Hit;
-use crate::worker::BackendHandle;
+use crate::service::{IndexingService, QueryService};
 
 /// Hard cap on any caller-supplied `limit`/`top_k` so a tool call can't ask for the world.
 const MAX_LIMIT: u64 = 50;
@@ -197,7 +197,7 @@ struct SearchHit {
 // Server.
 // ---------------------------------------------------------------------------
 
-/// The MCP `sai` server. Holds the shared (read-only) backend + plan metadata.
+/// The MCP `sai` server. Holds the shared use-case services + plan metadata.
 #[derive(Clone)]
 pub struct SaiServer {
     inner: Arc<ServerInner>,
@@ -207,11 +207,13 @@ pub struct SaiServer {
     tool_router: ToolRouter<SaiServer>,
 }
 
-/// Shared state behind the `Arc`. The `!Send` DuckDB backend lives on a worker thread;
-/// this holds only the `Send`+`Sync` [`BackendHandle`] (channel) plus cached metadata, so
-/// every tool-handler future is `Send` as rmcp requires.
+/// Shared state behind the `Arc`. The use-case services dispatch over the `Send`+`Sync`
+/// [`crate::repos::VectorStore`] port (the `!Send` DuckDB backend is confined to a worker
+/// thread INSIDE the store), so every tool-handler future is `Send` as rmcp requires. Plus
+/// cached `Plan` metadata for the `index_status` tool + the gating flags/thresholds.
 struct ServerInner {
-    backend: BackendHandle,
+    indexing: Arc<IndexingService>,
+    query: Arc<QueryService>,
     backend_name: String,
     collection: String,
     model: String,
@@ -236,14 +238,21 @@ struct ServerInner {
 
 #[tool_router]
 impl SaiServer {
-    /// Build the server from a backend-worker handle + the resolved plan. `allow_write`
-    /// enables the `refresh` write tool (the worker's backend must have been opened
-    /// writable by the caller in that case).
-    pub fn new(backend: BackendHandle, plan: &Plan, allow_write: bool, allow_setup: bool) -> Self {
+    /// Build the server from the two use-case services + the resolved plan. `allow_write`
+    /// enables the `refresh`/`sync` write tools (the store must have been opened writable by
+    /// the caller in that case).
+    pub fn new(
+        indexing: Arc<IndexingService>,
+        query: Arc<QueryService>,
+        plan: &Plan,
+        allow_write: bool,
+        allow_setup: bool,
+    ) -> Self {
         let can_embed_locally = plan.can_embed_locally();
         Self {
             inner: Arc::new(ServerInner {
-                backend,
+                indexing,
+                query,
                 backend_name: plan.backend.clone(),
                 collection: plan.collection.clone(),
                 model: model_label(plan),
@@ -274,12 +283,13 @@ impl SaiServer {
 
         // Over-fetch a little so post-filters (language/path_glob) still return `limit`.
         let fetch = clamp_limit(limit.saturating_mul(4).max(limit));
-        // The worker embeds the query (or falls back to the server-side text query for
-        // Qdrant) and runs the NN search; we only see Send types here.
+        // The store embeds the query locally (DuckDB) or runs the server-side text query
+        // (Qdrant) and returns the NN hits; the service is `Send`+`Sync` so we only see Send
+        // types here.
         let hits = self
             .inner
-            .backend
-            .search_by_query(args.query.clone(), fetch)
+            .query
+            .query(&args.query, fetch)
             .await
             .map_err(internal)?;
 
@@ -304,7 +314,10 @@ impl SaiServer {
     ) -> Result<CallToolResult, McpError> {
         let limit = clamp_limit(args.limit.unwrap_or(DEFAULT_LIMIT));
 
-        let hits = match (args.code.as_deref(), args.path.as_deref(), args.line) {
+        // Map the args to a `SimilarTarget`, rejecting the no-valid-target shapes BEFORE
+        // touching the store. The `code` branch needs a local embedder (Qdrant embeds
+        // server-side, so there's no passage embed there) — guard it up front.
+        let target = match (args.code.as_deref(), args.path.as_deref(), args.line) {
             (Some(code), _, _) => {
                 if !self.inner.can_embed_locally {
                     return Err(McpError::invalid_params(
@@ -312,28 +325,12 @@ impl SaiServer {
                         None,
                     ));
                 }
-                self.inner
-                    .backend
-                    .search_by_passage(code.to_string(), limit)
-                    .await
-                    .map_err(internal)?
+                SimilarTarget::Code(code.to_string())
             }
-            (None, Some(path), Some(line)) => {
-                let located = self
-                    .inner
-                    .backend
-                    .get_by_location(path.to_string(), line)
-                    .await
-                    .map_err(internal)?;
-                let (hit, vec) = located.ok_or_else(|| {
-                    McpError::invalid_params(format!("no indexed chunk at {path}:{line}"), None)
-                })?;
-                self.inner
-                    .backend
-                    .query_by_vector(vec, limit, Some(hit.id))
-                    .await
-                    .map_err(internal)?
-            }
+            (None, Some(path), Some(line)) => SimilarTarget::Location {
+                path: path.to_string(),
+                line,
+            },
             _ => {
                 return Err(McpError::invalid_params(
                     "sai_find_similar requires either `code` or both `path` and `line`",
@@ -344,13 +341,29 @@ impl SaiServer {
 
         // Threshold resolution: tool arg > config default (stored at startup). find_similar
         // intentionally falls back to the configured min_score so omitting the arg still
-        // applies the model-tuned cut; pass an explicit 0.0 to see the raw distribution.
+        // applies the model-tuned cut; pass an explicit 0.0 to see the raw distribution. The
+        // service applies the `min_score` filter internally (no manual post-filter here).
         let min_score = args.min_score.unwrap_or(self.inner.find_similar_min_score);
-        let rows: Vec<SearchHit> = hits
-            .into_iter()
-            .filter(|h| h.score >= min_score)
-            .map(|h| to_search_hit(h, false))
-            .collect();
+        // A missing chunk at `path:line` surfaces from the service as an anyhow error
+        // "no indexed chunk at {path}:{line}"; preserve today's `invalid_params` shape for
+        // that one case (it's a bad caller location, not a server fault). All other failures
+        // map to an internal error.
+        let hits = match self
+            .inner
+            .query
+            .find_similar(target, limit, min_score)
+            .await
+        {
+            Ok(hits) => hits,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.starts_with("no indexed chunk at ") {
+                    return Err(McpError::invalid_params(msg, None));
+                }
+                return Err(internal(e));
+            }
+        };
+        let rows: Vec<SearchHit> = hits.into_iter().map(|h| to_search_hit(h, false)).collect();
 
         Ok(CallToolResult::structured(json!({ "hits": rows })))
     }
@@ -373,12 +386,12 @@ impl SaiServer {
         let max_clusters = args.max_clusters.unwrap_or(DEFAULT_DUP_MAX_CLUSTERS);
         compile_glob_opt(args.path_glob.as_deref())?; // validate early
 
-        // One worker request runs the SHARED `crate::search::find_duplicates`
-        // orchestration (all chunks → per-chunk NN → union-find) on the backend
-        // thread — the same code path the CLI `duplicates` subcommand uses.
+        // The service runs the SHARED `crate::search::cluster_duplicates` orchestration
+        // (all chunks → per-chunk NN → union-find) over the store — the same code path the
+        // CLI `duplicates` subcommand uses.
         let clusters = self
             .inner
-            .backend
+            .query
             .find_duplicates(
                 min_score,
                 min_cluster_size,
@@ -403,7 +416,7 @@ impl SaiServer {
         &self,
         Parameters(_args): Parameters<IndexStatusArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let chunk_count = self.inner.backend.chunk_count().await.map_err(internal)?;
+        let chunk_count = self.inner.query.chunk_count().await.map_err(internal)?;
         Ok(CallToolResult::structured(json!({
             "backend": self.inner.backend_name,
             "collection": self.inner.collection,
@@ -576,13 +589,13 @@ impl SaiServer {
             ));
         }
 
-        // The worker owns the backend + plan and runs the whole batch in one bulk window
-        // (HNSW drop → per-path delete + re-chunk + re-embed + upsert → rebuild), matching
-        // the `sync` command's correctness requirement after per-path deletes.
+        // The indexing service runs the whole batch in one bulk window (HNSW drop → per-path
+        // delete + re-chunk + re-embed + upsert → rebuild), matching the `sync` command's
+        // correctness requirement after per-path deletes.
         let report = self
             .inner
-            .backend
-            .refresh(args.paths.clone())
+            .indexing
+            .refresh(&args.paths)
             .await
             .map_err(internal)?;
 
@@ -624,8 +637,8 @@ impl SaiServer {
         // Same one-shot bulk reconcile as `sai_refresh`, over the git-changed set.
         let report = self
             .inner
-            .backend
-            .refresh(changed)
+            .indexing
+            .refresh(&changed)
             .await
             .map_err(internal)?;
         Ok(refresh_result(report))
@@ -652,16 +665,17 @@ impl ServerHandler for SaiServer {
     }
 }
 
-/// Serve the MCP server over stdio until EOF. The backend-worker handle + plan are supplied
-/// by `main`. `allow_write` gates the `refresh` write tool. `allow_setup` gates execution
-/// inside the `prepare_mcp_setup` tool.
+/// Serve the MCP server over stdio until EOF. The two use-case services + plan are supplied
+/// by `main`. `allow_write` gates the `refresh`/`sync` write tools. `allow_setup` gates
+/// execution inside the `prepare_mcp_setup` tool.
 pub async fn serve_inner(
-    backend: BackendHandle,
+    indexing: Arc<IndexingService>,
+    query: Arc<QueryService>,
     plan: &Plan,
     allow_write: bool,
     allow_setup: bool,
 ) -> Result<()> {
-    let server = SaiServer::new(backend, plan, allow_write, allow_setup);
+    let server = SaiServer::new(indexing, query, plan, allow_write, allow_setup);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -676,9 +690,9 @@ fn clamp_limit(n: u64) -> u64 {
     n.clamp(1, MAX_LIMIT)
 }
 
-/// Shape a [`RefreshReport`](crate::worker::RefreshReport) into the `{refreshed, removed}`
+/// Shape a [`RefreshReport`](crate::domain::RefreshReport) into the `{refreshed, removed}`
 /// tool result shared by the `sai_refresh` and `sai_sync` write tools.
-fn refresh_result(report: crate::worker::RefreshReport) -> CallToolResult {
+fn refresh_result(report: crate::domain::RefreshReport) -> CallToolResult {
     let mut refreshed: Vec<serde_json::Value> = Vec::new();
     let mut removed: Vec<String> = Vec::new();
     for (path, outcome) in report.entries {

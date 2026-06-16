@@ -8,9 +8,11 @@
 //! I/O is confined to a worker thread INSIDE the store, so it never blocks the main Tokio
 //! runtime. The pure walk/chunk logic lives in [`crate::indexer`].
 //!
-//! The MCP server (`run_mcp`) is the ONE exception: it still uses the old
-//! `vectordbs::factory` + `crate::worker` + [`BackendHandle`] path (rewired onto the services
-//! in US-005, the old dispatch deleted in US-006).
+//! The MCP server (`run_mcp`) builds the SAME two services via [`crate::factory::build_services`]
+//! and hands them to the rmcp `SaiServer` (see [`crate::mcp`]). The one difference from the CLI
+//! paths: it does NOT join the DuckDB worker thread on shutdown (it detaches the `JoinHandle`),
+//! so a leaked store-handle clone can't wedge server exit after stdio EOF — process exit reaps
+//! the thread instead.
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -25,10 +27,9 @@ use crate::git;
 use crate::indexer;
 use crate::service::{IndexingService, QueryService};
 use crate::vectordbs::{self, Access, Hit};
-// The MCP server alone still uses the old `Backend` + `worker` dispatch (rewired in US-005,
-// deleted in US-006). Gated to `mcp` so non-MCP builds don't pull the (now CLI-unused) import.
+// The MCP server (`run_mcp`) wraps each service in an `Arc` for the rmcp `SaiServer`.
 #[cfg(feature = "mcp")]
-use crate::worker;
+use std::sync::Arc;
 
 /// Run one parsed CLI invocation to completion. The single entrypoint `main` calls.
 pub async fn run(args: Args) -> Result<()> {
@@ -481,21 +482,32 @@ async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()
     let plan = crate::config::build_mcp_plan(args)?;
     indexer::ensure_chunker_available(&plan)?;
     // --allow-write opens the index WRITABLE (normal `connect`, incl. HNSW persistence) so
-    // the `refresh` tool can delete + re-embed. Default is read-only: `refresh` then errors.
-    let backend = if allow_write {
-        let b = vectordbs::factory(&plan, Access::ReadWrite)?;
-        b.ensure_ready(false).await?;
-        b
-    } else {
-        vectordbs::factory(&plan, Access::ReadOnly)?
-    };
-    // Move the backend onto the worker thread (rmcp handler futures must be `Send`; the
-    // DuckDB backend is not). Unlike the CLI paths we do NOT join the worker thread on
-    // shutdown: the rmcp service owns handle clones, and a leaked clone must not be able
-    // to wedge server exit after stdio EOF — process exit reaps the thread instead.
-    let can_embed_locally = plan.can_embed_locally();
-    let (handle, _thread) = worker::spawn(backend, plan.clone(), can_embed_locally)?;
-    crate::mcp::serve_inner(handle, &plan, allow_write, allow_setup).await
+    // the `refresh`/`sync` tools can delete + re-embed. Default is read-only: those tools
+    // then error. `build_services` shares ONE `Arc<dyn VectorStore>` across both services;
+    // the DuckDB worker thread is confined INSIDE that store.
+    let (indexing, query, _thread) = build_services(
+        &plan,
+        if allow_write {
+            Access::ReadWrite
+        } else {
+            Access::ReadOnly
+        },
+    )?;
+    if allow_write {
+        indexing.ensure_ready(false).await?;
+    }
+    // Unlike the CLI paths we DROP/detach the DuckDB worker `JoinHandle` (`_thread`) — we do
+    // NOT join it on shutdown. The rmcp service owns the services (and thus the store's handle
+    // clones), and a leaked clone must not be able to wedge server exit after stdio EOF; the
+    // services drop on EOF (ending the worker) and process exit reaps the thread.
+    crate::mcp::serve_inner(
+        Arc::new(indexing),
+        Arc::new(query),
+        &plan,
+        allow_write,
+        allow_setup,
+    )
+    .await
 }
 
 /// Run a semantic query and print the hits exactly as before.
