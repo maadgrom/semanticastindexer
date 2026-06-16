@@ -1121,8 +1121,7 @@ mod tests {
     /// clusters}` from the `--json` stdout. Run the duplicates path over a MockStore (NO git
     /// seeding — a plain whole-DB scan), build the EXACT `serde_json::json!` envelope
     /// `run_duplicates` emits from the resolved knobs + clusters, and assert every key is
-    /// present with the right type. Locks the gate's contract without a binary E2E (deferred
-    /// to US-009).
+    /// present with the right type. Locks the gate's `--json` contract without a binary E2E.
     #[tokio::test]
     async fn duplicates_json_envelope_shape_over_mockstore() {
         let plan = test_plan(".");

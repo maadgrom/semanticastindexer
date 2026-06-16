@@ -1,10 +1,11 @@
 //! MCP server (`semanticastindexer mcp`, feature = "mcp").
 //!
-//! Exposes the indexer's semantic search to Claude over **stdio** via the official Rust
-//! MCP SDK (`rmcp`). Search is read-only; the `sai_refresh`/`sai_sync` write tools are gated
-//! behind `--allow-write`. Backend + Embedder are built ONCE at startup (offline defaults
-//! backend=duckdb, embedder=ort, resolved as flag > `sai-cfg.yml` > default) and shared across
-//! tool calls behind an `Arc<Mutex>` (DuckDB's connection is single-threaded).
+//! Exposes the indexer's semantic search to Claude over **stdio** (default) or
+//! **streamable-HTTP** (`--http <addr>`, feature `mcp-http`) via the official Rust MCP SDK
+//! (`rmcp`). Search is read-only; the `sai_refresh`/`sai_sync` write tools are gated behind
+//! `--allow-write`. The server holds the two use-case services
+//! ([`IndexingService`]/[`QueryService`]) over the [`crate::repos::VectorStore`] port; the
+//! offline defaults (backend=duckdb, embedder=ort) resolve as flag > `sai-cfg.yml` > default.
 //!
 //! Tools (structured JSON output; all prefixed `sai_` to namespace them in the agent's
 //! tool list):
