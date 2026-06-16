@@ -35,10 +35,15 @@ ast = ["dep:tree-sitter", "dep:tree-sitter-typescript", "dep:tree-sitter-rust", 
 # embedder=ollama, so it pulls in those features to be usable out of the box. schemars
 # generates the JSON tool-input schemas the protocol requires.
 mcp = ["dep:rmcp", "dep:schemars", "duckdb", "ollama"]
+# MCP over streamable-HTTP (`sai mcp --http <addr>`): the same tools served over HTTP via
+# rmcp's StreamableHttpService (a tower service) mounted on axum. Loopback-only by default.
+# stdio (feature `mcp`) remains the default transport. Gated separately so the stdio build
+# stays free of the HTTP stack; enables the rmcp HTTP-server transport + axum listener.
+mcp-http = ["mcp", "dep:axum", "rmcp/transport-streamable-http-server"]
 
 # The canonical build: `cargo build --release --features all`
-# Contains qdrant + duckdb + ort + ollama + ast + mcp.
-all = ["qdrant", "ort", "ollama", "ast", "mcp"]
+# Contains qdrant + duckdb + ort + ollama + ast + mcp + mcp-http.
+all = ["qdrant", "ort", "ollama", "ast", "mcp", "mcp-http"]
 
 [dependencies]
 qdrant-client = { version = "1.18", optional = true }
@@ -80,6 +85,10 @@ rmcp = { version = "1.7", optional = true, default-features = false, features = 
     "schemars",
 ] }
 schemars = { version = "1", optional = true }
+# MCP streamable-HTTP transport (feature = "mcp-http"): axum hosts rmcp's StreamableHttpService
+# (a tower service). Pinned to 0.7 to reuse the version already in-tree via tonic (qdrant-client),
+# avoiding a duplicate axum. Optional + gated so the stdio MCP build never pulls it.
+axum = { version = "0.7", optional = true }
 # twox-hash is NON-optional: point_id uses XxHash64 (seed 0) unconditionally so
 # Qdrant and DuckDB produce identical stable point IDs. (2.x changed the API, not
 # the algorithm — the pinned-value test in indexer.rs guards ID stability.)
@@ -87,7 +96,7 @@ twox-hash = "2"
 # sync: the backend worker channel (worker.rs) uses tokio::sync::{mpsc, oneshot} in
 # every build — declare it explicitly instead of relying on other deps' feature
 # unification to turn it on.
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net"] }
 anyhow = "1"
 # async-trait (non-optional): the `repos::VectorStore` port is an `#[async_trait]` trait
 # (always compiled — its definition is uncfg'd; only the concrete adapters are feature-gated)

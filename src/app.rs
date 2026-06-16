@@ -76,7 +76,13 @@ pub async fn run(args: Args) -> Result<()> {
         #[cfg(feature = "mcp")]
         Some(Cmd::Mcp(mcp_args)) => {
             run_timed(t0, &git_ctx, "", async {
-                run_mcp(&args, mcp_args.allow_write, mcp_args.allow_setup).await
+                run_mcp(
+                    &args,
+                    mcp_args.allow_write,
+                    mcp_args.allow_setup,
+                    mcp_args.http.as_deref(),
+                )
+                .await
             })
             .await
         }
@@ -474,7 +480,12 @@ async fn sync(indexing: &IndexingService, sync_args: &SyncArgs) -> Result<()> {
 /// duckdb/ort` (the fully-offline default), so `--config sai-cfg.yml` alone drives the server.
 /// Builds the backend + embedder ONCE, opens DuckDB read-only, then serves rmcp until EOF.
 #[cfg(feature = "mcp")]
-async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()> {
+async fn run_mcp(
+    args: &Args,
+    allow_write: bool,
+    allow_setup: bool,
+    http: Option<&str>,
+) -> Result<()> {
     // The MCP offline defaults (duckdb + ort) sit BELOW the config, not above it: they apply
     // only when neither the flag nor `sai-cfg.yml` sets backend/embedder. See
     // `config::build_mcp_plan`.
@@ -499,6 +510,29 @@ async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()
     // NOT join it on shutdown. The rmcp service owns the services (and thus the store's handle
     // clones), and a leaked clone must not be able to wedge server exit after stdio EOF; the
     // services drop on EOF (ending the worker) and process exit reaps the thread.
+    // Transport: `--http <addr>` serves streamable-HTTP (needs `--features mcp-http`); the
+    // default is stdio. Both keep the NON-join worker shutdown above.
+    if let Some(addr) = http {
+        #[cfg(feature = "mcp-http")]
+        {
+            return crate::mcp::serve_http(
+                Arc::new(indexing),
+                Arc::new(query),
+                &plan,
+                allow_write,
+                allow_setup,
+                addr,
+            )
+            .await;
+        }
+        #[cfg(not(feature = "mcp-http"))]
+        {
+            let _ = addr;
+            anyhow::bail!(
+                "`--http` requires a build with `--features mcp-http` (this binary has only the stdio MCP transport)"
+            );
+        }
+    }
     crate::mcp::serve_inner(
         Arc::new(indexing),
         Arc::new(query),

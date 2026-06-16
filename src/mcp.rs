@@ -681,6 +681,47 @@ pub async fn serve_inner(
     Ok(())
 }
 
+/// Serve the MCP server over **streamable-HTTP** at `addr` (e.g. `127.0.0.1:8080`), mounted
+/// at `/mcp`, until the process exits. Same tools as stdio. rmcp's [`StreamableHttpService`]
+/// is a `tower` service; we host it on axum (rmcp's own canonical pattern). The default
+/// [`StreamableHttpServerConfig`] is LOOPBACK-ONLY (`Host` validation against
+/// `localhost`/`127.0.0.1`/`::1`) to prevent DNS-rebinding against a locally running server —
+/// kept as-is. Each connection gets a fresh `SaiServer` clone (it's cheap: an `Arc` + copied
+/// metadata); they all share the one underlying `Arc<dyn VectorStore>`.
+#[cfg(feature = "mcp-http")]
+pub async fn serve_http(
+    indexing: Arc<IndexingService>,
+    query: Arc<QueryService>,
+    plan: &Plan,
+    allow_write: bool,
+    allow_setup: bool,
+    addr: &str,
+) -> Result<()> {
+    use anyhow::Context as _;
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    };
+
+    let server = SaiServer::new(indexing, query, plan, allow_write, allow_setup);
+    let service = StreamableHttpService::new(
+        move || Ok(server.clone()),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(), // loopback-only host validation (DNS-rebind guard)
+    );
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("failed to bind MCP HTTP listener on {addr}"))?;
+    let local = listener
+        .local_addr()
+        .context("failed to read the bound MCP HTTP address")?;
+    tracing::info!(address = %local, "MCP streamable-HTTP server listening on http://{local}/mcp");
+    axum::serve(listener, router)
+        .await
+        .context("MCP HTTP server error")?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Helpers.
 // ---------------------------------------------------------------------------

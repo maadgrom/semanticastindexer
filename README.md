@@ -87,6 +87,11 @@ so its config is just `args: ["mcp", "--config", "sai-cfg.yml"]`. Prefer these i
 tools over a CLI `sync` while the server is connected — the MCP holds the index lock (see
 [MCP server & tools](book/src/reference/mcp-server.md)).
 
+The server speaks **stdio** by default. A build with `--features mcp-http` also accepts
+`sai mcp --http <host:port>` (e.g. `--http 127.0.0.1:8080`), serving the same tools over the
+MCP **streamable-HTTP** transport at `/mcp`. Host validation is loopback-only by default
+(DNS-rebinding guard); point HTTP-capable MCP clients at `http://127.0.0.1:8080/mcp`.
+
 ## Documentation
 
 📖 **Full documentation site:** <https://maadgrom.github.io/semanticastindexer/book/>

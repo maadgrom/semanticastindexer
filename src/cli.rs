@@ -223,6 +223,11 @@ pub struct McpArgs {
     /// (can trigger long builds and file modifications). Use with caution.
     #[arg(long, default_value_t = false)]
     pub allow_setup: bool,
+
+    /// Serve over streamable-HTTP at this `host:port` (e.g. `127.0.0.1:8080`) instead of
+    /// stdio. Loopback-only; requires a build with `--features mcp-http`. Omit for stdio.
+    #[arg(long)]
+    pub http: Option<String>,
 }
 
 #[derive(clap::Args, Debug, Clone)]
