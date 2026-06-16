@@ -8,6 +8,13 @@
 
 pub mod vectorstore;
 
+// The `impl_vectorstore_delegate!` macro: the trivial newtype adapters (qdrant, mock) share
+// one generated forwarding impl instead of hand-copied delegations. Only compiled where it is
+// actually invoked — the qdrant adapter (`feature = "qdrant"`) and the `#[cfg(test)]` mock —
+// so a backend set that uses neither (e.g. duckdb/ollama only) doesn't carry an unused macro.
+#[cfg(any(feature = "qdrant", test))]
+mod delegate;
+
 pub use vectorstore::VectorStore;
 
 #[cfg(feature = "duckdb")]

@@ -756,6 +756,7 @@ mod tests {
     //! asserted here. Source trees + git fixtures are built under a `tempdir`.
 
     use super::*;
+    use crate::config::test_support::e5_small_plan as test_plan;
     use crate::domain::Plan;
     use crate::repos::mock::MockStore;
     use crate::vectordbs::mock::{MockBackend, MockCalls, MockRow};
@@ -782,23 +783,6 @@ mod tests {
         let indexing = IndexingService::new(store.clone(), plan.clone());
         let query = QueryService::new(store, plan.clone());
         (indexing, query, calls)
-    }
-
-    /// Build a minimal `Plan` rooted at `root` with `ext` = ts and no globs. Mirrors
-    /// `build_plan` defaults without reading any YAML. Starts from the shared
-    /// `minimal_plan` (mock/ort, no globs) and overrides only the E5/e5-small knobs
-    /// these flow tests rely on.
-    fn test_plan(root: &str) -> Plan {
-        Plan {
-            root: root.to_string(),
-            prefix_style: crate::domain::PrefixStyle::E5,
-            max_chunk_chars: 1400,
-            collection: "test_coll".to_string(),
-            model: "intfloat/multilingual-e5-small".to_string(),
-            vector_dim: 384,
-            model_repo: "Xenova/multilingual-e5-small".to_string(),
-            ..crate::config::test_support::minimal_plan()
-        }
     }
 
     /// A plan whose `exclude` globset drops `**/*.test.ts`.

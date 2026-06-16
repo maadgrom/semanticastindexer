@@ -13,6 +13,7 @@ use anyhow::Result;
 use crate::domain::Plan;
 use crate::domain::{DupCluster, Hit, SimilarTarget};
 use crate::repos::VectorStore;
+use crate::service::impl_service_new;
 
 /// Read-side service: text query, find-similar, and the near-duplicate scan — all over the
 /// shared [`VectorStore`] port. The B1 dedup gate depends on `find_duplicates` carrying
@@ -25,12 +26,10 @@ pub struct QueryService {
     plan: Plan,
 }
 
+impl_service_new!(QueryService);
+
 #[allow(dead_code)]
 impl QueryService {
-    pub fn new(store: Arc<dyn VectorStore>, plan: Plan) -> Self {
-        Self { store, plan }
-    }
-
     /// Nearest-neighbour search by query text. The store embeds-or-server-queries
     /// internally (matching the backends today).
     #[tracing::instrument(level = "info", skip(self, q), fields(q = %q.chars().take(80).collect::<String>(), limit))]

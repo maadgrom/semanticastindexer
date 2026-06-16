@@ -16,6 +16,7 @@ use crate::domain::{CodeChunk, IndexProgress, IndexReport, RefreshReport, Reinde
 use crate::git::GitContext;
 use crate::indexer;
 use crate::repos::VectorStore;
+use crate::service::impl_service_new;
 
 /// Batch size for embed+upsert. Bounds the embedder POST size (Ollama) and lets us emit
 /// a live progress update without one giant call. Mirrors `app::UPSERT_BATCH`.
@@ -31,12 +32,10 @@ pub struct IndexingService {
     plan: Plan,
 }
 
+impl_service_new!(IndexingService);
+
 #[allow(dead_code)]
 impl IndexingService {
-    pub fn new(store: Arc<dyn VectorStore>, plan: Plan) -> Self {
-        Self { store, plan }
-    }
-
     /// Prepare storage (create collection/table + indexes) if missing.
     #[tracing::instrument(level = "info", skip(self), fields(recreate))]
     pub async fn ensure_ready(&self, recreate: bool) -> Result<()> {
@@ -212,26 +211,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::config::test_support::e5_small_plan as test_plan;
     use crate::domain::IndexProgress;
-    use crate::domain::Plan;
-    use crate::domain::PrefixStyle;
     use crate::repos::mock::MockStore;
     use crate::vectordbs::mock::{MockBackend, MockCalls};
-
-    /// A `Plan` rooted at `root` mirroring `app::tests::test_plan` (mock/ort, no globs,
-    /// E5/e5-small knobs) so `collect_chunks` produces real chunks from the temp tree.
-    fn test_plan(root: &str) -> Plan {
-        Plan {
-            root: root.to_string(),
-            prefix_style: PrefixStyle::E5,
-            max_chunk_chars: 1400,
-            collection: "test_coll".to_string(),
-            model: "intfloat/multilingual-e5-small".to_string(),
-            vector_dim: 384,
-            model_repo: "Xenova/multilingual-e5-small".to_string(),
-            ..crate::config::test_support::minimal_plan()
-        }
-    }
 
     /// index_sources over a `MockStore`: exactly one begin_bulk + one end_bulk, upsert
     /// fires, the upserted chunk count matches `collect_chunks`, and the LAST emitted

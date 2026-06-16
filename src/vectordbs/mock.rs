@@ -9,6 +9,18 @@ use anyhow::Result;
 
 use crate::domain::Hit;
 
+/// Generate a trivial recording method on [`MockBackend`] that bumps the named [`MockCalls`]
+/// counter and returns `Ok(())`. `begin_bulk`/`end_bulk`/`flush` differ only by which counter
+/// they touch, so one definition keeps them DRY (and out of the near-duplicate index).
+macro_rules! record_unit_call {
+    ($method:ident, $counter:ident) => {
+        pub async fn $method(&self) -> Result<()> {
+            self.calls.lock().unwrap().$counter += 1;
+            Ok(())
+        }
+    };
+}
+
 /// A stored row in the mock vector store: a `Hit` (without the score) plus its vector.
 /// Used by the MCP-path methods (`query_by_vector`, `get_by_location`,
 /// `all_chunks_with_vectors`) so tool logic can be tested with NO real backend.
@@ -167,15 +179,8 @@ impl MockBackend {
         Ok(())
     }
 
-    pub async fn begin_bulk(&self) -> Result<()> {
-        self.calls.lock().unwrap().begin_bulk += 1;
-        Ok(())
-    }
-
-    pub async fn end_bulk(&self) -> Result<()> {
-        self.calls.lock().unwrap().end_bulk += 1;
-        Ok(())
-    }
+    record_unit_call!(begin_bulk, begin_bulk);
+    record_unit_call!(end_bulk, end_bulk);
 
     pub async fn upsert(&self, chunks: &[crate::domain::CodeChunk]) -> Result<()> {
         let batch = UpsertBatch {
@@ -216,10 +221,7 @@ impl MockBackend {
             .collect())
     }
 
-    pub async fn flush(&self) -> Result<()> {
-        self.calls.lock().unwrap().flush += 1;
-        Ok(())
-    }
+    record_unit_call!(flush, flush);
 
     /// Rank seeded rows by cosine similarity to `vec`, excluding `exclude_id`, dedup by id
     /// (rows are already unique here), and truncate to `limit`. `score = cosine`.

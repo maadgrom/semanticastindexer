@@ -728,4 +728,21 @@ pub mod test_support {
             ..minimal_plan()
         }
     }
+
+    /// A `Plan` rooted at `root` for the in-process flow/service tests: the mock backend +
+    /// ort embedder from [`minimal_plan`], overridden with the e5-small knobs those tests
+    /// rely on (E5 prefixing, 384-dim, `intfloat/multilingual-e5-small`). Single source of
+    /// truth for `app::tests` and `service::indexing::tests`.
+    pub fn e5_small_plan(root: &str) -> Plan {
+        Plan {
+            root: root.to_string(),
+            prefix_style: PrefixStyle::E5,
+            max_chunk_chars: 1400,
+            collection: "test_coll".to_string(),
+            model: "intfloat/multilingual-e5-small".to_string(),
+            vector_dim: 384,
+            model_repo: "Xenova/multilingual-e5-small".to_string(),
+            ..minimal_plan()
+        }
+    }
 }
