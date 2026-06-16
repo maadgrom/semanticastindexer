@@ -150,7 +150,7 @@ fn chunker_auto_selects_ast_for_supported_exts() {
 }
 
 /// Build a plan rooted at `root` with config `yaml`, ext ts.
-fn plan_for(root: &std::path::Path, yaml: &str) -> semanticastindexer::config::Plan {
+fn plan_for(root: &std::path::Path, yaml: &str) -> semanticastindexer::domain::Plan {
     let cfg = root.join("indexer.yaml");
     fs::write(&cfg, yaml).unwrap();
     build_plan(&parse(&[
@@ -189,7 +189,7 @@ fn collect_chunks_filters_and_is_deterministic() {
         "exclude:\n  - \"**/*.test.ts\"\nskip_generated_marker: true\n",
     );
     // Point the plan's root at the src subdir (the walk root).
-    let plan = semanticastindexer::config::Plan {
+    let plan = semanticastindexer::domain::Plan {
         root: src.to_str().unwrap().to_string(),
         ..plan
     };
@@ -228,7 +228,7 @@ fn collect_chunks_honors_opt_out_markers() {
     .unwrap();
 
     let plan = plan_for(dir.path(), "{}\n");
-    let plan = semanticastindexer::config::Plan {
+    let plan = semanticastindexer::domain::Plan {
         root: src.to_str().unwrap().to_string(),
         ..plan
     };

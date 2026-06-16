@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::config::Plan;
+use crate::domain::Plan;
 use crate::domain::{DupCluster, Hit, SimilarTarget};
 use crate::repos::VectorStore;
 

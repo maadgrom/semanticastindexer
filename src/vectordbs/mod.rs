@@ -15,15 +15,7 @@ use anyhow::Result;
 
 // Only `build_embedder` (duckdb-gated) consumes `Plan` now that the enum `factory` is gone.
 #[cfg(feature = "duckdb")]
-use crate::config::Plan;
-// Transitional re-export shim (US-001): the embedding entities/value objects + the
-// `CodeChunk`/`Hit` entities now live in `crate::domain`. Re-exported here so existing
-// call sites that import them via `crate::vectordbs::…` keep resolving without churn.
-// Removed in a later story when call sites import from `crate::domain` directly.
-pub use crate::domain::{
-    CodeChunk, Hit, PASSAGE_PREFIX, PrefixStyle, QUERY_PREFIX, QWEN_QUERY_INSTRUCT, format_passage,
-    format_query,
-};
+use crate::domain::Plan;
 
 /// Runtime guard shared by both backends: a locally-produced vector's length MUST equal
 /// the configured `vector_dim`. A mismatch means the chosen model does not match the

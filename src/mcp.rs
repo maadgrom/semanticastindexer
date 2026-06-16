@@ -41,9 +41,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::config::Plan;
+use crate::domain::Plan;
+use crate::domain::ReindexOutcome;
 use crate::domain::{Hit, SimilarTarget};
-use crate::indexer::ReindexOutcome;
 use crate::service::{IndexingService, QueryService};
 
 /// Hard cap on any caller-supplied `limit`/`top_k` so a tool call can't ask for the world.

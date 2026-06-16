@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-use crate::vectordbs::Hit;
+use crate::domain::Hit;
 
 /// A stored row in the mock vector store: a `Hit` (without the score) plus its vector.
 /// Used by the MCP-path methods (`query_by_vector`, `get_by_location`,
@@ -177,7 +177,7 @@ impl MockBackend {
         Ok(())
     }
 
-    pub async fn upsert(&self, chunks: &[crate::vectordbs::CodeChunk]) -> Result<()> {
+    pub async fn upsert(&self, chunks: &[crate::domain::CodeChunk]) -> Result<()> {
         let batch = UpsertBatch {
             count: chunks.len(),
             chunks: chunks

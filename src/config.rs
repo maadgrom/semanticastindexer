@@ -7,11 +7,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::cli::Args;
+use crate::domain::Plan;
 use crate::domain::PrefixStyle;
-// Transitional re-export shim (US-001): `Plan` now lives in `crate::domain`. Re-exported
-// so existing call sites importing `crate::config::Plan` keep resolving without churn
-// (and so the builders below construct it by its short name). Removed in a later story.
-pub use crate::domain::Plan;
 
 /// Standard config filename: what `init` generates and the first name sought when
 /// `--config` is omitted.

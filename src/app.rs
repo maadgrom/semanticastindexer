@@ -21,12 +21,13 @@ use std::process::Command;
 use std::thread::JoinHandle;
 
 use crate::cli::{Args, Cmd, SyncArgs};
-use crate::config::{Plan, build_plan};
+use crate::config::build_plan;
+use crate::domain::{Hit, Plan};
 use crate::factory::build_services;
 use crate::git;
 use crate::indexer;
 use crate::service::{IndexingService, QueryService};
-use crate::vectordbs::{self, Access, Hit};
+use crate::vectordbs::{self, Access};
 // The MCP server (`run_mcp`) wraps each service in an `Arc` for the rmcp `SaiServer`.
 #[cfg(feature = "mcp")]
 use std::sync::Arc;
@@ -460,11 +461,11 @@ async fn sync(indexing: &IndexingService, sync_args: &SyncArgs) -> Result<()> {
     let (mut reindexed, mut deleted, mut chunks) = (0usize, 0usize, 0usize);
     for (path, outcome) in &report.entries {
         match outcome {
-            indexer::ReindexOutcome::Removed { reason } => {
+            crate::domain::ReindexOutcome::Removed { reason } => {
                 deleted += 1;
                 println!("  - {path} ({reason})");
             }
-            indexer::ReindexOutcome::Reindexed { chunks: n } => {
+            crate::domain::ReindexOutcome::Reindexed { chunks: n } => {
                 chunks += n;
                 reindexed += 1;
                 println!("  + {path} ({n} chunks)");
@@ -755,7 +756,7 @@ mod tests {
     //! asserted here. Source trees + git fixtures are built under a `tempdir`.
 
     use super::*;
-    use crate::config::Plan;
+    use crate::domain::Plan;
     use crate::repos::mock::MockStore;
     use crate::vectordbs::mock::{MockBackend, MockCalls, MockRow};
     use globset::GlobSetBuilder;
@@ -790,7 +791,7 @@ mod tests {
     fn test_plan(root: &str) -> Plan {
         Plan {
             root: root.to_string(),
-            prefix_style: crate::vectordbs::PrefixStyle::E5,
+            prefix_style: crate::domain::PrefixStyle::E5,
             max_chunk_chars: 1400,
             collection: "test_coll".to_string(),
             model: "intfloat/multilingual-e5-small".to_string(),
@@ -919,14 +920,16 @@ mod tests {
             .unwrap();
 
         match &report.entries[0].1 {
-            indexer::ReindexOutcome::Reindexed { chunks } => {
+            crate::domain::ReindexOutcome::Reindexed { chunks } => {
                 assert!(*chunks > 0, "indexable file chunks")
             }
-            indexer::ReindexOutcome::Removed { .. } => panic!("existing file must be reindexed"),
+            crate::domain::ReindexOutcome::Removed { .. } => {
+                panic!("existing file must be reindexed")
+            }
         }
         match &report.entries[1].1 {
-            indexer::ReindexOutcome::Removed { .. } => {}
-            indexer::ReindexOutcome::Reindexed { .. } => panic!("gone file must be removed"),
+            crate::domain::ReindexOutcome::Removed { .. } => {}
+            crate::domain::ReindexOutcome::Reindexed { .. } => panic!("gone file must be removed"),
         }
 
         let calls = calls.lock().unwrap();

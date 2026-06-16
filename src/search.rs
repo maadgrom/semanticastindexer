@@ -17,10 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::domain::Hit;
-// Transitional re-export shim (US-001): the cluster result shapes + the `find_similar`
-// target now live in `crate::domain`. Re-exported so existing call sites importing them
-// via `crate::search::…` keep resolving without churn. Removed in a later story.
-pub use crate::domain::{DupCluster, DupMember, SimilarTarget};
+use crate::domain::{DupCluster, DupMember};
 
 /// Cluster near-duplicate chunks from per-chunk nearest-neighbour lists (PURE — no I/O).
 ///

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::config::Plan;
+use crate::domain::Plan;
 use crate::domain::{CodeChunk, IndexProgress, IndexReport, RefreshReport, ReindexOutcome};
 use crate::git::GitContext;
 use crate::indexer;
@@ -212,10 +212,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::config::Plan;
     use crate::domain::IndexProgress;
+    use crate::domain::Plan;
+    use crate::domain::PrefixStyle;
     use crate::repos::mock::MockStore;
-    use crate::vectordbs::PrefixStyle;
     use crate::vectordbs::mock::{MockBackend, MockCalls};
 
     /// A `Plan` rooted at `root` mirroring `app::tests::test_plan` (mock/ort, no globs,

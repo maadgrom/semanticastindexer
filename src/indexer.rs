@@ -12,12 +12,8 @@ use std::path::Path;
 use twox_hash::XxHash64;
 use walkdir::WalkDir;
 
-use crate::config::Plan;
-use crate::vectordbs::CodeChunk;
-// Transitional re-export shim (US-001): `ReindexOutcome` now lives in `crate::domain`.
-// Re-exported so existing call sites importing `crate::indexer::ReindexOutcome` keep
-// resolving without churn.
-pub use crate::domain::ReindexOutcome;
+use crate::domain::CodeChunk;
+use crate::domain::Plan;
 
 /// Extensions whose comments are stripped (C-family `//` and `/* */`). Covers TS now, Go later.
 const CSTYLE_EXTS: &[&str] = &[

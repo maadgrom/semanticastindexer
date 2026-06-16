@@ -15,9 +15,9 @@ use duckdb::OptionalExt;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use crate::config::Plan;
+use crate::domain::Plan;
+use crate::domain::{CodeChunk, Hit};
 use crate::vectordbs::embedder::Embedder;
-use crate::vectordbs::{CodeChunk, Hit};
 
 /// Over-fetch factor for vector search: DuckDB's experimental HNSW can return the same
 /// id more than once, so fetch 8x candidates, dedup by id, then truncate to the limit.
@@ -823,7 +823,7 @@ fn float_array_literal(v: &[f32]) -> String {
 #[cfg(all(test, feature = "duckdb", feature = "ollama"))]
 mod no_duplicate_tests {
     use super::*;
-    use crate::config::Plan;
+    use crate::domain::Plan;
     use crate::vectordbs::embedder;
     use tempfile::TempDir;
 
@@ -833,7 +833,7 @@ mod no_duplicate_tests {
         // prefix, dedicated collection).
         Plan {
             ext: vec!["rs".to_string()],
-            prefix_style: crate::vectordbs::PrefixStyle::None,
+            prefix_style: crate::domain::PrefixStyle::None,
             collection: "test_nodup".to_string(),
             model: "nomic-embed-text".to_string(),
             model_repo: "nomic".to_string(),
@@ -994,7 +994,7 @@ mod no_duplicate_tests {
 #[cfg(all(test, feature = "duckdb", any(feature = "ort", feature = "ollama")))]
 mod validation_tests {
     use super::*;
-    use crate::config::Plan;
+    use crate::domain::Plan;
     use crate::vectordbs::embedder;
     use std::path::PathBuf;
     use tempfile::TempDir;

@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 
 use anyhow::Result;
 
-use crate::config::Plan;
+use crate::domain::Plan;
 use crate::repos::VectorStore;
 use crate::service::{IndexingService, QueryService};
 use crate::vectordbs::Access;

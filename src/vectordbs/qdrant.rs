@@ -29,8 +29,8 @@ use qdrant_client::qdrant::{
     UpsertPointsBuilder, Value, VectorParamsBuilder, VectorsOutput,
 };
 
-use crate::config::Plan;
-use crate::vectordbs::{CodeChunk, Hit, PrefixStyle, format_passage, format_query};
+use crate::domain::Plan;
+use crate::domain::{CodeChunk, Hit, PrefixStyle, format_passage, format_query};
 
 /// Upsert batch size — server-side inference runs per request, so keep it modest.
 const UPSERT_BATCH: usize = 32;
@@ -746,7 +746,7 @@ fn extract_vector(vectors: Option<VectorsOutput>) -> Result<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vectordbs::CodeChunk;
+    use crate::domain::CodeChunk;
 
     /// A representative chunk with all optional fields populated.
     fn chunk_with_symbol() -> CodeChunk {
