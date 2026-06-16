@@ -62,7 +62,7 @@ DOCS_PORT  ?= 3000
 SITE_PORT  ?= 8000
 SITE_DIR   := $(THIS_DIR)/.site
 
-.PHONY: build build-ort build-ollama build-ast run prod dry-run sync flush query duplicates similar test test-all fmt fmt-check clippy check-all clean help require-mdbook book-build docs site static
+.PHONY: build build-ort build-ollama build-ast run prod dry-run sync flush query duplicates similar test test-all fmt fmt-check clippy check-all hurl clean help require-mdbook book-build docs site static
 
 build: fmt ## Compile the optimized release binary with ALL features (runs rustfmt first)
 	cargo build --release --manifest-path $(MANIFEST) --features all
@@ -116,6 +116,9 @@ clippy: ## Lint, warnings as errors (--features all)
 
 check-all: fmt-check ## rustfmt check + lint with all backends, warnings as errors (mirrors CI)
 	cargo clippy --release --manifest-path $(MANIFEST) --features all -- -D warnings
+
+hurl: build ## Run the HURL integration suite over the MCP streamable-HTTP transport
+	SAI_BIN=$(BIN) bash $(THIS_DIR)/tests/hurl/run.sh
 
 clean: ## Remove build artifacts
 	cargo clean --manifest-path $(MANIFEST)

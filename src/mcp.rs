@@ -703,10 +703,17 @@ pub async fn serve_http(
     };
 
     let server = SaiServer::new(indexing, query, plan, allow_write, allow_setup);
+    // Stateless + JSON responses: each POST is an independent request answered with plain
+    // `application/json` (not an SSE stream). Our tools carry no cross-request session state,
+    // so this is the natural mode — simpler to deploy/scale and trivially scriptable (curl,
+    // hurl). Loopback-only host validation is kept from the default (DNS-rebind guard).
+    let config = StreamableHttpServerConfig::default()
+        .with_stateful_mode(false)
+        .with_json_response(true);
     let service = StreamableHttpService::new(
         move || Ok(server.clone()),
         Arc::new(LocalSessionManager::default()),
-        StreamableHttpServerConfig::default(), // loopback-only host validation (DNS-rebind guard)
+        config,
     );
     let router = axum::Router::new().nest_service("/mcp", service);
     let listener = tokio::net::TcpListener::bind(addr)
