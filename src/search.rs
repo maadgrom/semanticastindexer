@@ -1,5 +1,5 @@
-//! Shared similarity-search core used by BOTH the CLI (`similar` / `duplicates`
-//! subcommands) AND the MCP server (`mcp.rs`).
+//! Shared PURE near-duplicate clustering core, called by [`crate::service::QueryService`]
+//! (which both the CLI `duplicates` subcommand and the MCP `find_duplicates` tool reach).
 //!
 //! This module is **not** gated behind the `mcp` feature: the `duplicates` / `similar`
 //! CLI subcommands must work with just a vector backend + embedder (e.g.
@@ -9,24 +9,14 @@
 //! - [`UnionFind`] — disjoint-set used to cluster near-duplicate chunks.
 //! - [`DupMember`] / [`DupCluster`] — the cluster result shape.
 //! - [`cluster_duplicates`] — the PURE clustering algorithm (union-find over
-//!   per-chunk neighbour lists + edge bookkeeping + sort/truncate).
-//! - [`find_duplicates`] / [`find_similar`] — the orchestration over a [`Backend`]
-//!   (fetch chunks/vectors, gather neighbours, resolve a [`SimilarTarget`]).
-//!
-//! These functions take `&Backend` and therefore run ON the backend worker thread
-//! ([`crate::worker`]): both the CLI subcommands and the MCP tools send a
-//! `FindDuplicates` / `FindSimilar` request through the `Send`+`Sync`
-//! [`crate::worker::BackendHandle`], and the worker calls into this module. The
-//! backend's sync DuckDB I/O thus never blocks the main runtime, and the
-//! orchestration exists in exactly one place.
+//!   per-chunk neighbour lists + edge bookkeeping + sort/truncate). NO I/O — the service
+//!   gathers chunks + neighbours from the `VectorStore` and feeds them here.
 
 #![cfg_attr(not(any(feature = "duckdb", feature = "qdrant")), allow(dead_code))]
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Result;
-
-use crate::vectordbs::{Backend, Hit};
+use crate::domain::Hit;
 // Transitional re-export shim (US-001): the cluster result shapes + the `find_similar`
 // target now live in `crate::domain`. Re-exported so existing call sites importing them
 // via `crate::search::…` keep resolving without churn. Removed in a later story.
@@ -168,81 +158,6 @@ fn build_cluster(
     }
 }
 
-/// Run the full codebase-wide near-duplicate scan off the [`Backend`] enum. Fetches
-/// every stored chunk (optionally path-glob filtered), gathers each chunk's `top_k`
-/// nearest neighbours (self-excluded, stored vectors — no re-embed), then defers to
-/// the shared [`cluster_duplicates`].
-///
-/// Runs on the backend worker thread: BOTH the CLI `duplicates` subcommand and the
-/// MCP `sai_find_duplicates` tool reach this through a `FindDuplicates` request on
-/// [`crate::worker::BackendHandle`].
-///
-/// `seed_paths` (see [`cluster_duplicates`]) restricts which chunks may seed a cluster.
-/// As an optimisation it also skips the nearest-neighbour query for non-seed chunks —
-/// they can still be PULLED IN as a seed's neighbour, but never seed a cluster themselves,
-/// so their own neighbour list is never consulted. A PR gate thus does O(changed) vector
-/// queries instead of O(whole index).
-pub async fn find_duplicates(
-    backend: &Backend,
-    min_score: f32,
-    min_cluster_size: usize,
-    top_k: u64,
-    max_clusters: usize,
-    path_glob: Option<&str>,
-    seed_paths: Option<&HashSet<String>>,
-) -> Result<Vec<DupCluster>> {
-    let chunks = backend.all_chunks_with_vectors(path_glob).await?;
-    let mut neighbours: Vec<Vec<Hit>> = Vec::with_capacity(chunks.len());
-    for (hit, vec) in &chunks {
-        // Only seed chunks need their neighbours; skip the query for the rest.
-        if seed_paths.is_some_and(|seeds| !seeds.contains(&hit.path)) {
-            neighbours.push(Vec::new());
-            continue;
-        }
-        let nbrs = backend.query_by_vector(vec, top_k, Some(hit.id)).await?;
-        neighbours.push(nbrs);
-    }
-    Ok(cluster_duplicates(
-        &chunks,
-        &neighbours,
-        min_score,
-        min_cluster_size.max(1),
-        max_clusters,
-        seed_paths,
-    ))
-}
-
-/// Resolve a `find_similar` request off the [`Backend`] enum into ranked neighbours,
-/// applying `min_score`. Runs on the backend worker thread (the CLI `similar`
-/// subcommand sends a `FindSimilar` request through [`crate::worker::BackendHandle`]).
-///
-/// - [`SimilarTarget::Code`] embeds the snippet as a PASSAGE then NN-searches by it.
-/// - [`SimilarTarget::Location`] looks up the stored chunk + its exact vector and
-///   NN-searches by that vector, excluding the chunk itself.
-///
-/// `min_score` drops neighbours below the cosine cut (pass `0.0` to see the raw
-/// distribution). Returns the ranked, filtered hits.
-pub async fn find_similar(
-    backend: &Backend,
-    target: SimilarTarget,
-    limit: u64,
-    min_score: f32,
-) -> Result<Vec<Hit>> {
-    let hits = match target {
-        SimilarTarget::Code(code) => {
-            let vec = backend.embed_passage(&code).await?;
-            backend.query_by_vector(&vec, limit, None).await?
-        }
-        SimilarTarget::Location { path, line } => {
-            let located = backend.get_by_location(&path, line).await?;
-            let (hit, vec) =
-                located.ok_or_else(|| anyhow::anyhow!("no indexed chunk at {path}:{line}"))?;
-            backend.query_by_vector(&vec, limit, Some(hit.id)).await?
-        }
-    };
-    Ok(hits.into_iter().filter(|h| h.score >= min_score).collect())
-}
-
 /// Classic union-find (disjoint set) with path compression + union by size. Used to
 /// cluster near-duplicate chunks from the pairwise NN edges. Single source of truth
 /// shared by the CLI and MCP find_duplicates paths.
@@ -291,143 +206,11 @@ impl UnionFind {
 
 #[cfg(test)]
 mod tests {
-    //! Tests against `Backend::Mock` (seeded rows-with-vectors) for the shared core that
-    //! BOTH the CLI subcommands and the MCP tools depend on: union-find clustering, the
-    //! duplicates scan, and find_similar resolution (code + location, self-exclusion).
+    //! Tests for the PURE clustering core (`cluster_duplicates` + `UnionFind`) that the
+    //! `QueryService::find_duplicates` path feeds. The store-backed scan + `find_similar`
+    //! resolution are covered by the `crate::service::query` unit tests (over `MockStore`).
 
     use super::*;
-    use crate::vectordbs::mock::{MockRow, seeded};
-
-    /// find_duplicates: a tight cluster of near-identical vectors collapses into ONE
-    /// component; a distinct vector stays separate; min_cluster_size filters it.
-    #[tokio::test]
-    async fn find_duplicates_clusters_near_identical_and_separates_distinct() {
-        let b = seeded(vec![
-            MockRow::new(1, "src/dup1.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
-            MockRow::new(2, "src/dup2.ts", 1, vec![0.999, 0.01, 0.0, 0.0]),
-            MockRow::new(3, "src/dup3.ts", 1, vec![0.998, 0.0, 0.02, 0.0]),
-            MockRow::new(4, "src/other.ts", 1, vec![0.0, 0.0, 0.0, 1.0]),
-        ]);
-        let clusters = find_duplicates(&b, 0.95, 2, 10, 50, None, None)
-            .await
-            .unwrap();
-        assert_eq!(clusters.len(), 1, "exactly one near-duplicate cluster");
-        assert_eq!(clusters[0].size, 3, "the three near-identical chunks");
-        let paths: Vec<&str> = clusters[0]
-            .members
-            .iter()
-            .map(|m| m.path.as_str())
-            .collect();
-        assert!(paths.contains(&"src/dup1.ts"));
-        assert!(paths.contains(&"src/dup2.ts"));
-        assert!(paths.contains(&"src/dup3.ts"));
-        assert!(!paths.contains(&"src/other.ts"), "outlier excluded");
-        assert!(clusters[0].min_sim >= 0.95, "edge sims above threshold");
-    }
-
-    /// min_score filtering: raising the threshold above all edge similarities yields no
-    /// clusters even though the vectors are somewhat close.
-    #[tokio::test]
-    async fn find_duplicates_min_score_filters_out_weak_edges() {
-        let b = seeded(vec![
-            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
-            MockRow::new(2, "src/b.ts", 1, vec![0.7, 0.7, 0.0, 0.0]),
-        ]);
-        // cosine ~0.707 < 0.99 → no edges kept.
-        let clusters = find_duplicates(&b, 0.99, 2, 10, 50, None, None)
-            .await
-            .unwrap();
-        assert!(clusters.is_empty(), "no edges survive a high threshold");
-    }
-
-    /// find_similar by code: embeds the snippet (mock canned vector) and ranks neighbours.
-    #[tokio::test]
-    async fn find_similar_by_code_ranks_neighbours() {
-        let b = seeded(vec![
-            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
-            MockRow::new(2, "src/b.ts", 1, vec![0.0, 1.0, 0.0, 0.0]),
-        ]);
-        // min_score 0.0 → no filtering; just assert it resolves + ranks.
-        let hits = find_similar(&b, SimilarTarget::Code("anything".to_string()), 8, 0.0)
-            .await
-            .unwrap();
-        assert!(!hits.is_empty(), "code path returns neighbours");
-        assert!(
-            hits.windows(2).all(|w| w[0].score >= w[1].score),
-            "ranked by score desc"
-        );
-    }
-
-    /// find_similar by location: reuses the stored vector and EXCLUDES the chunk itself.
-    #[tokio::test]
-    async fn find_similar_by_location_excludes_self() {
-        let b = seeded(vec![
-            MockRow::new(1, "src/a.ts", 10, vec![1.0, 0.0, 0.0, 0.0]),
-            MockRow::new(2, "src/b.ts", 1, vec![0.99, 0.01, 0.0, 0.0]),
-        ]);
-        let hits = find_similar(
-            &b,
-            SimilarTarget::Location {
-                path: "src/a.ts".to_string(),
-                line: 10,
-            },
-            8,
-            0.0,
-        )
-        .await
-        .unwrap();
-        assert!(hits.iter().all(|h| h.id != 1), "self id excluded");
-        assert_eq!(hits.len(), 1, "only the other chunk");
-        assert_eq!(hits[0].id, 2);
-    }
-
-    /// find_similar by location: a missing chunk is a clear error.
-    #[tokio::test]
-    async fn find_similar_missing_location_errors() {
-        let b = seeded(vec![MockRow::new(
-            1,
-            "src/a.ts",
-            10,
-            vec![1.0, 0.0, 0.0, 0.0],
-        )]);
-        // `Hit` is not `Debug`, so avoid `unwrap_err()` — match the Result directly.
-        let res = find_similar(
-            &b,
-            SimilarTarget::Location {
-                path: "src/a.ts".to_string(),
-                line: 999,
-            },
-            8,
-            0.0,
-        )
-        .await;
-        match res {
-            Err(e) => assert!(e.to_string().contains("no indexed chunk"), "clear error"),
-            Ok(_) => panic!("missing location must error"),
-        }
-    }
-
-    /// min_score filters low-scoring neighbours out of find_similar results.
-    #[tokio::test]
-    async fn find_similar_applies_min_score() {
-        let b = seeded(vec![
-            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
-            MockRow::new(2, "src/b.ts", 1, vec![0.0, 1.0, 0.0, 0.0]),
-        ]);
-        let hits = find_similar(
-            &b,
-            SimilarTarget::Location {
-                path: "src/a.ts".to_string(),
-                line: 1,
-            },
-            8,
-            0.5,
-        )
-        .await
-        .unwrap();
-        // The only other vector is orthogonal (cosine 0 < 0.5) → filtered out.
-        assert!(hits.is_empty(), "orthogonal neighbour dropped by min_score");
-    }
 
     /// Build a minimal `Hit` for the pure `cluster_duplicates` tests.
     fn hit(id: u64, path: &str, score: f32, no_duplicate: bool) -> Hit {
@@ -528,36 +311,6 @@ mod tests {
             clusters.len(),
             2,
             "whole-DB scan reports both duplicate pairs"
-        );
-    }
-
-    /// End-to-end over the Mock backend: a `seed_paths` set scopes the scan to changed
-    /// files while the neighbour search still spans the whole index.
-    #[tokio::test]
-    async fn find_duplicates_seed_paths_restricts_to_changed() {
-        let b = seeded(vec![
-            // "changed" file — duplicates the existing one below.
-            MockRow::new(1, "src/new.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
-            MockRow::new(2, "src/existing.ts", 1, vec![0.999, 0.01, 0.0, 0.0]),
-            // untouched pre-existing duplicate pair.
-            MockRow::new(3, "src/old_a.ts", 1, vec![0.0, 0.0, 1.0, 0.0]),
-            MockRow::new(4, "src/old_b.ts", 1, vec![0.0, 0.0, 0.999, 0.01]),
-        ]);
-        let seeds: HashSet<String> = [String::from("src/new.ts")].into_iter().collect();
-        let clusters = find_duplicates(&b, 0.95, 2, 10, 50, None, Some(&seeds))
-            .await
-            .unwrap();
-        assert_eq!(clusters.len(), 1, "only the changed file's duplicate");
-        let paths: Vec<&str> = clusters[0]
-            .members
-            .iter()
-            .map(|m| m.path.as_str())
-            .collect();
-        assert!(paths.contains(&"src/new.ts"));
-        assert!(paths.contains(&"src/existing.ts"));
-        assert!(
-            !paths.contains(&"src/old_a.ts"),
-            "the untouched pre-existing pair is excluded"
         );
     }
 

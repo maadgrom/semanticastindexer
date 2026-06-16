@@ -107,8 +107,8 @@ impl MockCalls {
 /// In-memory recording backend. Returns deterministic canned hits from `query`.
 ///
 /// `calls` is behind an `Arc` so a test can keep a recorder handle while the backend
-/// itself moves onto the worker thread (the flow tests drive the real orchestration,
-/// which routes every backend call through [`crate::worker`]).
+/// itself moves into the `Arc<dyn VectorStore>` (the flow tests drive the real
+/// orchestration through [`crate::repos::mock::MockStore`]).
 pub struct MockBackend {
     pub calls: Arc<Mutex<MockCalls>>,
     canned: Vec<Hit>,
@@ -309,11 +309,4 @@ fn canned_vector(text: &str) -> Vec<f32> {
         v[i % 4] += b as f32;
     }
     v.to_vec()
-}
-
-/// Build a `Backend::Mock` seeded with the given rows-with-vectors. Shared test helper
-/// for the `mcp` and `search` test modules.
-#[cfg(test)]
-pub fn seeded(rows: Vec<MockRow>) -> crate::vectordbs::Backend {
-    crate::vectordbs::Backend::Mock(MockBackend::with_rows(rows))
 }

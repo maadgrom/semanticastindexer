@@ -315,7 +315,7 @@ impl QdrantBackend {
     /// `check_dim`) and DELEGATE to the single [`Self::query_by_vector`] NN core — so CLI
     /// `query` (local) and the MCP `SearchByQuery` path return identical results (same
     /// over-fetch/dedup). In SERVER mode use a `query:`-prefixed `Document` (server-side
-    /// inference), the historical path. The `Backend::query` signature is unchanged.
+    /// inference), the historical path.
     pub async fn query(&self, q: &str, limit: u64) -> Result<Vec<Hit>> {
         #[cfg(any(feature = "ort", feature = "ollama"))]
         if self.embedder.is_some() {
@@ -549,9 +549,9 @@ impl QdrantBackend {
 
     /// Embed a search query (asymmetric `query:` side) through the owned local embedder, or
     /// bail when the backend is in server mode (no local embedder). cfg-pair: the real impl
-    /// exists only when an embedder feature is compiled in; the stub keeps the
-    /// `Backend::Qdrant(_)` arm resolvable in a bare `--features qdrant` build. Mirrors the
-    /// DuckDB twin (which `check_dim`s the result).
+    /// exists only when an embedder feature is compiled in; the stub keeps the qdrant
+    /// adapter resolvable in a bare `--features qdrant` build. Mirrors the DuckDB twin
+    /// (which `check_dim`s the result).
     #[cfg(any(feature = "ort", feature = "ollama"))]
     #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
@@ -564,7 +564,7 @@ impl QdrantBackend {
     }
 
     /// Bare `--features qdrant` stub: no embedder field exists, so there is no local query
-    /// embedding. Keeps `Backend::embed_query`'s qdrant arm resolvable.
+    /// embedding. Keeps the qdrant adapter's `embed_query` resolvable.
     #[cfg(not(any(feature = "ort", feature = "ollama")))]
     #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {

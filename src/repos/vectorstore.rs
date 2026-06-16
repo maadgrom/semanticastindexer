@@ -3,10 +3,10 @@
 //!
 //! PATH B: the embedder is OWNED by the backend in this codebase (server-side inference
 //! for Qdrant, a local ONNX/Ollama embedder for DuckDB and qdrant local-embed mode), so
-//! we do NOT split embedding into a separate port. This trait mirrors the existing backend
-//! method surface 1:1 (`crate::vectordbs::Backend`'s inherent methods), so each concrete
-//! repo implements it as a thin delegation. The DuckDb adapter additionally confines its
-//! `!Sync` backend to a worker thread via a closure-mailbox (see [`crate::repos::duckdb`]).
+//! we do NOT split embedding into a separate port. This trait mirrors the concrete backends'
+//! inherent method surface 1:1, so each concrete repo implements it as a thin delegation. The
+//! DuckDb adapter additionally confines its `!Sync` backend to a worker thread via a
+//! closure-mailbox (see [`crate::repos::duckdb`]).
 
 use anyhow::Result;
 use async_trait::async_trait;

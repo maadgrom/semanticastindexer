@@ -139,7 +139,6 @@ pub async fn run(args: Args) -> Result<()> {
 /// DuckDB store's channel, which ends its worker loop) and join the worker thread so the
 /// backend is dropped before we return — the DuckDB connection checkpoints its WAL on drop,
 /// which a bare process exit would skip. Qdrant carries no thread, so the join is skipped.
-/// Mirrors the old `with_worker` shutdown discipline exactly.
 async fn with_services<T, F>(
     services: (IndexingService, QueryService, Option<JoinHandle<()>>),
     f: F,
@@ -1078,5 +1077,93 @@ mod tests {
             "the untouched-only pre-existing pair does NOT seed"
         );
         assert_eq!(all.len(), 2, "the full unseeded scan reports both pairs");
+    }
+
+    /// dedup-gate smoke (B1/G6): the `duplicates --json` OUTPUT ENVELOPE is unchanged. The
+    /// `dedup-gate.yml` consumer parses `{min_score, min_cluster_size, top_k, seeded, count,
+    /// clusters}` from the `--json` stdout. Run the duplicates path over a MockStore (NO git
+    /// seeding — a plain whole-DB scan), build the EXACT `serde_json::json!` envelope
+    /// `run_duplicates` emits from the resolved knobs + clusters, and assert every key is
+    /// present with the right type. Locks the gate's contract without a binary E2E (deferred
+    /// to US-009).
+    #[tokio::test]
+    async fn duplicates_json_envelope_shape_over_mockstore() {
+        let plan = test_plan(".");
+        // No --since/--staged/--file → unseeded whole-DB scan (seeded == false).
+        let args = crate::cli::DuplicatesArgs {
+            min_score: Some(0.95),
+            min_cluster_size: Some(2),
+            top_k: Some(10),
+            path_glob: None,
+            max_clusters: Some(50),
+            since: None,
+            staged: false,
+            files: Vec::new(),
+            json: true,
+        };
+
+        let (_i, query, _c) =
+            mock_services_from_backend(MockBackend::with_rows(dup_fixture_rows()), &plan);
+        let (knobs, clusters) = resolve_duplicate_clusters(&query, &plan, &args, true)
+            .await
+            .unwrap()
+            .expect("not aborted on dirty");
+        let DupKnobs {
+            min_score,
+            min_cluster_size,
+            top_k,
+            seeded,
+        } = knobs;
+
+        // The IDENTICAL envelope `run_duplicates` serialises for `--json`.
+        let out = serde_json::json!({
+            "min_score": min_score,
+            "min_cluster_size": min_cluster_size,
+            "top_k": top_k,
+            "seeded": seeded,
+            "count": clusters.len(),
+            "clusters": clusters,
+        });
+
+        let obj = out.as_object().expect("envelope is a JSON object");
+        // Exactly the six keys the dedup-gate consumer parses — no more, no fewer.
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "clusters",
+                "count",
+                "min_cluster_size",
+                "min_score",
+                "seeded",
+                "top_k"
+            ],
+            "the duplicates --json envelope keys must stay stable for dedup-gate.yml"
+        );
+        // Type contract per field.
+        assert!(obj["min_score"].is_number(), "min_score is a number");
+        assert!(
+            obj["min_cluster_size"].is_u64(),
+            "min_cluster_size is an integer"
+        );
+        assert!(obj["top_k"].is_u64(), "top_k is an integer");
+        assert_eq!(obj["seeded"], serde_json::json!(false), "unseeded scan");
+        assert!(obj["count"].is_u64(), "count is an integer");
+        let arr = obj["clusters"].as_array().expect("clusters is an array");
+        assert_eq!(
+            arr.len() as u64,
+            obj["count"].as_u64().unwrap(),
+            "count equals clusters.len()"
+        );
+        // The whole-DB scan over the fixture surfaces both near-identical pairs, and each
+        // cluster member carries the path the gate triages on.
+        assert_eq!(obj["count"], serde_json::json!(2), "both fixture pairs");
+        assert!(
+            arr.iter().all(|c| c["members"]
+                .as_array()
+                .is_some_and(|m| m.iter().all(|mem| mem["path"].is_string()))),
+            "every cluster member exposes a string path"
+        );
     }
 }

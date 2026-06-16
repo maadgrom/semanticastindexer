@@ -778,87 +778,12 @@ fn model_label(plan: &Plan) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! Tool-logic tests against `Backend::Mock` (seeded rows-with-vectors). No real
-    //! backend, no network: these prove the search/dedup/self-exclusion/union-find logic
-    //! the MCP tools depend on. The macro-generated rmcp glue is exercised by the live
-    //! `initialize`/`tools/list` smoke (see README); here we test the pure logic.
+    //! PURE tool-helper tests (`snippet_of` / `clamp_limit`). The store-backed search /
+    //! self-exclusion / clustering logic the MCP tools depend on is covered on the live
+    //! `VectorStore` path by the `crate::repos::mock` + `crate::service::query` unit tests;
+    //! the macro-generated rmcp glue by the live `initialize`/`tools/list` smoke (see README).
 
     use super::*;
-    use crate::vectordbs::mock::{MockRow, seeded};
-
-    /// query_by_vector ranks by cosine similarity (best first), dedups by id, truncates.
-    #[tokio::test]
-    async fn query_by_vector_orders_by_similarity_and_truncates() {
-        let b = seeded(vec![
-            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
-            MockRow::new(2, "src/b.ts", 1, vec![0.9, 0.1, 0.0, 0.0]),
-            MockRow::new(3, "src/c.ts", 1, vec![0.0, 1.0, 0.0, 0.0]),
-        ]);
-        let hits = b
-            .query_by_vector(&[1.0, 0.0, 0.0, 0.0], 2, None)
-            .await
-            .unwrap();
-        assert_eq!(hits.len(), 2, "truncated to limit");
-        assert_eq!(hits[0].id, 1, "exact match ranks first");
-        assert_eq!(hits[1].id, 2, "near match second");
-        assert!(hits[0].score >= hits[1].score, "scores descending");
-    }
-
-    /// query_by_vector excludes the self id (find_similar by location / find_duplicates).
-    #[tokio::test]
-    async fn query_by_vector_excludes_self_id() {
-        let b = seeded(vec![
-            MockRow::new(1, "src/a.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
-            MockRow::new(2, "src/b.ts", 1, vec![0.99, 0.01, 0.0, 0.0]),
-        ]);
-        let hits = b
-            .query_by_vector(&[1.0, 0.0, 0.0, 0.0], 8, Some(1))
-            .await
-            .unwrap();
-        assert!(hits.iter().all(|h| h.id != 1), "self id excluded");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, 2);
-    }
-
-    /// query_by_vector dedups by id (HNSW can surface a duplicate candidate). The mock's
-    /// rows are unique, but the dedup contract is still asserted via repeated-id seeding
-    /// being impossible — instead we assert no id appears twice in a larger result set.
-    #[tokio::test]
-    async fn query_by_vector_results_have_unique_ids() {
-        let rows: Vec<MockRow> = (1..=10)
-            .map(|i| MockRow::new(i, &format!("src/f{i}.ts"), 1, vec![i as f32, 0.0, 0.0, 0.0]))
-            .collect();
-        let b = seeded(rows);
-        let hits = b
-            .query_by_vector(&[5.0, 0.0, 0.0, 0.0], 50, None)
-            .await
-            .unwrap();
-        let mut ids: Vec<u64> = hits.iter().map(|h| h.id).collect();
-        let before = ids.len();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(before, ids.len(), "no duplicate ids in results");
-    }
-
-    /// get_by_location returns the row + its exact stored vector, or None.
-    #[tokio::test]
-    async fn get_by_location_returns_row_and_vector() {
-        let b = seeded(vec![
-            MockRow::new(1, "src/a.ts", 10, vec![0.1, 0.2, 0.3, 0.4]),
-            MockRow::new(2, "src/b.ts", 20, vec![0.5, 0.6, 0.7, 0.8]),
-        ]);
-        let got = b.get_by_location("src/b.ts", 20).await.unwrap();
-        let (hit, vec) = got.expect("row present");
-        assert_eq!(hit.id, 2);
-        assert_eq!(vec, vec![0.5, 0.6, 0.7, 0.8], "exact stored vector");
-
-        let missing = b.get_by_location("src/b.ts", 999).await.unwrap();
-        assert!(missing.is_none(), "no chunk at that line");
-    }
-
-    // The find_duplicates clustering + union-find tests now live in `crate::search`
-    // (the shared core that BOTH this tool and the CLI `duplicates` subcommand use), so
-    // they are not duplicated here.
 
     /// snippet_of caps at ~8 lines / ~800 chars.
     #[test]

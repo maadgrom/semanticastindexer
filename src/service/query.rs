@@ -1,14 +1,9 @@
-//! [`QueryService`]: the read-side service over the [`VectorStore`] port. Mirrors the
-//! existing `search::query` / `search::find_similar` / `search::find_duplicates`
-//! orchestration, but dispatched over `Arc<dyn VectorStore>` instead of the `!Sync`
-//! `crate::vectordbs::Backend`.
+//! [`QueryService`]: the read-side service over the [`VectorStore`] port — text query,
+//! find-similar, and the near-duplicate scan, dispatched over `Arc<dyn VectorStore>`.
 //!
-//! ADDITIVE (US-003): nothing wires this yet (US-004 does). The old `&Backend` paths
-//! (`search::find_duplicates`/`search::find_similar`) stay active and UNTOUCHED. The
-//! orchestration loops are re-implemented here because the `!Sync` `Backend` cannot impl
-//! the `Send + Sync` `VectorStore` trait — this temporary duplication is removed when the
-//! old `&Backend` versions are deleted (US-006). The PURE shared clustering core
-//! (`search::cluster_duplicates`, union-find) is CALLED, never duplicated.
+//! The orchestration loops run over the `Send + Sync` port; the PURE shared clustering core
+//! (`search::cluster_duplicates`, union-find) is CALLED, never duplicated. Both the CLI
+//! `duplicates`/`similar` subcommands and the MCP tools reach this service.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -22,8 +17,8 @@ use crate::repos::VectorStore;
 /// Read-side service: text query, find-similar, and the near-duplicate scan — all over the
 /// shared [`VectorStore`] port. The B1 dedup gate depends on `find_duplicates` carrying
 /// `seed_paths`.
-// Unconsumed in the lib target until US-004 wires it; mark dead-code-allowed so the public
-// methods don't trip `clippy -D warnings`.
+// Some methods are reachable only under specific features (e.g. `chunk_count` on the MCP
+// path); allow dead_code so a feature subset doesn't trip `clippy -D warnings`.
 #[allow(dead_code)]
 pub struct QueryService {
     store: Arc<dyn VectorStore>,

@@ -3,11 +3,9 @@
 //! `Arc<dyn VectorStore>` across both services.
 //!
 //! This is the ONLY module that names a concrete repo adapter (`QdrantStore` / `DuckDbStore`)
-//! — the CLI talks to services, the services talk to the port. It MIRRORS the arm logic of
-//! the enum-dispatched [`crate::vectordbs::factory`] (same backend/embedder resolution, same
-//! per-`Access` open) but produces the `Send + Sync` store + the two services instead of the
-//! `!Sync` `Backend`. The old `factory`/`worker` path stays the active one for the MCP server
-//! (deleted in US-006).
+//! — the CLI and the MCP server talk to services, the services talk to the port. It resolves
+//! `plan.backend`/`plan.embedder` per [`Access`] and produces the `Send + Sync` store + the
+//! two services. The sole backend-resolution path.
 
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -27,7 +25,7 @@ type StoreWithWorker = (Arc<dyn VectorStore>, Option<JoinHandle<()>>);
 /// (sharing ONE `Arc<dyn VectorStore>`) plus the DuckDB worker [`JoinHandle`] (`None` for
 /// qdrant) so the caller can shut the worker thread down cleanly (drop the services to close
 /// the channel, then join the thread — the duckdb worker drops the backend, checkpointing the
-/// WAL, exactly like the old `with_worker`).
+/// WAL).
 pub fn build_services(
     plan: &Plan,
     access: Access,
@@ -56,8 +54,8 @@ pub fn build_services_for_index(
 }
 
 /// Resolve `plan.backend`/`plan.embedder` into a shared `Arc<dyn VectorStore>` + the optional
-/// worker `JoinHandle`. Arms are cfg-gated identically to [`crate::vectordbs::factory`]:
-/// selecting a backend whose feature was not compiled in yields the same actionable error.
+/// worker `JoinHandle`. Arms are cfg-gated: selecting a backend whose feature was not compiled
+/// in yields a clear, actionable error.
 fn build_store(plan: &Plan, access: Access) -> Result<StoreWithWorker> {
     let _ = access; // only consulted by the duckdb arm
     match plan.backend.as_str() {
@@ -66,8 +64,8 @@ fn build_store(plan: &Plan, access: Access) -> Result<StoreWithWorker> {
             {
                 use crate::repos::qdrant::QdrantStore;
                 use crate::vectordbs::qdrant::QdrantBackend;
-                // Mirror `vectordbs::factory`'s qdrant arm: `embedder: qdrant` =
-                // server-side inference; `ort`/`ollama` = local embed + raw-vector upsert.
+                // `embedder: qdrant` = server-side inference; `ort`/`ollama` = local embed +
+                // raw-vector upsert.
                 let backend = match plan.embedder.as_str() {
                     "qdrant" => QdrantBackend::connect(plan)?,
                     "ort" | "ollama" => {
@@ -105,8 +103,8 @@ fn build_store(plan: &Plan, access: Access) -> Result<StoreWithWorker> {
             {
                 use crate::repos::duckdb::DuckDbStore;
                 use crate::vectordbs::duckdb::DuckDbBackend;
-                // Mirror `vectordbs::factory`'s duckdb arm: build the embedder, open the file
-                // per `access` (read-only search vs read-write index maintenance).
+                // Build the embedder, open the file per `access` (read-only search vs
+                // read-write index maintenance).
                 let embedder = crate::vectordbs::build_embedder(plan)?;
                 let backend = match access {
                     Access::ReadOnly => DuckDbBackend::connect_readonly(plan, embedder)?,

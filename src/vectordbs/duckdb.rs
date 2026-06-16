@@ -262,7 +262,7 @@ impl DuckDbBackend {
     /// expensive path — same reasoning as the project's WASM bulk gotcha).
     ///
     /// LOGICAL INVARIANT: Every write path that performs deletes followed by upserts
-    /// (sync, MCP refresh via handle_refresh, etc.) MUST call begin_bulk before the
+    /// (CLI sync, MCP refresh) MUST call begin_bulk before the
     /// first delete/upsert and end_bulk after the last one. Failure to do so leaves
     /// the experimental HNSW index in a degraded-recall state after deletes.
     pub async fn begin_bulk(&self) -> Result<()> {

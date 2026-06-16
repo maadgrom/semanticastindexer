@@ -1,13 +1,10 @@
-//! [`IndexingService`]: the write-side service over the [`VectorStore`] port. Mirrors the
-//! existing `app::index_sources` and `worker::handle_refresh` orchestration, but dispatched
-//! over `Arc<dyn VectorStore>` instead of the `!Sync` `crate::vectordbs::Backend`.
+//! [`IndexingService`]: the write-side service over the [`VectorStore`] port — prepare
+//! storage, bulk-index a source tree, refresh changed files, and flush, dispatched over
+//! `Arc<dyn VectorStore>`.
 //!
-//! ADDITIVE (US-003): nothing wires this yet (US-004 does). The old `&Backend` paths
-//! (`app::index_sources`, `worker::handle_refresh`, `indexer::reindex_file`) stay active and
-//! UNTOUCHED. The orchestration loops are re-implemented here because the `!Sync` `Backend`
-//! cannot impl the `Send + Sync` `VectorStore` trait — this temporary duplication is removed
-//! when the old `&Backend` versions are deleted (US-006). The PURE shared bit
-//! (`indexer::collect_chunks`) is CALLED, never duplicated.
+//! The orchestration loops run over the `Send + Sync` port; the PURE shared bits
+//! (`indexer::collect_chunks` / `indexer::build_chunks`) are CALLED, never duplicated. Both
+//! the CLI (`crate::app`) and the MCP `refresh` tool reach this service.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -26,8 +23,8 @@ const UPSERT_BATCH: usize = 64;
 
 /// Write-side service: prepare storage, bulk-index a source tree, refresh changed files,
 /// and flush — all over the shared [`VectorStore`] port.
-// Unconsumed in the lib target until US-004 wires it; mark dead-code-allowed so the public
-// methods don't trip `clippy -D warnings`.
+// Some methods are reachable only under specific features; allow dead_code so a feature
+// subset doesn't trip `clippy -D warnings`.
 #[allow(dead_code)]
 pub struct IndexingService {
     store: Arc<dyn VectorStore>,
@@ -124,10 +121,9 @@ impl IndexingService {
         Ok(())
     }
 
-    /// Re-index a batch of changed paths in one bulk window. MIRRORS
-    /// `worker::handle_refresh`: begin_bulk → per-path (fresh git capture + delete +
-    /// re-chunk + re-embed + upsert) → end_bulk-ALWAYS, breaking on the first error and
-    /// returning it after the index is rebuilt. Reuses [`ReindexOutcome`].
+    /// Re-index a batch of changed paths in one bulk window: begin_bulk → per-path (fresh
+    /// git capture + delete + re-chunk + re-embed + upsert) → end_bulk-ALWAYS, breaking on
+    /// the first error and returning it after the index is rebuilt. Reuses [`ReindexOutcome`].
     #[tracing::instrument(level = "info", skip(self, paths), fields(paths = paths.len()))]
     pub async fn refresh(&self, paths: &[String]) -> Result<RefreshReport> {
         self.store.begin_bulk().await?;
@@ -155,9 +151,9 @@ impl IndexingService {
     }
 
     /// Per-file re-index step over the store: delete the file's existing points, then —
-    /// if the on-disk path is still indexable — re-chunk + stamp + upsert. Mirrors
-    /// `indexer::reindex_file`'s logic but dispatched over `&dyn VectorStore` (the inclusion
-    /// decision still flows through `indexer`'s single source of truth, `build_chunks`).
+    /// if the on-disk path is still indexable — re-chunk + stamp + upsert, dispatched over
+    /// `&dyn VectorStore`. The inclusion decision flows through `indexer`'s single source of
+    /// truth (`load_file_for_indexing` + `build_chunks`).
     async fn reindex_file(&self, rel: &str, ctx: &GitContext) -> Result<ReindexOutcome> {
         let key = rel.trim_start_matches("./");
         // Always remove the file's existing points first.
