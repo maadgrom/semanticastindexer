@@ -16,6 +16,10 @@ use walkdir::WalkDir;
 use crate::config::Plan;
 use crate::vectordbs::{Backend, CodeChunk};
 use anyhow::Result;
+// Transitional re-export shim (US-001): `ReindexOutcome` now lives in `crate::domain`.
+// Re-exported so existing call sites importing `crate::indexer::ReindexOutcome` keep
+// resolving without churn (and so `reindex_file` below names it by its short name).
+pub use crate::domain::ReindexOutcome;
 
 /// Extensions whose comments are stripped (C-family `//` and `/* */`). Covers TS now, Go later.
 const CSTYLE_EXTS: &[&str] = &[
@@ -777,19 +781,6 @@ mod ast {
         chunks.sort_by_key(|c| c.start_line);
         Some(chunks)
     }
-}
-
-/// Outcome of re-indexing a single path: either it was removed (gone/excluded/empty,
-/// with a reason) or re-indexed with N fresh chunks.
-///
-/// This type is intentionally small and owned so it can be returned across the
-/// worker-thread boundary in the MCP server.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReindexOutcome {
-    /// File removed from the index. `reason` explains why (for logging only).
-    Removed { reason: &'static str },
-    /// File re-indexed with `chunks` fresh chunks upserted.
-    Reindexed { chunks: usize },
 }
 
 /// Shared per-file re-index step used by BOTH `sync` (CLI) and the MCP `refresh` tool.

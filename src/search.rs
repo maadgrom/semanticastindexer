@@ -25,27 +25,12 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use serde::Serialize;
 
 use crate::vectordbs::{Backend, Hit};
-
-/// One member of a near-duplicate cluster.
-#[derive(Debug, Clone, Serialize)]
-pub struct DupMember {
-    pub path: String,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub symbol: Option<String>,
-}
-
-/// A near-duplicate cluster: its members plus the min/max edge similarity within it.
-#[derive(Debug, Clone, Serialize)]
-pub struct DupCluster {
-    pub size: usize,
-    pub members: Vec<DupMember>,
-    pub min_sim: f32,
-    pub max_sim: f32,
-}
+// Transitional re-export shim (US-001): the cluster result shapes + the `find_similar`
+// target now live in `crate::domain`. Re-exported so existing call sites importing them
+// via `crate::search::…` keep resolving without churn. Removed in a later story.
+pub use crate::domain::{DupCluster, DupMember, SimilarTarget};
 
 /// Cluster near-duplicate chunks from per-chunk nearest-neighbour lists (PURE — no I/O).
 ///
@@ -225,19 +210,6 @@ pub async fn find_duplicates(
         max_clusters,
         seed_paths,
     ))
-}
-
-/// What `find_similar` searches for: a code snippet (embedded as a PASSAGE) or an
-/// existing indexed chunk located by `path` + 1-based `line` (its stored vector is
-/// reused — no re-embed — and the chunk itself is excluded from its own results).
-///
-/// Owned (no borrows) so it can be sent to the backend worker thread as part of a
-/// [`crate::worker::Request`].
-pub enum SimilarTarget {
-    /// A code snippet to embed as a passage (code-vs-code space).
-    Code(String),
-    /// An existing indexed chunk's location.
-    Location { path: String, line: usize },
 }
 
 /// Resolve a `find_similar` request off the [`Backend`] enum into ranked neighbours,

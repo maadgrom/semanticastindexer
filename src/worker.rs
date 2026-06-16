@@ -34,6 +34,10 @@ use crate::config::Plan;
 use crate::indexer::ReindexOutcome;
 use crate::search::{DupCluster, SimilarTarget};
 use crate::vectordbs::{Backend, CodeChunk, Hit};
+// Transitional re-export shim (US-001): `RefreshReport` now lives in `crate::domain`.
+// Re-exported so existing call sites importing `crate::worker::RefreshReport` keep
+// resolving without churn (and so the worker code below names it by its short name).
+pub use crate::domain::RefreshReport;
 
 /// A stored chunk paired with its embedding vector (the `get_by_location` shape).
 /// Aliased to keep the channel reply types readable (and below clippy's
@@ -128,14 +132,6 @@ pub enum Request {
         paths: Vec<String>,
         reply: oneshot::Sender<Result<RefreshReport>>,
     },
-}
-
-/// Outcome of a `Refresh` batch: one [`ReindexOutcome`] per input path (leading `./`
-/// stripped), in input order — so the CLI can render the exact per-file lines and the
-/// MCP tool can split refreshed/removed.
-pub struct RefreshReport {
-    /// `(path, outcome)` for each requested path, in request order.
-    pub entries: Vec<(String, ReindexOutcome)>,
 }
 
 /// `Send`+`Sync` handle the CLI orchestration and the MCP server hold. Cloning shares
