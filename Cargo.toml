@@ -89,6 +89,10 @@ twox-hash = "2"
 # unification to turn it on.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 anyhow = "1"
+# async-trait (non-optional): the `repos::VectorStore` port is an `#[async_trait]` trait
+# (always compiled — its definition is uncfg'd; only the concrete adapters are feature-gated)
+# so dispatch can be `Arc<dyn VectorStore>` across the two runtime-selected backends.
+async-trait = "0.1"
 walkdir = "2"
 clap = { version = "4", features = ["derive"] }
 # Logging facade (non-optional, core): all diagnostics flow through `tracing` to a

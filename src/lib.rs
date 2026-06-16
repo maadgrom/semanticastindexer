@@ -35,6 +35,10 @@ pub mod init;
 pub mod logging;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+// Repository layer (clean-arch): the `VectorStore` port + thin adapters over the existing
+// backends (qdrant/duckdb/mock), incl the DuckDb closure-mailbox. ADDITIVE — nothing
+// consumes it yet; the old `vectordbs::Backend` + `worker` path stays active.
+pub mod repos;
 // Shared similarity-search core (union-find clustering + find_similar resolution) and
 // the backend worker thread: both are used by EVERY command (the CLI orchestration and
 // the MCP server all talk to the backend through `worker::BackendHandle`), so neither

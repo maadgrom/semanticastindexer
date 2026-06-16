@@ -3174,6 +3174,7 @@ name = "semanticastindexer"
 version = "0.1.5"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "duckdb",
  "globset",

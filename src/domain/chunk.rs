@@ -1,6 +1,9 @@
 //! The [`CodeChunk`] entity: one embeddable slice of a source file, ready to upsert.
 
 /// One embeddable slice of a source file, ready to upsert.
+// `Clone` lets the `repos::duckdb` closure-mailbox move an owned copy of a borrowed
+// `&[CodeChunk]` into the `'static` worker job (the trait method borrows; the worker owns).
+#[derive(Clone)]
 pub struct CodeChunk {
     pub id: u64,
     pub path: String,
