@@ -62,9 +62,9 @@ DOCS_PORT  ?= 3000
 SITE_PORT  ?= 8000
 SITE_DIR   := $(THIS_DIR)/.site
 
-.PHONY: build build-ort build-ollama build-ast run prod dry-run sync flush query duplicates similar test test-all fmt clippy check-all clean help require-mdbook book-build docs site static
+.PHONY: build build-ort build-ollama build-ast run prod dry-run sync flush query duplicates similar test test-all fmt fmt-check clippy check-all clean help require-mdbook book-build docs site static
 
-build: ## Compile the optimized release binary with ALL features (recommended)
+build: fmt ## Compile the optimized release binary with ALL features (runs rustfmt first)
 	cargo build --release --manifest-path $(MANIFEST) --features all
 
 # Legacy / convenience aliases — all now produce the full-featured binary.
@@ -105,13 +105,16 @@ test-setup: ## Shell tests for the MCP setup tooling (no build required)
 test-all: ## Run unit tests (uses --features all)
 	cargo test --release --manifest-path $(MANIFEST) --features all
 
-fmt: ## Format the crate
+fmt: ## Format the crate (rustfmt; also runs automatically before `build`)
 	cargo fmt --manifest-path $(MANIFEST)
+
+fmt-check: ## Verify formatting without writing — mirrors CI (`cargo fmt --all -- --check`)
+	cargo fmt --manifest-path $(MANIFEST) --all -- --check
 
 clippy: ## Lint, warnings as errors (--features all)
 	cargo clippy --release --manifest-path $(MANIFEST) --features all -- -D warnings
 
-check-all: ## Lint with all backends, warnings as errors (--features all)
+check-all: fmt-check ## rustfmt check + lint with all backends, warnings as errors (mirrors CI)
 	cargo clippy --release --manifest-path $(MANIFEST) --features all -- -D warnings
 
 clean: ## Remove build artifacts

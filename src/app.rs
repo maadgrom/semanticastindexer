@@ -45,14 +45,14 @@ pub async fn run(args: Args) -> Result<()> {
         Some(Cmd::Init(_)) => unreachable!("init is handled before config loading"),
         Some(Cmd::Update) => unreachable!("update is handled before config loading"),
         Some(Cmd::Flush) => {
-            run_timed(t0, &args, &git_ctx, "", async {
+            run_timed(t0, &git_ctx, "", async {
                 let backend = factory(&plan, Access::ReadWrite)?;
                 with_worker(backend, &plan, async |h| h.flush().await).await
             })
             .await
         }
         Some(Cmd::Sync(sync_args)) => {
-            run_timed(t0, &args, &git_ctx, "", async {
+            run_timed(t0, &git_ctx, "", async {
                 let backend = factory(&plan, Access::ReadWrite)?;
                 with_worker(backend, &plan, async |h| {
                     h.ensure_ready(false).await?;
@@ -64,14 +64,14 @@ pub async fn run(args: Args) -> Result<()> {
         }
         #[cfg(feature = "mcp")]
         Some(Cmd::Mcp(mcp_args)) => {
-            run_timed(t0, &args, &git_ctx, "", async {
+            run_timed(t0, &git_ctx, "", async {
                 run_mcp(&args, mcp_args.allow_write, mcp_args.allow_setup).await
             })
             .await
         }
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
         Some(Cmd::Duplicates(dup_args)) => {
-            run_timed(t0, &args, &git_ctx, "", async {
+            run_timed(t0, &git_ctx, "", async {
                 let backend = factory(&plan, Access::ReadOnly)?;
                 with_worker(backend, &plan, async |h| {
                     run_duplicates(h, &plan, dup_args, args.silent).await
@@ -82,7 +82,7 @@ pub async fn run(args: Args) -> Result<()> {
         }
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
         Some(Cmd::Similar(sim_args)) => {
-            run_timed(t0, &args, &git_ctx, "", async {
+            run_timed(t0, &git_ctx, "", async {
                 let backend = factory(&plan, Access::ReadOnly)?;
                 with_worker(backend, &plan, async |h| {
                     run_similar(h, &plan, sim_args).await
@@ -95,13 +95,13 @@ pub async fn run(args: Args) -> Result<()> {
             // Default action: full index of --root.
             if args.dry_run {
                 indexer::dry_run(&plan);
-                finish(t0, &args, &git_ctx, " (dry-run)");
+                finish(t0, &git_ctx, " (dry-run)");
                 return Ok(());
             }
             // The indexing path can offer to wipe a dimension-mismatched DuckDB file and
             // rebuild it. A query-only run never re-indexes, so it just surfaces the error
             // (deleting the index would only leave an empty DB to query).
-            run_timed(t0, &args, &git_ctx, "", async {
+            run_timed(t0, &git_ctx, "", async {
                 let backend = if args.query_only {
                     factory(&plan, Access::ReadWrite)?
                 } else {
@@ -110,7 +110,7 @@ pub async fn run(args: Args) -> Result<()> {
                 with_worker(backend, &plan, async |h| {
                     h.ensure_ready(args.recreate).await?;
                     if !args.query_only {
-                        index_sources(h, &plan, &git_ctx).await?;
+                        index_sources(h, &plan, &git_ctx, args.silent).await?;
                     }
                     if let Some(q) = args.query.as_deref() {
                         run_query(h, &plan, q).await?;
@@ -136,7 +136,7 @@ where
     let result = f(&handle).await;
     drop(handle);
     if thread.join().is_err() {
-        eprintln!("warning: backend worker thread panicked during shutdown");
+        tracing::warn!("backend worker thread panicked during shutdown");
     }
     result
 }
@@ -147,17 +147,60 @@ where
 const UPDATE_INSTALLER_SH: &str = "https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.sh";
 #[cfg(windows)]
 const UPDATE_INSTALLER_PS1: &str = "https://github.com/maadgrom/semanticastindexer/releases/latest/download/semanticastindexer-installer.ps1";
+/// GitHub API for the latest release — used by `update` to skip a no-op reinstall.
+const RELEASES_API: &str =
+    "https://api.github.com/repos/maadgrom/semanticastindexer/releases/latest";
+
+/// Best-effort lookup of the latest published release version via the GitHub API
+/// (using `curl`, which the installer already requires). Returns the tag with any
+/// leading `v` stripped, or `None` on any failure (offline, rate-limited, unparseable)
+/// so `update` falls back to running the installer rather than blocking on the check.
+fn latest_release_version() -> Option<String> {
+    let out = Command::new("curl")
+        .args([
+            "-fsSL",
+            "-H",
+            "Accept: application/vnd.github+json",
+            RELEASES_API,
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let tag = json.get("tag_name")?.as_str()?;
+    Some(tag.trim_start_matches('v').to_string())
+}
 
 /// `update` subcommand (unix): pipe the official release installer through `sh`.
 /// POSIX allows replacing a running binary's file, so the new version simply takes
-/// effect on the next invocation.
+/// effect on the next invocation. Skips the reinstall when already on the latest tag.
+// CLI-only `update` command (never on the MCP path); every `println!` here is
+// intentional CLI status output, so the whole function opts out of the stdout lint.
 #[cfg(not(windows))]
+#[allow(clippy::print_stdout)]
 fn run_update() -> Result<()> {
-    println!(
-        "{} {} — updating to the latest release…",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION")
-    );
+    let current = env!("CARGO_PKG_VERSION");
+    match latest_release_version() {
+        // Already current: skip the network reinstall entirely.
+        Some(latest) if latest == current => {
+            println!(
+                "{} {current} is already the latest release — nothing to do.",
+                env!("CARGO_PKG_NAME")
+            );
+            return Ok(());
+        }
+        Some(latest) => println!(
+            "{} {current} → {latest} — updating…",
+            env!("CARGO_PKG_NAME")
+        ),
+        // Version check failed (offline / rate-limited): fall back to a plain reinstall.
+        None => println!(
+            "{} {current} — updating to the latest release…",
+            env!("CARGO_PKG_NAME")
+        ),
+    }
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!("curl -fsSL {UPDATE_INSTALLER_SH} | sh"))
@@ -171,31 +214,39 @@ fn run_update() -> Result<()> {
 /// `update` subcommand (windows): a running executable cannot overwrite itself, so
 /// print the exact PowerShell one-liner to run after this process exits.
 #[cfg(windows)]
+#[allow(clippy::print_stdout)] // intentional CLI status output (never on the MCP path)
 fn run_update() -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    if latest_release_version().as_deref() == Some(current) {
+        println!(
+            "{} {current} is already the latest release — nothing to do.",
+            env!("CARGO_PKG_NAME")
+        );
+        return Ok(());
+    }
     println!(
-        "{} {} — a running executable cannot replace itself on Windows.\n\
+        "{} {current} — a running executable cannot replace itself on Windows.\n\
          Run this in PowerShell to update:\n\n  \
          powershell -c \"irm {UPDATE_INSTALLER_PS1} | iex\"\n",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION")
+        env!("CARGO_PKG_NAME")
     );
     Ok(())
 }
 
-fn finish(t0: std::time::Instant, args: &Args, ctx: &git::GitContext, extra: &str) {
-    if args.silent {
-        return;
-    }
+// Verbosity is governed entirely by the log filter (`--silent` maps to `error`,
+// `RUST_LOG` overrides), so this just emits the INFO event and lets the subscriber
+// decide whether to show it — keeping one source of truth for log levels.
+fn finish(t0: std::time::Instant, ctx: &git::GitContext, extra: &str) {
     let (sha, d) = match &ctx.sha {
         Some(s) => (s.as_str(), if ctx.dirty { ", dirty" } else { "" }),
         None => ("unknown", if ctx.dirty { ", dirty" } else { "" }),
     };
-    eprintln!(
-        "done{} at {}{} in {:.2}s",
-        extra,
+    tracing::info!(
         sha,
-        d,
-        t0.elapsed().as_secs_f32()
+        elapsed_s = t0.elapsed().as_secs_f32(),
+        "done{}{}",
+        extra,
+        d
     );
 }
 
@@ -204,7 +255,6 @@ fn finish(t0: std::time::Instant, args: &Args, ctx: &git::GitContext, extra: &st
 /// without repeating the "let r = ...; finish(...); r" pattern in every match arm.
 async fn run_timed<F, T>(
     t0: std::time::Instant,
-    args: &Args,
     ctx: &git::GitContext,
     extra: &str,
     f: F,
@@ -213,7 +263,7 @@ where
     F: Future<Output = Result<T>>,
 {
     let r = f.await;
-    finish(t0, args, ctx, extra);
+    finish(t0, ctx, extra);
     r
 }
 
@@ -236,7 +286,7 @@ fn open_index_backend(plan: &Plan) -> Result<Backend> {
                 return Err(e);
             }
             delete_duckdb_file(&path)?;
-            eprintln!("deleted '{path}' — re-indexing from scratch");
+            tracing::warn!(path = %path, "deleted mismatched index — re-indexing from scratch");
             factory(plan, Access::ReadWrite)
         }
     }
@@ -250,7 +300,11 @@ fn confirm_default_no(question: &str) -> Result<bool> {
     if !std::io::stdin().is_terminal() {
         return Ok(false);
     }
-    print!("{question} [y/N] ");
+    #[allow(clippy::print_stdout)]
+    // intentional data output (interactive prompt, tty-guarded above)
+    {
+        print!("{question} [y/N] ");
+    }
     std::io::stdout().flush().ok();
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;
@@ -280,7 +334,7 @@ async fn warn_on_dirty(handle: &BackendHandle, silent: bool) -> Result<bool> {
             return Ok(true);
         }
     } else {
-        eprintln!("{}", msg);
+        tracing::warn!("{}", msg);
     }
     Ok(false)
 }
@@ -299,13 +353,25 @@ const UPSERT_BATCH: usize = 64;
 
 /// Walk the root, collect chunks, and upsert them in batches (wrapped in begin/end_bulk),
 /// printing a single updating progress line to stderr while embedding.
-async fn index_sources(handle: &BackendHandle, plan: &Plan, ctx: &git::GitContext) -> Result<()> {
+async fn index_sources(
+    handle: &BackendHandle,
+    plan: &Plan,
+    ctx: &git::GitContext,
+    silent: bool,
+) -> Result<()> {
     let (mut chunks, files, skipped) = indexer::collect_chunks(plan);
     for c in &mut chunks {
         c.commit_sha = ctx.sha.clone();
         c.dirty = ctx.dirty;
     }
     let chunks_total = chunks.len();
+
+    // The `\r`-driven progress bars below are LIVE TTY output, not logs: they rely on
+    // carriage-return overwrite and an ANSI clear-line, which `tracing` (discrete lines)
+    // can't render. Gate them on a stderr TTY (so MCP clients capturing stderr to a file
+    // never receive `\r`/escape garbage) and on `--silent`. In non-tty contexts the
+    // Step-6 INFO spans provide the operation timing instead.
+    let show_progress = std::io::stderr().is_terminal() && !silent;
 
     handle.begin_bulk().await?;
     let mut done = 0usize;
@@ -321,34 +387,43 @@ async fn index_sources(handle: &BackendHandle, plan: &Plan, ctx: &git::GitContex
         for c in &batch {
             if last_path.as_deref() != Some(c.path.as_str()) {
                 files_done += 1;
-                // Clear the in-progress "embedded …" line before the permanent file line.
-                eprintln!(
-                    "\r\x1b[K  [ {}/{} files ] indexing {}",
-                    files_done, files, c.path
-                );
+                if show_progress {
+                    // Clear the in-progress "embedded …" line before the permanent file line.
+                    eprintln!(
+                        "\r\x1b[K  [ {}/{} files ] indexing {}",
+                        files_done, files, c.path
+                    );
+                }
                 last_path = Some(c.path.clone());
             }
         }
         let n = batch.len();
         handle.upsert(batch).await?;
         done += n;
-        // Single updating line on stderr (carriage return, no newline until the end).
-        eprint!("\rembedded {done}/{chunks_total} chunks");
-        let _ = std::io::Write::flush(&mut std::io::stderr());
+        if show_progress {
+            // Single updating line on stderr (carriage return, no newline until the end).
+            eprint!("\rembedded {done}/{chunks_total} chunks");
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+        }
     }
-    if chunks_total > 0 {
+    // Terminate the carriage-return progress bar with a final newline (only emitted when
+    // the bar itself was shown — otherwise there is nothing to terminate).
+    if show_progress && chunks_total > 0 {
         eprintln!();
     }
     handle.end_bulk().await?;
 
-    println!(
-        "indexed {} chunks from {} {} file(s) into '{}' ({} file(s) skipped by config)",
-        chunks_total,
-        files,
-        plan.ext.join("/"),
-        plan.collection,
-        skipped
-    );
+    #[allow(clippy::print_stdout)] // intentional data output
+    {
+        println!(
+            "indexed {} chunks from {} {} file(s) into '{}' ({} file(s) skipped by config)",
+            chunks_total,
+            files,
+            plan.ext.join("/"),
+            plan.collection,
+            skipped
+        );
+    }
     Ok(())
 }
 
@@ -358,6 +433,9 @@ async fn index_sources(handle: &BackendHandle, plan: &Plan, ctx: &git::GitContex
 /// Delegates to the worker's `Refresh` batch — the same path the MCP `refresh` tool
 /// uses: one begin/end_bulk window around per-path delete + re-chunk + re-embed +
 /// upsert, with the HNSW index rebuilt even when a path fails mid-batch.
+// CLI-only `sync` command (never on the MCP path); the whole body is its
+// reconcile report, so it opts out of the stdout lint at the function level.
+#[allow(clippy::print_stdout)]
 async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
     let changed =
         crate::git::changed_files(Some(&sync_args.since), sync_args.staged, &sync_args.files)?;
@@ -416,6 +494,8 @@ async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()
 }
 
 /// Run a semantic query and print the hits exactly as before.
+// CLI-only renderer (never on the MCP path): all output is intentional query DATA.
+#[allow(clippy::print_stdout)]
 async fn run_query(handle: &BackendHandle, plan: &Plan, q: &str) -> Result<()> {
     let hits = handle.query(q.to_string(), plan.limit).await?;
     println!("\ntop {} for: {q}", hits.len());
@@ -426,6 +506,7 @@ async fn run_query(handle: &BackendHandle, plan: &Plan, q: &str) -> Result<()> {
 }
 
 /// Render one hit: `score  path:start-end`.
+#[allow(clippy::print_stdout)] // CLI-only renderer: intentional query DATA
 fn print_hit(h: &Hit) {
     println!(
         "  {:.4}  {}:{}-{}",
@@ -440,7 +521,10 @@ const DEFAULT_DUP_MAX_CLUSTERS: usize = 50;
 /// `duplicates` handler: resolve each knob (CLI flag > config > built-in default), then
 /// run the shared codebase-wide near-duplicate scan on the worker and print the clusters
 /// human-readably.
+// CLI-only renderer (never on the MCP path): all output is intentional cluster DATA
+// (human-readable or `--json`), so the whole function opts out of the stdout lint.
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
+#[allow(clippy::print_stdout)]
 async fn run_duplicates(
     handle: &BackendHandle,
     plan: &Plan,
@@ -522,7 +606,9 @@ async fn run_duplicates(
 /// `similar` handler: require EXACTLY ONE of --code or (--path & --line), resolve min_score
 /// (flag > config.find_similar_min_score > default), run the shared nearest-neighbour
 /// resolution on the worker, and print `score  path:start-end  symbol`.
+// CLI-only renderer (never on the MCP path): all output is intentional neighbour DATA.
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
+#[allow(clippy::print_stdout)]
 async fn run_similar(
     handle: &BackendHandle,
     plan: &Plan,
@@ -646,7 +732,7 @@ mod tests {
         assert!(expected > 0, "fixture must produce chunks");
 
         let (handle, thread, calls) = mock_worker(&plan);
-        index_sources(&handle, &plan, &git::GitContext::default())
+        index_sources(&handle, &plan, &git::GitContext::default(), true)
             .await
             .unwrap();
         drop(handle);

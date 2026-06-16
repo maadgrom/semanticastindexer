@@ -51,6 +51,7 @@ pub enum Embedder {
 #[cfg(feature = "duckdb")]
 impl Embedder {
     /// Embed a batch of passages (each gets the `passage: ` prefix).
+    #[tracing::instrument(skip(self, texts), fields(n = texts.len()))]
     pub async fn embed_passages(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
         match self {
             #[cfg(feature = "ort")]
@@ -141,9 +142,12 @@ pub mod ort_impl {
                 Ok(value) => return Ok(value),
                 Err(err) if attempt < MAX_ATTEMPTS => {
                     let backoff = std::time::Duration::from_millis(1000u64 * 2u64.pow(attempt - 1));
-                    eprintln!(
-                        "hf-hub: {what} failed (attempt {attempt}/{MAX_ATTEMPTS}): {err}; \
-                         retrying in {backoff:?}"
+                    tracing::warn!(
+                        artifact = what,
+                        attempt,
+                        max_attempts = MAX_ATTEMPTS,
+                        backoff_ms = backoff.as_millis(),
+                        "hf-hub download failed; retrying: {err}"
                     );
                     std::thread::sleep(backoff);
                     attempt += 1;

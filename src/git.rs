@@ -3,7 +3,7 @@
 //! Used for "per-commit picture" + pre-commit hook safety (dirty stage OK).
 
 use anyhow::{Context, Result};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Captured at command start (or per refresh). sha=None + dirty=true on any failure / no repo.
 #[derive(Clone, Debug, Default)]
@@ -38,8 +38,13 @@ fn head_sha() -> Option<String> {
 fn is_dirty() -> bool {
     // --quiet exits 0 only if no diff. We want "is there diff?" → invert.
     // Check both staged and unstaged. Any failure → dirty (conservative for hooks).
+    // `.status()` inherits our stdio; silence git's own output so a non-repo (or any
+    // git error) does not leak raw git text onto our stderr — diagnostics must come
+    // only from the tracing subscriber. `--quiet` already suppresses normal output.
     let staged = Command::new("git")
         .args(["diff", "--quiet", "--cached"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|s| !s.success())
         .unwrap_or(true);
@@ -48,6 +53,8 @@ fn is_dirty() -> bool {
     }
     Command::new("git")
         .args(["diff", "--quiet"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|s| !s.success())
         .unwrap_or(true)
