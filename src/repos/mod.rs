@@ -13,7 +13,10 @@ pub use vectorstore::VectorStore;
 
 #[cfg(feature = "duckdb")]
 pub mod duckdb;
+// `pub(crate)` under `#[cfg(test)]` so the service-layer unit tests (US-003) can construct
+// a `MockStore` (and seed it via `MockBackend::with_rows`) for in-process, no-network,
+// no-thread service tests. Still test-only — never ships.
 #[cfg(test)]
-mod mock;
+pub(crate) mod mock;
 #[cfg(feature = "qdrant")]
 pub mod qdrant;

@@ -44,5 +44,10 @@ pub mod repos;
 // the MCP server all talk to the backend through `worker::BackendHandle`), so neither
 // is feature-gated.
 pub mod search;
+// Service layer (clean-arch): the two use-case services (IndexingService + QueryService)
+// over `Arc<dyn VectorStore>`. ADDITIVE — nothing consumes it yet (US-004 wires CLI + a
+// factory); the old `vectordbs::Backend` + `worker` + `&Backend` search/indexer path stays
+// active.
+pub mod service;
 pub mod vectordbs;
 pub mod worker;

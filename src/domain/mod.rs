@@ -17,5 +17,5 @@ pub use embedding::{
 };
 pub use hit::Hit;
 pub use plan::Plan;
-pub use report::{RefreshReport, ReindexOutcome};
+pub use report::{IndexProgress, IndexReport, RefreshReport, ReindexOutcome};
 pub use similar::SimilarTarget;
