@@ -17,6 +17,10 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="${SAI_BIN:-$ROOT/target/debug/semanticastindexer}"
+# The harness `cd`s into the (temp) fixture before invoking the binary, so a RELATIVE bin
+# path — e.g. CI's `SAI_BIN=target/debug/semanticastindexer` — would not resolve from there.
+# Absolutize it against the repo root (where a relative SAI_BIN is meant to be relative to).
+case "$BIN" in /*) ;; *) BIN="$ROOT/$BIN" ;; esac
 if [ ! -x "$BIN" ]; then
   echo "building $BIN (cargo build --features all)…"
   ( cd "$ROOT" && cargo build --features all ) || exit 1
@@ -46,9 +50,12 @@ duckdb:
 ext: [ts]
 root: src
 CFG
+# Identity is passed per-commit (`-c …`) so the harness never depends on a global git
+# identity — CI runners have none, and the empty second commit would otherwise abort.
 ( cd "$FIX" && git init -q && git add -A \
     && git -c user.email=hurl@test -c user.name=hurl commit -qm init \
-    && git commit -q --allow-empty -m second )
+    && git -c user.email=hurl@test -c user.name=hurl commit -q --allow-empty -m second ) \
+  || { echo "git fixture setup failed"; exit 1; }
 
 echo "indexing fixture (duckdb + e5-small)…"
 ( cd "$FIX" && "$BIN" --config sai-cfg.yml >/dev/null ) || { echo "index failed"; exit 1; }
