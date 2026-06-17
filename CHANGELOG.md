@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-18
+
 ### Fixed
 
 - **DuckDB VSS load no longer re-downloads on the hot path** — `load_vss` now escalates to the
