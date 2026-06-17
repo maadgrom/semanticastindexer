@@ -148,3 +148,13 @@ strip_comments: true
 #   duplicate_min_score: 0.93          # `duplicates`: edge cutoff between two chunks
 #   duplicate_min_cluster_size: 2      # `duplicates`: smallest cluster to report
 #   top_k: 10                          # `duplicates`: nearest-neighbour fan-out per chunk
+
+# Diagnostic logging (all to stderr; stdout stays JSON-RPC / data only). These are
+# the LOWEST-precedence defaults: `RUST_LOG` and the CLI flags (-v/--silent/
+# --log-format/--timing) override them. Handy mainly for the MCP server, whose client
+# launches the binary with a fixed command — set the level/format here once instead of
+# editing each client's launch config. All fields optional.
+# logging:
+#   level: info       # error | warn | info | debug | trace (unknown → info). `-v`/`-vv`/`--silent` override.
+#   format: pretty    # pretty (human) | json (one object/line). `--log-format` overrides.
+#   timing: false     # per-op timing spans (index/embed/query/sync) — telemetry. `--timing` on; `--silent` off.

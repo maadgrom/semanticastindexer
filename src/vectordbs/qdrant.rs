@@ -392,28 +392,7 @@ impl QdrantBackend {
             if !seen.insert(id) {
                 continue;
             }
-            let payload = &p.payload;
-            out.push(Hit {
-                id,
-                path: payload_str(payload, "path"),
-                language: payload_str(payload, "language"),
-                start_line: payload_int(payload, "start_line"),
-                end_line: payload_int(payload, "end_line"),
-                text: payload_str(payload, "text"),
-                score: p.score,
-                symbol: payload_str_opt(payload, "symbol"),
-                commit_sha: payload
-                    .get("commit")
-                    .and_then(|v| v.as_str().map(|s| s.to_string())),
-                dirty: payload
-                    .get("dirty")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-                no_duplicate: payload
-                    .get("no_duplicate")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-            });
+            out.push(hit_from_payload(&p.payload, id, p.score));
             if out.len() >= limit as usize {
                 break;
             }
@@ -440,28 +419,7 @@ impl QdrantBackend {
         match response.result.into_iter().next() {
             None => Ok(None),
             Some(p) => {
-                let payload = &p.payload;
-                let hit = Hit {
-                    id,
-                    path: payload_str(payload, "path"),
-                    language: payload_str(payload, "language"),
-                    start_line: payload_int(payload, "start_line"),
-                    end_line: payload_int(payload, "end_line"),
-                    text: payload_str(payload, "text"),
-                    score: 1.0,
-                    symbol: payload_str_opt(payload, "symbol"),
-                    commit_sha: payload
-                        .get("commit")
-                        .and_then(|v| v.as_str().map(|s| s.to_string())),
-                    dirty: payload
-                        .get("dirty")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    no_duplicate: payload
-                        .get("no_duplicate")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                };
+                let hit = hit_from_payload(&p.payload, id, 1.0);
                 let vec = extract_vector(p.vectors)?;
                 Ok(Some((hit, vec)))
             }
@@ -474,14 +432,7 @@ impl QdrantBackend {
         &self,
         path_glob: Option<&str>,
     ) -> Result<Vec<(Hit, Vec<f32>)>> {
-        let matcher = match path_glob {
-            None => None,
-            Some(p) => Some(
-                globset::Glob::new(p)
-                    .with_context(|| format!("invalid path_glob: {p}"))?
-                    .compile_matcher(),
-            ),
-        };
+        let matcher = super::compile_path_glob(path_glob)?;
         let mut out: Vec<(Hit, Vec<f32>)> = Vec::new();
         let mut offset: Option<qdrant_client::qdrant::PointId> = None;
         loop {
@@ -497,28 +448,7 @@ impl QdrantBackend {
                 break;
             }
             for p in &response.result {
-                let payload = &p.payload;
-                let hit = Hit {
-                    id: point_id_u64(&p.id),
-                    path: payload_str(payload, "path"),
-                    language: payload_str(payload, "language"),
-                    start_line: payload_int(payload, "start_line"),
-                    end_line: payload_int(payload, "end_line"),
-                    text: payload_str(payload, "text"),
-                    score: 1.0,
-                    symbol: payload_str_opt(payload, "symbol"),
-                    commit_sha: payload
-                        .get("commit")
-                        .and_then(|v| v.as_str().map(|s| s.to_string())),
-                    dirty: payload
-                        .get("dirty")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    no_duplicate: payload
-                        .get("no_duplicate")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                };
+                let hit = hit_from_payload(&p.payload, point_id_u64(&p.id), 1.0);
                 if let Some(m) = &matcher
                     && !m.is_match(&hit.path)
                 {
@@ -582,12 +512,8 @@ impl QdrantBackend {
         let embedder = self.embedder.as_ref().context(
             "qdrant backend embeds server-side; no local passage embedding (set embedder: ort or ollama)",
         )?;
-        let mut v = embedder.embed_passages(&[text.to_string()]).await?;
-        let v = v
-            .pop()
-            .context("embedder returned no vector for the passage")?;
-        super::check_dim(v.len(), self.vector_dim)?;
-        Ok(v)
+        let vectors = embedder.embed_passages(&[text.to_string()]).await?;
+        super::finalize_passage(vectors, self.vector_dim)
     }
 
     /// Bare `--features qdrant` stub for [`Self::embed_passage`] (see [`Self::embed_query`]).
@@ -667,9 +593,45 @@ impl QdrantBackend {
     }
 }
 
+/// The decoded `kind` of a payload field, or `None` when the field is absent or untyped.
+/// The shared lookup head of the typed `payload_*` extractors below — each then matches
+/// only the kinds it cares about, which is the sole thing that distinguishes them.
+fn payload_kind<'a>(payload: &'a HashMap<String, Value>, key: &str) -> Option<&'a Kind> {
+    payload.get(key).and_then(|v| v.kind.as_ref())
+}
+
+/// Build a [`Hit`] from a stored point's payload, reading every persisted field
+/// (`no_duplicate` included). Shared by the raw-vector NN, scroll, and get-by-location
+/// paths — they differ only in the caller-supplied `id`/`score`, so those are parameters.
+/// The server-side `query` path does NOT use this: there the point id isn't carried back
+/// (`id: 0`) and `no_duplicate` is intentionally left `false`.
+fn hit_from_payload(payload: &HashMap<String, Value>, id: u64, score: f32) -> Hit {
+    Hit {
+        id,
+        path: payload_str(payload, "path"),
+        language: payload_str(payload, "language"),
+        start_line: payload_int(payload, "start_line"),
+        end_line: payload_int(payload, "end_line"),
+        text: payload_str(payload, "text"),
+        score,
+        symbol: payload_str_opt(payload, "symbol"),
+        commit_sha: payload
+            .get("commit")
+            .and_then(|v| v.as_str().map(|s| s.to_string())),
+        dirty: payload
+            .get("dirty")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        no_duplicate: payload
+            .get("no_duplicate")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    }
+}
+
 /// Render a string payload field. Only the kinds we actually store are handled.
 fn payload_str(payload: &HashMap<String, Value>, key: &str) -> String {
-    match payload.get(key).and_then(|v| v.kind.as_ref()) {
+    match payload_kind(payload, key) {
         Some(Kind::StringValue(s)) => s.clone(),
         Some(Kind::IntegerValue(i)) => i.to_string(),
         _ => String::new(),
@@ -678,7 +640,7 @@ fn payload_str(payload: &HashMap<String, Value>, key: &str) -> String {
 
 /// Render an integer payload field.
 fn payload_int(payload: &HashMap<String, Value>, key: &str) -> usize {
-    match payload.get(key).and_then(|v| v.kind.as_ref()) {
+    match payload_kind(payload, key) {
         Some(Kind::IntegerValue(i)) => (*i).max(0) as usize,
         _ => 0,
     }
@@ -686,7 +648,7 @@ fn payload_int(payload: &HashMap<String, Value>, key: &str) -> usize {
 
 /// Render an optional string payload field (e.g. `symbol`, set only by the AST chunker).
 fn payload_str_opt(payload: &HashMap<String, Value>, key: &str) -> Option<String> {
-    match payload.get(key).and_then(|v| v.kind.as_ref()) {
+    match payload_kind(payload, key) {
         Some(Kind::StringValue(s)) => Some(s.clone()),
         _ => None,
     }

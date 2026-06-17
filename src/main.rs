@@ -30,6 +30,11 @@ use semanticastindexer::{app, cli::Args};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install the rustls crypto provider before anything builds a TLS client. The Qdrant
+    // client builds its first `ClientConfig` off-thread (health check), so a missing/
+    // ambiguous provider panics there and surfaces only as a join failure — install up
+    // front so the ambiguity never arises. See `semanticastindexer::tls`.
+    semanticastindexer::tls::install_crypto_provider();
     let args = Args::parse();
     // Install the stderr `tracing` subscriber before `app::run` — i.e. before MCP
     // `ensure_ready` and before rmcp takes over stdout — so the data/log boundary

@@ -568,7 +568,7 @@ impl DuckDbBackend {
         &self,
         path_glob: Option<&str>,
     ) -> Result<Vec<(Hit, Vec<f32>)>> {
-        let matcher = compile_glob(path_glob)?;
+        let matcher = super::compile_path_glob(path_glob)?;
         // Column layout (0-based):
         //   0=id, 1=path, 2=language, 3=start_line, 4=end_line, 5=text,
         //   6=symbol, 7=embedding, [8=no_duplicate if present]
@@ -684,12 +684,8 @@ impl DuckDbBackend {
 
     /// Embed code as a stored PASSAGE through the owned local embedder.
     pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
-        let mut v = self.embedder.embed_passages(&[text.to_string()]).await?;
-        let v = v
-            .pop()
-            .context("embedder returned no vector for the passage")?;
-        super::check_dim(v.len(), self.vector_dim)?;
-        Ok(v)
+        let vectors = self.embedder.embed_passages(&[text.to_string()]).await?;
+        super::finalize_passage(vectors, self.vector_dim)
     }
 
     /// Drop the whole collection table (flush all vectors).
@@ -788,19 +784,6 @@ fn dedup_truncate(rows: Vec<Hit>, limit: usize) -> Vec<Hit> {
     out
 }
 
-/// Compile an optional path glob into a matcher, erroring on a bad pattern.
-fn compile_glob(pattern: Option<&str>) -> Result<Option<globset::GlobMatcher>> {
-    match pattern {
-        None => Ok(None),
-        Some(p) => {
-            let g = globset::Glob::new(p)
-                .with_context(|| format!("invalid path_glob: {p}"))?
-                .compile_matcher();
-            Ok(Some(g))
-        }
-    }
-}
-
 /// Render a `f32` slice as a DuckDB list literal `[v1, v2, ...]` (cast to
 /// `FLOAT[N]` at the call site). Avoids intermediate copies — writes directly.
 fn float_array_literal(v: &[f32]) -> String {
@@ -847,6 +830,14 @@ mod no_duplicate_tests {
         )
     }
 
+    /// Open a backend over `db_path` with a `dim`-d Ollama embedder — the connect tail
+    /// every test in this module repeats after seeding (or not seeding) the table.
+    fn connect_backend(db_path: &std::path::Path, dim: u64) -> DuckDbBackend {
+        let plan = make_plan(db_path, dim);
+        let emb = make_ollama_embedder(&plan);
+        DuckDbBackend::connect(&plan, emb).unwrap()
+    }
+
     /// Block on a future using a throwaway current-thread runtime (these tests run
     /// outside any async context).
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
@@ -884,9 +875,7 @@ mod no_duplicate_tests {
             conn.execute_batch(OLD_SCHEMA_SQL).unwrap();
         }
 
-        let plan = make_plan(&db_path, 4);
-        let emb = make_ollama_embedder(&plan);
-        let backend = DuckDbBackend::connect(&plan, emb).unwrap();
+        let backend = connect_backend(&db_path, 4);
         assert!(
             !backend.has_no_duplicate_col(),
             "column absent: has_no_duplicate_col must return false"
@@ -899,9 +888,7 @@ mod no_duplicate_tests {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("nodup_present.duckdb");
 
-        let plan = make_plan(&db_path, 4);
-        let emb = make_ollama_embedder(&plan);
-        let backend = DuckDbBackend::connect(&plan, emb).unwrap();
+        let backend = connect_backend(&db_path, 4);
 
         // ensure_ready creates the table with no_duplicate column.
         block_on(backend.ensure_ready(false)).unwrap();
@@ -932,9 +919,7 @@ mod no_duplicate_tests {
             .unwrap();
         }
 
-        let plan = make_plan(&db_path, 4);
-        let emb = make_ollama_embedder(&plan);
-        let backend = DuckDbBackend::connect(&plan, emb).unwrap();
+        let backend = connect_backend(&db_path, 4);
 
         let results = block_on(backend.all_chunks_with_vectors(None)).unwrap();
 
@@ -977,9 +962,7 @@ mod no_duplicate_tests {
             .unwrap();
         }
 
-        let plan = make_plan(&db_path, 4);
-        let emb = make_ollama_embedder(&plan);
-        let backend = DuckDbBackend::connect(&plan, emb).unwrap();
+        let backend = connect_backend(&db_path, 4);
 
         let results = block_on(backend.all_chunks_with_vectors(None)).unwrap();
 

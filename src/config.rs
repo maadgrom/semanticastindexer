@@ -134,6 +134,29 @@ pub struct Config {
     pub qdrant: QdrantConfig,
     /// Similarity-threshold defaults for the MCP find_similar/find_duplicates tools.
     pub similarity: SimilarityConfig,
+    /// Diagnostic-logging defaults (level/format/timing). LOWEST precedence: `RUST_LOG`
+    /// and the CLI flags (`-v`/`--silent`/`--log-format`/`--timing`) both override it.
+    /// Read by [`logging_config`] before the subscriber is installed (see [`crate::logging`]).
+    pub logging: LoggingConfig,
+}
+
+/// Diagnostic-logging YAML sub-section. Every field is optional and supplies only the
+/// *default* — `RUST_LOG` (env) and the CLI flags win over anything here. Its primary
+/// audience is the MCP-server path, where a client launches the binary with a fixed
+/// command/env and editing per-client launch config to set `RUST_LOG` is awkward; a
+/// project-local `logging:` block in the config the server already reads is the natural
+/// home. CLI runs can keep using `-v`/`RUST_LOG` and ignore this entirely.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct LoggingConfig {
+    /// Default level when no `-v`/`--silent` flag and no `RUST_LOG` is set:
+    /// `error` | `warn` | `info` | `debug` | `trace`. Unknown values fall back to `info`.
+    pub level: Option<String>,
+    /// Default stderr log format: `pretty` (human) or `json`. `--log-format` overrides.
+    pub format: Option<String>,
+    /// Emit per-operation timing spans (index/embed/query/sync durations). Default false.
+    /// `--timing` forces it on; `--silent` forces it off.
+    pub timing: Option<bool>,
 }
 
 /// Similarity-threshold YAML sub-section. Every field is optional; missing ones fall
@@ -476,6 +499,17 @@ fn load_config(args: &Args) -> Result<Config> {
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read config: {display}"))?;
     serde_yaml_ng::from_str(&raw).with_context(|| format!("failed to parse config: {display}"))
+}
+
+/// Read ONLY the `logging:` block for the pre-subscriber init path. This runs in
+/// [`crate::main`] *before* the `tracing` subscriber exists and before rmcp takes over
+/// stdout, so it MUST stay silent: any failure — missing file, an explicit `--config`
+/// that does not exist, or a parse error — yields [`LoggingConfig::default`] rather than
+/// bailing or printing. The real config load (with the "no config" warning and hard
+/// errors on a bad explicit path) still happens later in [`build_plan`]; this never
+/// emits logs (no subscriber yet) or stdout (preserving the MCP data/log boundary).
+pub fn logging_config(args: &Args) -> LoggingConfig {
+    load_config(args).map(|c| c.logging).unwrap_or_default()
 }
 
 #[cfg(test)]

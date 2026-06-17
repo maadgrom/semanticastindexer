@@ -761,21 +761,16 @@ fn internal(e: anyhow::Error) -> McpError {
 }
 
 /// Compile an optional path glob, surfacing a clear `invalid_params` on a bad pattern.
+/// Wraps the shared [`crate::vectordbs::compile_path_glob`], mapping its error to the MCP
+/// `invalid_params` code (`{e:#}` keeps the underlying globset reason in the message).
 fn compile_glob_opt(pattern: Option<&str>) -> Result<Option<globset::GlobMatcher>, McpError> {
-    match pattern {
-        None => Ok(None),
-        Some(p) => globset::Glob::new(p)
-            .map(|g| Some(g.compile_matcher()))
-            .map_err(|e| McpError::invalid_params(format!("invalid path_glob '{p}': {e}"), None)),
-    }
+    crate::vectordbs::compile_path_glob(pattern)
+        .map_err(|e| McpError::invalid_params(format!("{e:#}"), None))
 }
 
 /// Language filter: keep when no filter is set or the hit's language matches.
 fn language_ok(hit: &Hit, want: Option<&str>) -> bool {
-    match want {
-        None => true,
-        Some(l) => hit.language == l,
-    }
+    want.is_none_or(|l| hit.language == l)
 }
 
 /// Build a `SearchHit` row, capping the snippet unless `include_text`.

@@ -283,6 +283,19 @@ pub fn render(a: &Answers) -> String {
          #   top_k: 10                          # `duplicates`: nearest-neighbour fan-out per chunk\n",
     );
 
+    y.push_str(
+        "\n\
+         # Diagnostic logging (all to stderr; stdout stays JSON-RPC / data only). These are\n\
+         # the LOWEST-precedence defaults: `RUST_LOG` and the CLI flags (-v/--silent/\n\
+         # --log-format/--timing) override them. Handy mainly for the MCP server, whose client\n\
+         # launches the binary with a fixed command — set the level/format here once instead of\n\
+         # editing each client's launch config. All fields optional.\n\
+         # logging:\n\
+         #   level: info       # error | warn | info | debug | trace (unknown → info). `-v`/`-vv`/`--silent` override.\n\
+         #   format: pretty    # pretty (human) | json (one object/line). `--log-format` overrides.\n\
+         #   timing: false     # per-op timing spans (index/embed/query/sync) — telemetry. `--timing` on; `--silent` off.\n",
+    );
+
     y
 }
 
@@ -332,6 +345,23 @@ mod tests {
         assert_eq!(cfg.strip_comments, Some(true));
         assert!(cfg.honor_noindex_marker.is_none(), "left to default true");
         assert!(cfg.similarity.top_k.is_none(), "left to built-in defaults");
+        assert!(
+            cfg.logging.level.is_none() && cfg.logging.format.is_none(),
+            "logging block is rendered commented — left to built-in defaults"
+        );
+    }
+
+    /// The `logging:` block is documented but commented out by default, so a fresh config
+    /// changes no logging behavior: the rendered text carries the `# logging:` comment and
+    /// no ACTIVE `logging:` key (which would otherwise force a level/format).
+    #[test]
+    fn logging_block_is_rendered_commented() {
+        let yaml = render(&Answers::default());
+        assert!(yaml.contains("# logging:"), "documents the logging block");
+        assert!(
+            !yaml.contains("\nlogging:"),
+            "must not emit an active top-level logging key"
+        );
     }
 
     /// Qdrant answers land in the qdrant block; the URL is written only when given.

@@ -271,10 +271,7 @@ impl MockBackend {
         &self,
         path_glob: Option<&str>,
     ) -> Result<Vec<(Hit, Vec<f32>)>> {
-        let matcher = match path_glob {
-            None => None,
-            Some(p) => Some(globset::Glob::new(p)?.compile_matcher()),
-        };
+        let matcher = super::compile_path_glob(path_glob)?;
         Ok(self
             .rows
             .iter()

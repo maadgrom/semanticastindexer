@@ -45,6 +45,9 @@ Type, default, and resolution for every recognized key. "Has CLI flag" means a `
 | `similarity.duplicate_min_score` | float | `0.93` | CLI/MCP arg > config > default | has CLI flag / MCP arg |
 | `similarity.duplicate_min_cluster_size` | integer | `2` | CLI/MCP arg > config > default | has CLI flag / MCP arg |
 | `similarity.top_k` | integer | `10` | CLI/MCP arg > config > default | has CLI flag / MCP arg |
+| `logging.level` | `error` \| `warn` \| `info` \| `debug` \| `trace` | `info` (unknown → `info`) | `RUST_LOG` > `-v`/`--silent` > config > default | has `-v`/`-vv`/`--silent` + `RUST_LOG` |
+| `logging.format` | `pretty` \| `json` | `pretty` | `--log-format` > config > default | has `--log-format` |
+| `logging.timing` | bool | `false` | `--timing` (`--silent` forces off) > config > default | has `--timing`/`--silent` |
 
 ## Backend and embedder
 
@@ -191,6 +194,23 @@ similarity:
   duplicate_min_cluster_size: 2      # default 2    — smallest cluster to report
   top_k: 10                          # default 10   — nearest-neighbor fan-out per chunk
 ```
+
+## logging
+
+Diagnostic-logging **defaults**. All diagnostics go to stderr (stdout stays JSON-RPC / data only — see the [CLI logging reference](cli.md#logging)). This block is the **lowest-precedence** tier: the `RUST_LOG` env var and the CLI flags (`-v`/`--silent`/`--log-format`/`--timing`) always override it. All fields are optional.
+
+```yaml
+logging:
+  level: info       # error | warn | info | debug | trace. Unknown → info. -v/-vv/--silent and RUST_LOG override.
+  format: pretty    # pretty (human) | json (one object per line). --log-format overrides.
+  timing: false     # per-operation timing spans (index/embed/query/sync durations). --timing on; --silent off.
+```
+
+Its main audience is the **MCP server**: the client launches the binary with a fixed command and environment, so setting `RUST_LOG` per client is awkward — a `logging:` block in the project's `sai-cfg.yml` (which the server already reads) raises verbosity project-wide with no launch-config edits. For ordinary CLI runs, `-v`/`RUST_LOG` are usually more convenient and this block can be omitted entirely.
+
+`timing` toggles only the per-operation span-close durations. The single end-of-command summary line (`done … in Ns`) is a plain `info` event and is unaffected — it prints whenever the level is `info` or lower, regardless of `timing`. For the precedence details and examples, see the [CLI logging reference](cli.md#logging).
+
+> The config is read **before** the logging subscriber is installed, so a missing or malformed file at that point falls back to these defaults silently (the usual "no config" warning and hard errors on a bad explicit `--config` path still surface later during the normal config load).
 
 ## Always-pruned directories
 
