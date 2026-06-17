@@ -263,10 +263,8 @@ fn run_update() -> Result<()> {
 // `RUST_LOG` overrides), so this just emits the INFO event and lets the subscriber
 // decide whether to show it — keeping one source of truth for log levels.
 fn finish(t0: std::time::Instant, ctx: &git::GitContext, extra: &str) {
-    let (sha, d) = match &ctx.sha {
-        Some(s) => (s.as_str(), if ctx.dirty { ", dirty" } else { "" }),
-        None => ("unknown", if ctx.dirty { ", dirty" } else { "" }),
-    };
+    let sha = ctx.sha.as_deref().unwrap_or("unknown");
+    let d = if ctx.dirty { ", dirty" } else { "" };
     tracing::info!(
         sha,
         elapsed_s = t0.elapsed().as_secs_f32(),
@@ -765,16 +763,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
-    /// Build the two services over a fresh `MockStore` for `plan`, returning them alongside
-    /// the shared call recorder (kept before the backend moves into the `Arc<dyn …>`). The
-    /// services share ONE store — exactly the `build_services` shape, minus the worker thread.
-    fn mock_services(plan: &Plan) -> (IndexingService, QueryService, Arc<Mutex<MockCalls>>) {
-        mock_services_from_backend(MockBackend::new(), plan)
-    }
-
-    /// As [`mock_services`], but over a pre-seeded backend (rows-with-vectors for the read
-    /// side). Both services share the SAME `Arc<MockStore>`.
-    fn mock_services_from_backend(
+    /// Build the two services over `backend`, returning them alongside its shared call
+    /// recorder (captured before the backend moves into the `Arc<dyn …>`). Both services
+    /// share ONE `Arc<MockStore>` — exactly the `build_services` shape, minus the worker
+    /// thread. Pass `MockBackend::new()` for an empty store, or `MockBackend::with_rows(..)`
+    /// to pre-seed the read side with rows-and-vectors.
+    fn mock_services(
         backend: MockBackend,
         plan: &Plan,
     ) -> (IndexingService, QueryService, Arc<Mutex<MockCalls>>) {
@@ -816,7 +810,7 @@ mod tests {
         let expected = expected_chunks.len();
         assert!(expected > 0, "fixture must produce chunks");
 
-        let (indexing, _query, calls) = mock_services(&plan);
+        let (indexing, _query, calls) = mock_services(MockBackend::new(), &plan);
         index_sources(&indexing, &plan, &git::GitContext::default(), true)
             .await
             .unwrap();
@@ -857,7 +851,7 @@ mod tests {
             ],
         };
 
-        let (indexing, _query, calls) = mock_services(&plan);
+        let (indexing, _query, calls) = mock_services(MockBackend::new(), &plan);
         sync(&indexing, &sync_args).await.unwrap();
 
         let calls = calls.lock().unwrap();
@@ -875,7 +869,7 @@ mod tests {
     #[tokio::test]
     async fn flush_invokes_backend_flush() {
         let plan = crate::config::test_support::minimal_plan();
-        let (indexing, _query, calls) = mock_services(&plan);
+        let (indexing, _query, calls) = mock_services(MockBackend::new(), &plan);
         indexing.flush().await.unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(calls.flush, 1, "flush called exactly once");
@@ -894,7 +888,7 @@ mod tests {
         let gone = dir.path().join("gone.ts"); // never created
 
         let plan = test_plan(&root);
-        let (indexing, _query, calls) = mock_services(&plan);
+        let (indexing, _query, calls) = mock_services(MockBackend::new(), &plan);
 
         let good_path = good.to_string_lossy().to_string();
         let gone_path = gone.to_string_lossy().to_string();
@@ -942,7 +936,7 @@ mod tests {
     async fn query_runs_and_returns_canned_hits() {
         let dir = TempDir::new().unwrap();
         let plan = test_plan(&dir.path().to_string_lossy());
-        let (_indexing, query, calls) = mock_services(&plan);
+        let (_indexing, query, calls) = mock_services(MockBackend::new(), &plan);
 
         // run_query renders to stdout; assert it completes and recorded the query.
         run_query(&query, &plan, "where is alpha").await.unwrap();
@@ -1053,8 +1047,7 @@ mod tests {
 
             // Seeded run via the SHARED resolve path: only new.ts seeds → its cluster with
             // existing.ts surfaces; the untouched old_a/old_b pair does NOT seed.
-            let (_i, query, _c) =
-                mock_services_from_backend(MockBackend::with_rows(dup_fixture_rows()), &plan);
+            let (_i, query, _c) = mock_services(MockBackend::with_rows(dup_fixture_rows()), &plan);
             let (knobs, seeded_clusters) =
                 resolve_duplicate_clusters(&query, &plan, &dup_args, true)
                     .await
@@ -1064,8 +1057,7 @@ mod tests {
 
             // Control: a full UNSEEDED scan (no --since) reports BOTH pairs — proves the single
             // seeded cluster is the SEED restriction, not a missing pair.
-            let (_i, query, _c) =
-                mock_services_from_backend(MockBackend::with_rows(dup_fixture_rows()), &plan);
+            let (_i, query, _c) = mock_services(MockBackend::with_rows(dup_fixture_rows()), &plan);
             let (_k, all) = resolve_duplicate_clusters(&query, &plan, &unseeded_args, true)
                 .await
                 .unwrap()
@@ -1122,8 +1114,7 @@ mod tests {
             json: true,
         };
 
-        let (_i, query, _c) =
-            mock_services_from_backend(MockBackend::with_rows(dup_fixture_rows()), &plan);
+        let (_i, query, _c) = mock_services(MockBackend::with_rows(dup_fixture_rows()), &plan);
         let (knobs, clusters) = resolve_duplicate_clusters(&query, &plan, &args, true)
             .await
             .unwrap()

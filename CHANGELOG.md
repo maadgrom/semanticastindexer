@@ -10,15 +10,25 @@ All notable changes to this project are documented here. The format is based on
 
 - **Structured tracing-based logging facade** — All diagnostics now flow through `tracing`
   to **stderr** (preserving clean **stdout** for JSON-RPC and CLI data). Logs are leveled (`debug`,
-  `info`, `warn`, `error`), filterable via `RUST_LOG`, and honor per-operation timing spans (e.g.
-  `INFO sync{rev=HEAD~1}: … in 1.8s`). New global flags:
+  `info`, `warn`, `error`) and filterable via `RUST_LOG`. New global flags:
   - `-v, --verbose` (repeatable; `-vv` for trace level)
   - `--log-format pretty|json` (default `pretty`; JSON for machine consumption)
-  - `--silent` now maps to a quiet log filter (`error` level) in addition to suppressing CLI output
+  - `--timing` — opt-in per-operation timing spans (index/embed/query/sync durations, e.g.
+    `INFO sync{rev=HEAD~1}: … in 1.8s`). Off by default so routine runs stay quiet; the
+    end-of-command `done … in Ns` summary still prints at `info` regardless.
+  - `--silent` now maps to a quiet log filter (`error` level), forces `--timing` off, and
+    still suppresses CLI output
   
-  Default behavior: `info` level, pretty format, stderr. `RUST_LOG=semanticastindexer=debug`
-  overrides all flags (power-user priority). The `mcp` subcommand now keeps stdout clean of
-  diagnostic noise, enabling write-mode (`--allow-write`) with strict stdio clients (e.g. Grok).
+  Default behavior: `info` level, pretty format, no per-op timing, stderr.
+  `RUST_LOG=semanticastindexer=debug` overrides all flags (power-user priority). The `mcp`
+  subcommand now keeps stdout clean of diagnostic noise, enabling write-mode (`--allow-write`)
+  with strict stdio clients (e.g. Grok).
+- **`logging:` config block** — Set logging `level` / `format` / `timing` defaults project-wide in
+  `sai-cfg.yml`. It is the **lowest-precedence** tier (`RUST_LOG` and the CLI flags override it), and
+  is read silently before the subscriber is installed so a missing/malformed file falls back to the
+  built-in defaults without breaking the stdout boundary. Primarily for the **MCP server**, whose
+  client launches the binary with a fixed command/env — raise its verbosity without per-client edits.
+  `init` now renders a documented (commented) `logging:` block in generated configs.
 - **`-V, --version` flag** — print the binary version (was previously unsupported).
 - **`update` skips a no-op reinstall** — `update` now checks the latest GitHub release and exits
   early ("already the latest release") when the running binary already matches, instead of always

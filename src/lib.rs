@@ -51,4 +51,8 @@ pub mod search;
 // over `Arc<dyn VectorStore>`. The sole orchestration path for both the CLI and the MCP
 // server.
 pub mod service;
+// One-time rustls CryptoProvider install (see the module docs): disambiguates the
+// `ring`/`aws-lc-rs` provider pair that `--features all` unifies in, which otherwise
+// panics the first TLS handshake. Called first thing in `main`.
+pub mod tls;
 pub mod vectordbs;

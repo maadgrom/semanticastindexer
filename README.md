@@ -53,12 +53,19 @@ Hugging Face (`jina-embeddings-v2-base-code`, 161M params, 768-dim; or `e5-small
 ## Logging
 
 Diagnostics (status, progress, warnings, timing) go to **stderr**; stdout is reserved for JSON-RPC
-(MCP) and CLI data output (query hits, `--json`, sync report). Control logging via:
+(MCP) and CLI data output (query hits, `--json`, sync report). Each knob resolves
+`RUST_LOG`/CLI flag → config `logging:` block → built-in default:
 
 - **`-v, --verbose`** (repeatable; `-vv` for trace level) — increase verbosity from the default `info` level.
 - **`--log-format pretty|json`** — switch between human-readable (default) and JSON-structured logs.
+- **`--timing`** — emit per-operation timing spans (index/embed/query/sync durations). Off by default; the
+  end-of-run `done … in Ns` summary still prints at `info` either way.
 - **`RUST_LOG=semanticastindexer=debug`** — environment variable override (highest priority; power users).
-- **`--silent`** — suppress all logs (maps to `error` level).
+- **`--silent`** — suppress all logs (maps to `error` level; also forces `--timing` off).
+- **`logging:` in `sai-cfg.yml`** — set the *defaults* (`level`/`format`/`timing`) once, project-wide. Lowest
+  precedence (the flags and `RUST_LOG` override it). Handy for the MCP server, whose client launches the
+  binary with a fixed command — no per-client env editing. See the
+  [configuration reference](book/src/reference/configuration.md).
 
 For MCP clients: diagnostics are captured in the client's log file (from stderr), while the JSON-RPC
 stream stays clean (stdout only). This unblocks write-mode (`--allow-write`) with strict clients.

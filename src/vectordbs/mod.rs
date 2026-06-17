@@ -11,7 +11,7 @@ pub(crate) mod mock;
 #[cfg(feature = "qdrant")]
 pub mod qdrant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 // Only `build_embedder` (duckdb-gated) consumes `Plan` now that the enum `factory` is gone.
 #[cfg(feature = "duckdb")]
@@ -35,6 +35,41 @@ pub fn check_dim(produced: usize, vector_dim: u64) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Pop the single passage vector from an embedder batch result and dimension-check it.
+/// The shared tail of both backends' `embed_passage` (DuckDB owns its embedder; Qdrant
+/// borrows an optional one), so the "no vector returned" / dim-guard errors live in one
+/// place. The embedder access differs per backend; only this finalising step is common.
+#[cfg_attr(
+    not(any(
+        feature = "duckdb",
+        all(feature = "qdrant", any(feature = "ort", feature = "ollama"))
+    )),
+    allow(dead_code)
+)]
+pub fn finalize_passage(mut vectors: Vec<Vec<f32>>, vector_dim: u64) -> Result<Vec<f32>> {
+    let v = vectors
+        .pop()
+        .context("embedder returned no vector for the passage")?;
+    check_dim(v.len(), vector_dim)?;
+    Ok(v)
+}
+
+/// Compile an optional path glob into a matcher, with a consistent `invalid path_glob`
+/// error. Single source of truth for the `all_chunks_with_vectors` path filter shared by
+/// every backend (DuckDB/Qdrant/mock) and the MCP `find_duplicates`/`find_similar` tools
+/// (the MCP layer maps the error to `invalid_params`).
+#[cfg_attr(not(any(feature = "duckdb", feature = "qdrant")), allow(dead_code))]
+pub fn compile_path_glob(pattern: Option<&str>) -> Result<Option<globset::GlobMatcher>> {
+    match pattern {
+        None => Ok(None),
+        Some(p) => Ok(Some(
+            globset::Glob::new(p)
+                .with_context(|| format!("invalid path_glob: {p}"))?
+                .compile_matcher(),
+        )),
+    }
 }
 
 /// How a backend should be opened. Only the DuckDB arm of [`crate::factory`] distinguishes

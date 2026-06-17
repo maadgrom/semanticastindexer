@@ -19,14 +19,15 @@ path = "src/main.rs"
 # We recommend always building with --features all (see Makefile and README).
 # This gives users a single binary with every backend, embedder, MCP server, and AST chunker.
 default = ["qdrant"]
-qdrant = ["dep:qdrant-client"]
+qdrant = ["dep:qdrant-client", "dep:rustls"]
 # DuckDB storage backend (VSS/HNSW). Needs an embedder feature (ort or ollama) to
 # actually produce vectors.
 duckdb = ["dep:duckdb"]
 # Local ONNX embedder via raw ort (ONNX Runtime) — implies the duckdb storage backend.
-ort = ["dep:ort", "dep:tokenizers", "dep:ndarray", "dep:hf-hub", "duckdb"]
+# Pulls rustls (via hf-hub's reqwest) so the startup crypto-provider install runs.
+ort = ["dep:ort", "dep:tokenizers", "dep:ndarray", "dep:hf-hub", "duckdb", "dep:rustls"]
 # Remote Ollama HTTP embedder — implies the duckdb storage backend.
-ollama = ["dep:reqwest", "duckdb"]
+ollama = ["dep:reqwest", "duckdb", "dep:rustls"]
 # AST chunker (tree-sitter). Supports TypeScript/TSX, Rust, Go, and Python.
 # Backend-free — gated only so the heavy tree-sitter grammars stay out of the default build.
 ast = ["dep:tree-sitter", "dep:tree-sitter-typescript", "dep:tree-sitter-rust", "dep:tree-sitter-go", "dep:tree-sitter-python"]
@@ -47,6 +48,17 @@ all = ["qdrant", "ort", "ollama", "ast", "mcp", "mcp-http"]
 
 [dependencies]
 qdrant-client = { version = "1.18", optional = true }
+# rustls is already in-tree transitively (qdrant-client's tonic gRPC, reqwest). We take a
+# direct, feature-gated edge ONLY to call `CryptoProvider::install_default` at startup
+# (see src/tls.rs): with `--features all`, BOTH the `ring` and `aws-lc-rs` providers get
+# unified in, and rustls 0.23 then refuses to auto-pick a process default and PANICS the
+# first time a TLS ClientConfig is built (for Qdrant, off-thread in the health check).
+# `ring` is enabled here because it is present in every TLS-using build; default-features
+# off keeps this edge from ADDING aws-lc-rs (other crates still enable what they need —
+# features are additive across the build).
+rustls = { version = "0.23", optional = true, default-features = false, features = [
+    "ring",
+] }
 # DuckDB backend (feature = "duckdb"): VSS/HNSW vector persistence.
 duckdb = { version = "1", features = ["bundled"], optional = true }
 # Local ONNX embedder (feature = "ort"): raw ONNX Runtime + tokenizer + HF model download.

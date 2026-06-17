@@ -781,6 +781,47 @@ mod ast {
 mod tests {
     use super::*;
 
+    /// Shared spec for the per-language function-only chunkers: parse `src` as `path`, then
+    /// assert every `wanted` symbol is captured, no `forbidden_symbol` is captured, and no
+    /// `forbidden_text` survives into any chunk's text (the no-remainder-pass guarantee that
+    /// kept `duplicates` from reporting the whole codebase). Each test supplies only the
+    /// fixture and the three lists; the assertion shape lives here once.
+    #[cfg(feature = "ast")]
+    fn assert_function_only_chunking(
+        path: &str,
+        src: &str,
+        wanted: &[&str],
+        forbidden_symbols: &[&str],
+        forbidden_text: &[&str],
+    ) {
+        use std::path::Path;
+        let chunks = super::ast::try_chunk_ast(Path::new(path), src, 1400)
+            .unwrap_or_else(|| panic!("{path} fixture must parse via the AST chunker"));
+        let symbols: Vec<String> = chunks.iter().filter_map(|c| c.symbol.clone()).collect();
+
+        for w in wanted {
+            assert!(
+                symbols.iter().any(|s| s == w),
+                "{w} must be a chunk symbol ({symbols:?})"
+            );
+        }
+        for f in forbidden_symbols {
+            assert!(
+                !symbols.iter().any(|s| s == f),
+                "{f} must not be a chunk symbol ({symbols:?})"
+            );
+        }
+
+        let all_text: String = chunks
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for t in forbidden_text {
+            assert!(!all_text.contains(t), "{t} must not be indexed");
+        }
+    }
+
     #[test]
     fn strips_line_and_block_keeps_strings_and_linecount() {
         let src = "// gone\n\
@@ -975,8 +1016,6 @@ const double = (n: number) => n * 2
     #[cfg(feature = "ast")]
     #[test]
     fn ast_rust_captures_only_functions() {
-        use std::path::Path;
-
         let src = "\
 const DEFAULT_BACKEND: &str = \"qdrant\";
 mod config;
@@ -995,43 +1034,14 @@ impl Widget {
     }
 }
 ";
-        let chunks = super::ast::try_chunk_ast(Path::new("fixture.rs"), src, 1400)
-            .expect("Rust fixture must parse via the AST chunker");
-        let symbols: Vec<String> = chunks.iter().filter_map(|c| c.symbol.clone()).collect();
-
-        assert!(
-            symbols.contains(&"free_fn".to_string()),
-            "free_fn ({symbols:?})"
-        );
-        assert!(
-            symbols.contains(&"nested".to_string()),
-            "nested fn ({symbols:?})"
-        );
-        assert!(
-            symbols.contains(&"method".to_string()),
-            "impl method ({symbols:?})"
-        );
-
-        // Non-function items must never be captured…
-        for forbidden in ["DEFAULT_BACKEND", "config", "Alias", "Widget"] {
-            assert!(
-                !symbols.iter().any(|s| s == forbidden),
-                "{forbidden} must not be a chunk symbol ({symbols:?})"
-            );
-        }
-        // …nor appear as text (no remainder pass): the const/mod/type/struct lines are gone.
-        let all_text: String = chunks
-            .iter()
-            .map(|c| c.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !all_text.contains("DEFAULT_BACKEND"),
-            "const text must not be indexed"
-        );
-        assert!(
-            !all_text.contains("struct Widget"),
-            "struct decl must not be indexed"
+        // free fn, nested fn, and impl method captured; const/mod/type/struct neither
+        // captured as symbols nor left behind as text.
+        assert_function_only_chunking(
+            "fixture.rs",
+            src,
+            &["free_fn", "nested", "method"],
+            &["DEFAULT_BACKEND", "config", "Alias", "Widget"],
+            &["DEFAULT_BACKEND", "struct Widget"],
         );
     }
 
@@ -1040,8 +1050,6 @@ impl Widget {
     #[cfg(feature = "ast")]
     #[test]
     fn ast_go_captures_only_functions() {
-        use std::path::Path;
-
         let src = "\
 package main
 
@@ -1061,41 +1069,15 @@ func (w Widget) Method() uint64 {
 \treturn w.X
 }
 ";
-        let chunks = super::ast::try_chunk_ast(Path::new("fixture.go"), src, 1400)
-            .expect("Go fixture must parse via the AST chunker");
-        let symbols: Vec<String> = chunks.iter().filter_map(|c| c.symbol.clone()).collect();
-
-        assert!(
-            symbols.contains(&"FreeFn".to_string()),
-            "FreeFn ({symbols:?})"
+        // top-level func and receiver method captured; const/type/import neither captured
+        // as symbols nor left behind as text.
+        assert_function_only_chunking(
+            "fixture.go",
+            src,
+            &["FreeFn", "Method"],
+            &["DefaultBackend", "Widget", "main"],
+            &["DefaultBackend", "type Widget", "import"],
         );
-        assert!(
-            symbols.contains(&"Method".to_string()),
-            "receiver method ({symbols:?})"
-        );
-
-        // Non-function declarations must never be captured…
-        for forbidden in ["DefaultBackend", "Widget", "main"] {
-            assert!(
-                !symbols.iter().any(|s| s == forbidden),
-                "{forbidden} must not be a chunk symbol ({symbols:?})"
-            );
-        }
-        // …nor appear as text (no remainder pass).
-        let all_text: String = chunks
-            .iter()
-            .map(|c| c.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !all_text.contains("DefaultBackend"),
-            "const text must not be indexed"
-        );
-        assert!(
-            !all_text.contains("type Widget"),
-            "struct decl must not be indexed"
-        );
-        assert!(!all_text.contains("import"), "import must not be indexed");
     }
 
     /// Python function-only chunking: free functions, class methods, nested functions,
@@ -1104,8 +1086,6 @@ func (w Widget) Method() uint64 {
     #[cfg(feature = "ast")]
     #[test]
     fn ast_python_captures_only_functions() {
-        use std::path::Path;
-
         let src = "\
 DEFAULT_BACKEND = \"qdrant\"
 
@@ -1127,43 +1107,15 @@ async def fetch_data(url):
 def decorated(n):
     return n * 2
 ";
-        let chunks = super::ast::try_chunk_ast(Path::new("fixture.py"), src, 1400)
-            .expect("Python fixture must parse via the AST chunker");
-        let symbols: Vec<String> = chunks.iter().filter_map(|c| c.symbol.clone()).collect();
-
-        for expected in ["method", "free_fn", "nested", "fetch_data", "decorated"] {
-            assert!(
-                symbols.iter().any(|s| s == expected),
-                "{expected} ({symbols:?})"
-            );
-        }
-
-        // Non-function bindings must never be captured…
-        for forbidden in ["DEFAULT_BACKEND", "Widget", "square"] {
-            assert!(
-                !symbols.iter().any(|s| s == forbidden),
-                "{forbidden} must not be a chunk symbol ({symbols:?})"
-            );
-        }
-        // …nor appear as text (no remainder pass): module-level statements are gone, and a
-        // decorated function's chunk starts at `def` (the decorator line is not embedded).
-        let all_text: String = chunks
-            .iter()
-            .map(|c| c.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !all_text.contains("DEFAULT_BACKEND"),
-            "module constant must not be indexed"
-        );
-        assert!(
-            !all_text.contains("class Widget"),
-            "class decl line must not be indexed"
-        );
-        assert!(!all_text.contains("lambda"), "lambda must not be indexed");
-        assert!(
-            !all_text.contains("@cached"),
-            "decorator line must not be indexed"
+        // free/nested/method/async/decorated fns captured; module constant, class decl,
+        // lambda binding, and the decorator line neither captured nor left behind as text
+        // (a decorated function's chunk starts at `def`, so `@cached` is not embedded).
+        assert_function_only_chunking(
+            "fixture.py",
+            src,
+            &["method", "free_fn", "nested", "fetch_data", "decorated"],
+            &["DEFAULT_BACKEND", "Widget", "square"],
+            &["DEFAULT_BACKEND", "class Widget", "lambda", "@cached"],
         );
     }
 

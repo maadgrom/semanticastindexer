@@ -3240,6 +3240,7 @@ dependencies = [
  "qdrant-client",
  "reqwest 0.13.4",
  "rmcp",
+ "rustls",
  "schemars",
  "serde",
  "serde_json",

@@ -85,13 +85,20 @@ pub struct Args {
 
     /// Increase log verbosity (repeatable): `-v` = debug, `-vv` = trace. Logs go to
     /// stderr. `RUST_LOG` overrides this; `--silent` forces the quietest level.
+    /// When neither is set, the config `logging.level` (else `info`) applies.
     #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Log output format on stderr: `pretty` (human-readable, default) or `json`
-    /// (structured, one object per line).
-    #[arg(long, global = true, value_enum, default_value_t = LogFormat::Pretty)]
-    pub log_format: LogFormat,
+    /// Log output format on stderr: `pretty` (human-readable) or `json` (structured,
+    /// one object per line). When omitted, the config `logging.format` (else `pretty`)
+    /// applies. Left as `Option` so an absent flag defers to config rather than masking it.
+    #[arg(long, global = true, value_enum)]
+    pub log_format: Option<LogFormat>,
+
+    /// Emit per-operation timing spans (index/embed/query/sync durations). When omitted,
+    /// the config `logging.timing` (else off) applies; `--silent` forces it off regardless.
+    #[arg(long, global = true, default_value_t = false)]
+    pub timing: bool,
 }
 
 /// Format of the diagnostic logs emitted to stderr (see [`crate::logging`]).
