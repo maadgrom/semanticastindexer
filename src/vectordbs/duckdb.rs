@@ -702,39 +702,68 @@ impl DuckDbBackend {
     }
 }
 
-/// Load the VSS extension. Tries the bundled/installed extension first, then the
-/// community repository. Returns an actionable error if neither works (no network
-/// / version mismatch).
+/// Load the VSS extension, required for HNSW vector search and `array_cosine_distance`.
 ///
-/// Special handling for read-only connections (common MCP server case): we first
-/// attempt a pure `LOAD` (which succeeds if VSS was previously installed by any
-/// process). Only if that fails do we attempt INSTALL, which requires write access
-/// to the extension directory.
+/// Ordered, best-effort fallbacks — each ends in `LOAD`, and we stop at the first that
+/// succeeds. The sequence is shaped by two realities:
+///
+/// 1. **Concurrency.** DuckDB's extension cache is per-machine, shared across every
+///    connection AND across parallel test threads / sibling processes. A peer may install
+///    VSS between our attempts, so we re-try a pure `LOAD` after the first INSTALL.
+/// 2. **Origin pinning.** Once VSS is installed from one repository, a plain
+///    `INSTALL vss FROM community` against an extension already installed from the default
+///    repo (`extensions.duckdb.org`) is a HARD error ("already installed but the origin is
+///    different"). `FORCE INSTALL` overrides that, and — crucially — `FORCE INSTALL vss`
+///    (no `FROM`) re-downloads from the SAME default repo, fixing a stale/version-mismatched
+///    install without ever provoking the origin conflict.
+///
+/// A bare `LOAD` is the read-only/MCP fast path: it succeeds whenever any prior writable
+/// run already installed VSS, so the server needs no write access to the extension dir.
 fn load_vss(conn: &Connection) -> Result<()> {
-    // Fast path: already installed somewhere on this machine (very common for
-    // read-only MCP servers that were previously indexed with a writable run).
+    // Fast path, taken without the install lock: a pure LOAD is a cheap idempotent read and
+    // is all a read-only / MCP connection needs once VSS was installed by any prior run.
     if conn.execute_batch("LOAD vss;").is_ok() {
         return Ok(());
     }
 
-    // Try the normal install sequence (may require network + write access to
-    // DuckDB's extension cache directory).
-    if conn.execute_batch("INSTALL vss; LOAD vss;").is_ok() {
-        return Ok(());
+    // Serialize the INSTALL attempts PROCESS-WIDE. DuckDB's extension cache is shared across
+    // every connection in the process (and our parallel test threads each open their own),
+    // so concurrent INSTALLs race: one thread installs from the default repo while another is
+    // mid-`INSTALL vss FROM community`, which then hard-fails on the origin mismatch. One
+    // installer at a time makes the outcome deterministic. (Poison is recovered: a prior
+    // panic holding the lock must not wedge every later connection.)
+    static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    // INSTALL variants need network + write access to the extension cache. The
+    // `FORCE INSTALL vss` step (default repo, no `FROM`) is what resolves the cross-origin /
+    // version-mismatch failure on shared CI runners without provoking the origin conflict.
+    const ATTEMPTS: &[&str] = &[
+        "LOAD vss;",                    // a peer installed it while we waited on the lock
+        "INSTALL vss; LOAD vss;",       // default repo (no-op if already present)
+        "FORCE INSTALL vss; LOAD vss;", // re-download from the DEFAULT repo: fixes a stale / wrong-version / different-origin install with no origin conflict
+        "INSTALL vss FROM community; LOAD vss;", // DuckDB builds where VSS lives only in the community repo
+        "FORCE INSTALL vss FROM community; LOAD vss;", // last resort: override any remaining origin pin
+    ];
+
+    let mut last_err = None;
+    for sql in ATTEMPTS {
+        match conn.execute_batch(sql) {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = Some(e),
+        }
     }
 
-    // Last attempt: community repo (sometimes needed for certain DuckDB versions).
-    conn.execute_batch("INSTALL vss FROM community; LOAD vss;")
-        .context(
-            "failed to load the DuckDB VSS extension (required for HNSW vector search and array_cosine_distance).\n\
-             \n\
-             Common causes & fixes:\n\
-             • First-time setup: run the indexer at least once with write access so it can INSTALL vss.\n\
-             • Read-only MCP server: pre-install VSS by running `duckdb -c \"INSTALL vss;\"` (or the full indexer) once as a user that can write to DuckDB's extension directory.\n\
-             • Air-gapped / restricted env: copy the VSS extension into DuckDB's extension search path before starting the read-only server.\n\
-             \n\
-             See the DuckDB VSS extension docs for manual installation steps.",
-        )
+    Err(last_err.expect("ATTEMPTS is non-empty")).context(
+        "failed to load the DuckDB VSS extension (required for HNSW vector search and array_cosine_distance).\n\
+         \n\
+         Common causes & fixes:\n\
+         • First-time setup: run the indexer at least once with write access so it can INSTALL vss.\n\
+         • Read-only MCP server: pre-install VSS by running `duckdb -c \"INSTALL vss;\"` (or the full indexer) once as a user that can write to DuckDB's extension directory.\n\
+         • Air-gapped / restricted env: copy the VSS extension into DuckDB's extension search path before starting the read-only server.\n\
+         \n\
+         See the DuckDB VSS extension docs for manual installation steps.",
+    )
 }
 
 /// Convert a DuckDB `FLOAT[N]` column value into a `Vec<f32>`. The VSS array type comes

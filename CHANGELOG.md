@@ -44,6 +44,13 @@ All notable changes to this project are documented here. The format is based on
 - **Git diagnostics leaking to stderr** — the dirty-state check (`git diff --quiet`) inherited the
   process stdio, so running outside a git repo (or any git error) leaked raw git text to stderr.
   Its output is now silenced; diagnostics come only from the `tracing` subscriber.
+- **DuckDB VSS extension load: origin conflict & install race** — Loading the VSS extension could
+  hard-fail with *"extension 'vss' is already installed but the origin is different"* when `vss` was
+  already present from the default repo (`extensions.duckdb.org`) and the fallback tried
+  `INSTALL vss FROM community`. `load_vss` now re-downloads from the **default** repo via
+  `FORCE INSTALL vss` (no origin conflict) before the community fallback, and serializes the
+  INSTALL attempts process-wide so parallel connections/tests sharing DuckDB's per-machine
+  extension cache no longer race (intermittent failures on Windows CI runners).
 
 ## [0.1.5] - 2026-06-16
 
