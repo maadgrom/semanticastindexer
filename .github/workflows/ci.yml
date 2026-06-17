@@ -170,3 +170,37 @@ jobs:
       # NOTE: no --no-dev-deps — it strips dev-deps from the manifest, which --locked
       # then rejects (the lockfile no longer matches). --locked wins: reproducible CI.
       - run: cargo hack check --locked --each-feature --exclude-no-default-features --skip ast
+
+  hurl:
+    name: hurl (MCP streamable-HTTP)
+    runs-on: ubuntu-latest # the harness spins up a live HTTP server + indexes with ort; one
+                           # OS is enough (the unit suite covers the cross-OS matrix).
+    timeout-minutes: 60
+    env:
+      # Same HuggingFace cache contract as the `test` job — the fixture indexes with the
+      # ort embedder (Xenova/multilingual-e5-small); reuse the identical key so the ~120 MB
+      # model download is cached and the suite never flakes on a cold pull.
+      HF_HOME: ${{ github.workspace }}/.hf-home
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cache HuggingFace model
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf-home
+          key: hf-model-${{ runner.os }}-multilingual-e5-small-v1
+      - name: install hurl
+        run: |
+          HURL_VERSION=8.0.1
+          curl -fsSL -o hurl.deb \
+            "https://github.com/Orange-OpenSource/hurl/releases/download/${HURL_VERSION}/hurl_${HURL_VERSION}_amd64.deb"
+          sudo dpkg -i hurl.deb
+          hurl --version
+      # Build with --features all so mcp-http (the HTTP transport the harness drives) is present.
+      - run: cargo build --locked --features all
+      - name: run hurl suite
+        run: bash tests/hurl/run.sh
+        env:
+          SAI_BIN: target/debug/semanticastindexer

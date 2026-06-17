@@ -7,7 +7,19 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-use crate::vectordbs::Hit;
+use crate::domain::Hit;
+
+/// Generate a trivial recording method on [`MockBackend`] that bumps the named [`MockCalls`]
+/// counter and returns `Ok(())`. `begin_bulk`/`end_bulk`/`flush` differ only by which counter
+/// they touch, so one definition keeps them DRY (and out of the near-duplicate index).
+macro_rules! record_unit_call {
+    ($method:ident, $counter:ident) => {
+        pub async fn $method(&self) -> Result<()> {
+            self.calls.lock().unwrap().$counter += 1;
+            Ok(())
+        }
+    };
+}
 
 /// A stored row in the mock vector store: a `Hit` (without the score) plus its vector.
 /// Used by the MCP-path methods (`query_by_vector`, `get_by_location`,
@@ -107,8 +119,8 @@ impl MockCalls {
 /// In-memory recording backend. Returns deterministic canned hits from `query`.
 ///
 /// `calls` is behind an `Arc` so a test can keep a recorder handle while the backend
-/// itself moves onto the worker thread (the flow tests drive the real orchestration,
-/// which routes every backend call through [`crate::worker`]).
+/// itself moves into the `Arc<dyn VectorStore>` (the flow tests drive the real
+/// orchestration through [`crate::repos::mock::MockStore`]).
 pub struct MockBackend {
     pub calls: Arc<Mutex<MockCalls>>,
     canned: Vec<Hit>,
@@ -167,17 +179,10 @@ impl MockBackend {
         Ok(())
     }
 
-    pub async fn begin_bulk(&self) -> Result<()> {
-        self.calls.lock().unwrap().begin_bulk += 1;
-        Ok(())
-    }
+    record_unit_call!(begin_bulk, begin_bulk);
+    record_unit_call!(end_bulk, end_bulk);
 
-    pub async fn end_bulk(&self) -> Result<()> {
-        self.calls.lock().unwrap().end_bulk += 1;
-        Ok(())
-    }
-
-    pub async fn upsert(&self, chunks: &[crate::vectordbs::CodeChunk]) -> Result<()> {
+    pub async fn upsert(&self, chunks: &[crate::domain::CodeChunk]) -> Result<()> {
         let batch = UpsertBatch {
             count: chunks.len(),
             chunks: chunks
@@ -216,10 +221,7 @@ impl MockBackend {
             .collect())
     }
 
-    pub async fn flush(&self) -> Result<()> {
-        self.calls.lock().unwrap().flush += 1;
-        Ok(())
-    }
+    record_unit_call!(flush, flush);
 
     /// Rank seeded rows by cosine similarity to `vec`, excluding `exclude_id`, dedup by id
     /// (rows are already unique here), and truncate to `limit`. `score = cosine`.
@@ -292,13 +294,11 @@ impl MockBackend {
 
     /// Deterministic canned query vector (length 4). Distinct text → distinct vector.
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric query-side twin of embed_passage
         Ok(canned_vector(text))
     }
 
     /// Deterministic canned passage vector (same scheme as `embed_query`).
     pub async fn embed_passage(&self, text: &str) -> Result<Vec<f32>> {
-        // sai-noduplicate: asymmetric passage-side twin of embed_query
         Ok(canned_vector(text))
     }
 }
@@ -311,11 +311,4 @@ fn canned_vector(text: &str) -> Vec<f32> {
         v[i % 4] += b as f32;
     }
     v.to_vec()
-}
-
-/// Build a `Backend::Mock` seeded with the given rows-with-vectors. Shared test helper
-/// for the `mcp` and `search` test modules.
-#[cfg(test)]
-pub fn seeded(rows: Vec<MockRow>) -> crate::vectordbs::Backend {
-    crate::vectordbs::Backend::Mock(MockBackend::with_rows(rows))
 }

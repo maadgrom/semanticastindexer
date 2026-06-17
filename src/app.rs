@@ -1,24 +1,36 @@
-//! Command orchestration: turns parsed [`Args`] into backend-worker requests.
+//! Command orchestration: turns parsed [`Args`] into service calls.
 //!
 //! This is the layer the binary entrypoint (`main.rs`) dispatches into. It owns the
 //! per-command flows (index, sync, flush, query, duplicates, similar, mcp) and the
-//! interactive prompts. The [`crate::vectordbs::Backend`] itself is never called
-//! here: every command moves it onto the dedicated worker thread ([`crate::worker`])
-//! and talks to it through a [`BackendHandle`], so the backend's synchronous DuckDB
-//! I/O never blocks the main Tokio runtime. The pure walk/chunk logic lives in
-//! [`crate::indexer`] and the similarity core in [`crate::search`].
+//! interactive prompts. The CLI commands talk to the two use-case services
+//! ([`IndexingService`]/[`QueryService`], built by [`crate::factory::build_services`]) over
+//! the `Send + Sync` [`crate::repos::VectorStore`] port — the DuckDB backend's synchronous
+//! I/O is confined to a worker thread INSIDE the store, so it never blocks the main Tokio
+//! runtime. The pure walk/chunk logic lives in [`crate::indexer`].
+//!
+//! The MCP server (`run_mcp`) builds the SAME two services via [`crate::factory::build_services`]
+//! and hands them to the rmcp `SaiServer` (see [`crate::mcp`]). The one difference from the CLI
+//! paths: it does NOT join the DuckDB worker thread on shutdown (it detaches the `JoinHandle`),
+//! so a leaked store-handle clone can't wedge server exit after stdio EOF — process exit reaps
+//! the thread instead.
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::process::Command;
+use std::thread::JoinHandle;
 
 use crate::cli::{Args, Cmd, SyncArgs};
-use crate::config::{Plan, build_plan};
+use crate::config::build_plan;
+use crate::domain::{Hit, Plan};
+use crate::factory::build_services;
 use crate::git;
 use crate::indexer;
-use crate::vectordbs::{self, Access, Backend, CodeChunk, Hit, factory};
-use crate::worker::{self, BackendHandle};
+use crate::service::{IndexingService, QueryService};
+use crate::vectordbs::{self, Access};
+// The MCP server (`run_mcp`) wraps each service in an `Arc` for the rmcp `SaiServer`.
+#[cfg(feature = "mcp")]
+use std::sync::Arc;
 
 /// Run one parsed CLI invocation to completion. The single entrypoint `main` calls.
 pub async fn run(args: Args) -> Result<()> {
@@ -46,17 +58,17 @@ pub async fn run(args: Args) -> Result<()> {
         Some(Cmd::Update) => unreachable!("update is handled before config loading"),
         Some(Cmd::Flush) => {
             run_timed(t0, &git_ctx, "", async {
-                let backend = factory(&plan, Access::ReadWrite)?;
-                with_worker(backend, &plan, async |h| h.flush().await).await
+                let services = build_services(&plan, Access::ReadWrite)?;
+                with_services(services, async |indexing, _query| indexing.flush().await).await
             })
             .await
         }
         Some(Cmd::Sync(sync_args)) => {
             run_timed(t0, &git_ctx, "", async {
-                let backend = factory(&plan, Access::ReadWrite)?;
-                with_worker(backend, &plan, async |h| {
-                    h.ensure_ready(false).await?;
-                    sync(h, sync_args).await
+                let services = build_services(&plan, Access::ReadWrite)?;
+                with_services(services, async |indexing, _query| {
+                    indexing.ensure_ready(false).await?;
+                    sync(indexing, sync_args).await
                 })
                 .await
             })
@@ -65,16 +77,22 @@ pub async fn run(args: Args) -> Result<()> {
         #[cfg(feature = "mcp")]
         Some(Cmd::Mcp(mcp_args)) => {
             run_timed(t0, &git_ctx, "", async {
-                run_mcp(&args, mcp_args.allow_write, mcp_args.allow_setup).await
+                run_mcp(
+                    &args,
+                    mcp_args.allow_write,
+                    mcp_args.allow_setup,
+                    mcp_args.http.as_deref(),
+                )
+                .await
             })
             .await
         }
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
         Some(Cmd::Duplicates(dup_args)) => {
             run_timed(t0, &git_ctx, "", async {
-                let backend = factory(&plan, Access::ReadOnly)?;
-                with_worker(backend, &plan, async |h| {
-                    run_duplicates(h, &plan, dup_args, args.silent).await
+                let services = build_services(&plan, Access::ReadOnly)?;
+                with_services(services, async |_indexing, query| {
+                    run_duplicates(query, &plan, dup_args, args.silent).await
                 })
                 .await
             })
@@ -83,9 +101,9 @@ pub async fn run(args: Args) -> Result<()> {
         #[cfg(any(feature = "duckdb", feature = "qdrant"))]
         Some(Cmd::Similar(sim_args)) => {
             run_timed(t0, &git_ctx, "", async {
-                let backend = factory(&plan, Access::ReadOnly)?;
-                with_worker(backend, &plan, async |h| {
-                    run_similar(h, &plan, sim_args).await
+                let services = build_services(&plan, Access::ReadOnly)?;
+                with_services(services, async |_indexing, query| {
+                    run_similar(query, &plan, sim_args).await
                 })
                 .await
             })
@@ -102,18 +120,18 @@ pub async fn run(args: Args) -> Result<()> {
             // rebuild it. A query-only run never re-indexes, so it just surfaces the error
             // (deleting the index would only leave an empty DB to query).
             run_timed(t0, &git_ctx, "", async {
-                let backend = if args.query_only {
-                    factory(&plan, Access::ReadWrite)?
+                let services = if args.query_only {
+                    build_services(&plan, Access::ReadWrite)?
                 } else {
-                    open_index_backend(&plan)?
+                    open_index_services(&plan)?
                 };
-                with_worker(backend, &plan, async |h| {
-                    h.ensure_ready(args.recreate).await?;
+                with_services(services, async |indexing, query| {
+                    indexing.ensure_ready(args.recreate).await?;
                     if !args.query_only {
-                        index_sources(h, &plan, &git_ctx, args.silent).await?;
+                        index_sources(indexing, &plan, &git_ctx, args.silent).await?;
                     }
                     if let Some(q) = args.query.as_deref() {
-                        run_query(h, &plan, q).await?;
+                        run_query(query, &plan, q).await?;
                     }
                     Ok(())
                 })
@@ -124,18 +142,26 @@ pub async fn run(args: Args) -> Result<()> {
     }
 }
 
-/// Move `backend` onto the worker thread, run `f` against the handle, then shut the
-/// worker down CLEANLY: drop the handle (closes the channel, ends the worker loop)
-/// and join the thread so the backend is dropped before we return — the DuckDB
-/// connection checkpoints its WAL on drop, which a bare process exit would skip.
-async fn with_worker<T, F>(backend: Backend, plan: &Plan, f: F) -> Result<T>
+/// Run `f` against the two services, then shut down CLEANLY: drop the services (closing the
+/// DuckDB store's channel, which ends its worker loop) and join the worker thread so the
+/// backend is dropped before we return — the DuckDB connection checkpoints its WAL on drop,
+/// which a bare process exit would skip. Qdrant carries no thread, so the join is skipped.
+async fn with_services<T, F>(
+    services: (IndexingService, QueryService, Option<JoinHandle<()>>),
+    f: F,
+) -> Result<T>
 where
-    F: AsyncFnOnce(&BackendHandle) -> Result<T>,
+    F: AsyncFnOnce(&IndexingService, &QueryService) -> Result<T>,
 {
-    let (handle, thread) = worker::spawn(backend, plan.clone(), plan.can_embed_locally())?;
-    let result = f(&handle).await;
-    drop(handle);
-    if thread.join().is_err() {
+    let (indexing, query, thread) = services;
+    let result = f(&indexing, &query).await;
+    // Drop both services so the LAST `Arc<dyn VectorStore>` clone drops, closing the DuckDB
+    // store's channel and ending its worker loop before we join.
+    drop(indexing);
+    drop(query);
+    if let Some(thread) = thread
+        && thread.join().is_err()
+    {
         tracing::warn!("backend worker thread panicked during shutdown");
     }
     result
@@ -267,13 +293,16 @@ where
     r
 }
 
-/// Open the backend for the indexing path. If opening fails because an existing DuckDB
+/// Build the services for the indexing path. If opening fails because an existing DuckDB
 /// index was built with a different embedding model (dimension mismatch), offer — on an
 /// interactive terminal, defaulting to NO — to delete the file and re-index from scratch.
-/// Any other error (or a declined prompt) propagates unchanged.
-fn open_index_backend(plan: &Plan) -> Result<Backend> {
-    match factory(plan, Access::ReadWrite) {
-        Ok(backend) => Ok(backend),
+/// Any other error (or a declined prompt) propagates unchanged. Mirrors the old
+/// `open_index_backend`, but builds the services (composition root) instead of the `Backend`.
+fn open_index_services(
+    plan: &Plan,
+) -> Result<(IndexingService, QueryService, Option<JoinHandle<()>>)> {
+    match build_services(plan, Access::ReadWrite) {
+        Ok(services) => Ok(services),
         Err(e) => {
             let Some(path) = vectordbs::dim_mismatch_duckdb_path(&e) else {
                 return Err(e);
@@ -287,7 +316,7 @@ fn open_index_backend(plan: &Plan) -> Result<Backend> {
             }
             delete_duckdb_file(&path)?;
             tracing::warn!(path = %path, "deleted mismatched index — re-indexing from scratch");
-            factory(plan, Access::ReadWrite)
+            build_services(plan, Access::ReadWrite)
         }
     }
 }
@@ -319,12 +348,12 @@ fn confirm_default_no(question: &str) -> Result<bool> {
 /// so the user appreciates they may be looking at uncommitted work. Returns `true` if the
 /// caller should abort.
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
-async fn warn_on_dirty(handle: &BackendHandle, silent: bool) -> Result<bool> {
+async fn warn_on_dirty(query: &QueryService, silent: bool) -> Result<bool> {
     if silent {
         return Ok(false);
     }
     // Best-effort (column may be absent on indexes created before the stamping feature).
-    if !handle.has_dirty().await.unwrap_or(false) {
+    if !query.has_dirty().await.unwrap_or(false) {
         return Ok(false);
     }
     let msg = "warning: index contains dirty chunks (uncommitted changes). duplicates may reflect a dirty working tree.";
@@ -347,25 +376,16 @@ fn delete_duckdb_file(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Batch size for embed+upsert. Bounds the embedder POST size (Ollama) and lets us emit
-/// a live progress line without one giant call.
-const UPSERT_BATCH: usize = 64;
-
-/// Walk the root, collect chunks, and upsert them in batches (wrapped in begin/end_bulk),
-/// printing a single updating progress line to stderr while embedding.
+/// Walk the root, collect+stamp+upsert chunks (the begin/end_bulk window + the chunk loop now
+/// live in [`IndexingService::index_sources`]), printing a single updating progress line to
+/// stderr while embedding. This CLI function only supplies the TTY progress CLOSURE and the
+/// final summary line — the orchestration is the service's.
 async fn index_sources(
-    handle: &BackendHandle,
+    indexing: &IndexingService,
     plan: &Plan,
     ctx: &git::GitContext,
     silent: bool,
 ) -> Result<()> {
-    let (mut chunks, files, skipped) = indexer::collect_chunks(plan);
-    for c in &mut chunks {
-        c.commit_sha = ctx.sha.clone();
-        c.dirty = ctx.dirty;
-    }
-    let chunks_total = chunks.len();
-
     // The `\r`-driven progress bars below are LIVE TTY output, not logs: they rely on
     // carriage-return overwrite and an ANSI clear-line, which `tracing` (discrete lines)
     // can't render. Gate them on a stderr TTY (so MCP clients capturing stderr to a file
@@ -373,55 +393,47 @@ async fn index_sources(
     // Step-6 INFO spans provide the operation timing instead.
     let show_progress = std::io::stderr().is_terminal() && !silent;
 
-    handle.begin_bulk().await?;
-    let mut done = 0usize;
-    let mut files_done = 0usize;
+    // One [`IndexProgress`] per upsert batch. Announce a file the first time the reported
+    // path changes (the service counts every distinct file crossing into `files_done`; this
+    // emits the permanent file line as we cross into a new one), then redraw the single
+    // updating "embedded …" line. Mirrors the old in-line bar.
     let mut last_path: Option<String> = None;
-    let mut remaining = chunks.into_iter().peekable();
-    while remaining.peek().is_some() {
-        // Owned batch: the chunks are sent to the worker thread for embed+upsert.
-        let batch: Vec<CodeChunk> = remaining.by_ref().take(UPSERT_BATCH).collect();
-        // Announce every distinct file as we cross into its chunks. A single batch can
-        // span many files, so scan all chunks — not just batch.first() — or the counter
-        // degenerates into a batch index and most files are never reported.
-        for c in &batch {
-            if last_path.as_deref() != Some(c.path.as_str()) {
-                files_done += 1;
-                if show_progress {
-                    // Clear the in-progress "embedded …" line before the permanent file line.
-                    eprintln!(
-                        "\r\x1b[K  [ {}/{} files ] indexing {}",
-                        files_done, files, c.path
-                    );
-                }
-                last_path = Some(c.path.clone());
-            }
+    let mut emitted_any = false;
+    let mut progress = |p: crate::domain::IndexProgress| {
+        if !show_progress {
+            return;
         }
-        let n = batch.len();
-        handle.upsert(batch).await?;
-        done += n;
-        if show_progress {
-            // Single updating line on stderr (carriage return, no newline until the end).
-            eprint!("\rembedded {done}/{chunks_total} chunks");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
+        emitted_any = true;
+        if last_path.as_deref() != Some(p.path.as_str()) {
+            // Clear the in-progress "embedded …" line before the permanent file line.
+            eprintln!(
+                "\r\x1b[K  [ {}/{} files ] indexing {}",
+                p.files_done, p.files_total, p.path
+            );
+            last_path = Some(p.path.clone());
         }
-    }
+        // Single updating line on stderr (carriage return, no newline until the end).
+        eprint!("\rembedded {}/{} chunks", p.chunks_done, p.chunks_total);
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    };
+
+    let report = indexing.index_sources(ctx, &mut progress).await?;
+
     // Terminate the carriage-return progress bar with a final newline (only emitted when
     // the bar itself was shown — otherwise there is nothing to terminate).
-    if show_progress && chunks_total > 0 {
+    if emitted_any {
         eprintln!();
     }
-    handle.end_bulk().await?;
 
     #[allow(clippy::print_stdout)] // intentional data output
     {
         println!(
             "indexed {} chunks from {} {} file(s) into '{}' ({} file(s) skipped by config)",
-            chunks_total,
-            files,
+            report.chunks,
+            report.files,
             plan.ext.join("/"),
             plan.collection,
-            skipped
+            report.skipped
         );
     }
     Ok(())
@@ -430,13 +442,13 @@ async fn index_sources(
 /// Re-index only changed files: delete each file's existing points, then upload the current
 /// content fresh. Deleted/now-excluded files are removed from the collection.
 ///
-/// Delegates to the worker's `Refresh` batch — the same path the MCP `refresh` tool
-/// uses: one begin/end_bulk window around per-path delete + re-chunk + re-embed +
-/// upsert, with the HNSW index rebuilt even when a path fails mid-batch.
+/// Delegates to [`IndexingService::refresh`] — one begin/end_bulk window around per-path
+/// delete + re-chunk + re-embed + upsert, with the index rebuilt even when a path fails
+/// mid-batch — then renders the reconcile report.
 // CLI-only `sync` command (never on the MCP path); the whole body is its
 // reconcile report, so it opts out of the stdout lint at the function level.
 #[allow(clippy::print_stdout)]
-async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
+async fn sync(indexing: &IndexingService, sync_args: &SyncArgs) -> Result<()> {
     let changed =
         crate::git::changed_files(Some(&sync_args.since), sync_args.staged, &sync_args.files)?;
     if changed.is_empty() {
@@ -444,16 +456,16 @@ async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
         return Ok(());
     }
 
-    let report = handle.refresh(changed).await?;
+    let report = indexing.refresh(&changed).await?;
 
     let (mut reindexed, mut deleted, mut chunks) = (0usize, 0usize, 0usize);
     for (path, outcome) in &report.entries {
         match outcome {
-            indexer::ReindexOutcome::Removed { reason } => {
+            crate::domain::ReindexOutcome::Removed { reason } => {
                 deleted += 1;
                 println!("  - {path} ({reason})");
             }
-            indexer::ReindexOutcome::Reindexed { chunks: n } => {
+            crate::domain::ReindexOutcome::Reindexed { chunks: n } => {
                 chunks += n;
                 reindexed += 1;
                 println!("  + {path} ({n} chunks)");
@@ -469,35 +481,74 @@ async fn sync(handle: &BackendHandle, sync_args: &SyncArgs) -> Result<()> {
 /// duckdb/ort` (the fully-offline default), so `--config sai-cfg.yml` alone drives the server.
 /// Builds the backend + embedder ONCE, opens DuckDB read-only, then serves rmcp until EOF.
 #[cfg(feature = "mcp")]
-async fn run_mcp(args: &Args, allow_write: bool, allow_setup: bool) -> Result<()> {
+async fn run_mcp(
+    args: &Args,
+    allow_write: bool,
+    allow_setup: bool,
+    http: Option<&str>,
+) -> Result<()> {
     // The MCP offline defaults (duckdb + ort) sit BELOW the config, not above it: they apply
     // only when neither the flag nor `sai-cfg.yml` sets backend/embedder. See
     // `config::build_mcp_plan`.
     let plan = crate::config::build_mcp_plan(args)?;
     indexer::ensure_chunker_available(&plan)?;
     // --allow-write opens the index WRITABLE (normal `connect`, incl. HNSW persistence) so
-    // the `refresh` tool can delete + re-embed. Default is read-only: `refresh` then errors.
-    let backend = if allow_write {
-        let b = vectordbs::factory(&plan, Access::ReadWrite)?;
-        b.ensure_ready(false).await?;
-        b
-    } else {
-        vectordbs::factory(&plan, Access::ReadOnly)?
-    };
-    // Move the backend onto the worker thread (rmcp handler futures must be `Send`; the
-    // DuckDB backend is not). Unlike the CLI paths we do NOT join the worker thread on
-    // shutdown: the rmcp service owns handle clones, and a leaked clone must not be able
-    // to wedge server exit after stdio EOF — process exit reaps the thread instead.
-    let can_embed_locally = plan.can_embed_locally();
-    let (handle, _thread) = worker::spawn(backend, plan.clone(), can_embed_locally)?;
-    crate::mcp::serve_inner(handle, &plan, allow_write, allow_setup).await
+    // the `refresh`/`sync` tools can delete + re-embed. Default is read-only: those tools
+    // then error. `build_services` shares ONE `Arc<dyn VectorStore>` across both services;
+    // the DuckDB worker thread is confined INSIDE that store.
+    let (indexing, query, _thread) = build_services(
+        &plan,
+        if allow_write {
+            Access::ReadWrite
+        } else {
+            Access::ReadOnly
+        },
+    )?;
+    if allow_write {
+        indexing.ensure_ready(false).await?;
+    }
+    // Unlike the CLI paths we DROP/detach the DuckDB worker `JoinHandle` (`_thread`) — we do
+    // NOT join it on shutdown. The rmcp service owns the services (and thus the store's handle
+    // clones), and a leaked clone must not be able to wedge server exit after stdio EOF; the
+    // services drop on EOF (ending the worker) and process exit reaps the thread.
+    // Transport: `--http <addr>` serves streamable-HTTP (needs `--features mcp-http`); the
+    // default is stdio. Both keep the NON-join worker shutdown above.
+    if let Some(addr) = http {
+        #[cfg(feature = "mcp-http")]
+        {
+            return crate::mcp::serve_http(
+                Arc::new(indexing),
+                Arc::new(query),
+                &plan,
+                allow_write,
+                allow_setup,
+                addr,
+            )
+            .await;
+        }
+        #[cfg(not(feature = "mcp-http"))]
+        {
+            let _ = addr;
+            anyhow::bail!(
+                "`--http` requires a build with `--features mcp-http` (this binary has only the stdio MCP transport)"
+            );
+        }
+    }
+    crate::mcp::serve_inner(
+        Arc::new(indexing),
+        Arc::new(query),
+        &plan,
+        allow_write,
+        allow_setup,
+    )
+    .await
 }
 
 /// Run a semantic query and print the hits exactly as before.
 // CLI-only renderer (never on the MCP path): all output is intentional query DATA.
 #[allow(clippy::print_stdout)]
-async fn run_query(handle: &BackendHandle, plan: &Plan, q: &str) -> Result<()> {
-    let hits = handle.query(q.to_string(), plan.limit).await?;
+async fn run_query(query: &QueryService, plan: &Plan, q: &str) -> Result<()> {
+    let hits = query.query(q, plan.limit).await?;
     println!("\ntop {} for: {q}", hits.len());
     for h in &hits {
         print_hit(h);
@@ -518,19 +569,31 @@ fn print_hit(h: &Hit) {
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
 const DEFAULT_DUP_MAX_CLUSTERS: usize = 50;
 
-/// `duplicates` handler: resolve each knob (CLI flag > config > built-in default), then
-/// run the shared codebase-wide near-duplicate scan on the worker and print the clusters
-/// human-readably.
-// CLI-only renderer (never on the MCP path): all output is intentional cluster DATA
-// (human-readable or `--json`), so the whole function opts out of the stdout lint.
+/// Resolved `duplicates` knobs (CLI flag > config > built-in default), shared by the
+/// renderer and the GOLDEN test so the JSON envelope and the human header stay one source.
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
-#[allow(clippy::print_stdout)]
-async fn run_duplicates(
-    handle: &BackendHandle,
+struct DupKnobs {
+    min_score: f32,
+    min_cluster_size: usize,
+    top_k: u64,
+    /// `true` when a `--since`/`--staged`/`--file` seed set was derived (the CI-gate mode).
+    seeded: bool,
+}
+
+/// Resolve the `duplicates` knobs, derive the changed-file `seed_paths` (B1 — the dedup
+/// gate's exact code path: `--since`/`--staged`/`--file` → `git::changed_files` → the set
+/// of files allowed to SEED a cluster), warn on a dirty tree, then run the scan via
+/// [`QueryService::find_duplicates`]. Returns `Ok(None)` when a dirty-tree prompt aborts.
+///
+/// Extracted so the renderer ([`run_duplicates`]) and the GOLDEN test exercise the IDENTICAL
+/// seed-derivation → service path (gate #6).
+#[cfg(any(feature = "duckdb", feature = "qdrant"))]
+async fn resolve_duplicate_clusters(
+    query: &QueryService,
     plan: &Plan,
     args: &crate::cli::DuplicatesArgs,
     silent: bool,
-) -> Result<()> {
+) -> Result<Option<(DupKnobs, Vec<crate::domain::DupCluster>)>> {
     // Knob resolution: CLI flag > config (similarity.*) > built-in default.
     let min_score = args.min_score.unwrap_or_else(|| plan.duplicate_min_score());
     let min_cluster_size = args
@@ -552,10 +615,10 @@ async fn run_duplicates(
     };
     let seeded = seed_paths.is_some();
 
-    if warn_on_dirty(handle, silent).await? {
-        return Ok(());
+    if warn_on_dirty(query, silent).await? {
+        return Ok(None);
     }
-    let clusters = handle
+    let clusters = query
         .find_duplicates(
             min_score,
             min_cluster_size,
@@ -565,6 +628,39 @@ async fn run_duplicates(
             seed_paths,
         )
         .await?;
+    Ok(Some((
+        DupKnobs {
+            min_score,
+            min_cluster_size,
+            top_k,
+            seeded,
+        },
+        clusters,
+    )))
+}
+
+/// `duplicates` handler: resolve+scan via [`resolve_duplicate_clusters`], then print the
+/// clusters human-readably (or as JSON for CI gates).
+// CLI-only renderer (never on the MCP path): all output is intentional cluster DATA
+// (human-readable or `--json`), so the whole function opts out of the stdout lint.
+#[cfg(any(feature = "duckdb", feature = "qdrant"))]
+#[allow(clippy::print_stdout)]
+async fn run_duplicates(
+    query: &QueryService,
+    plan: &Plan,
+    args: &crate::cli::DuplicatesArgs,
+    silent: bool,
+) -> Result<()> {
+    let Some((knobs, clusters)) = resolve_duplicate_clusters(query, plan, args, silent).await?
+    else {
+        return Ok(());
+    };
+    let DupKnobs {
+        min_score,
+        min_cluster_size,
+        top_k,
+        seeded,
+    } = knobs;
 
     // Machine-readable mode for CI gates: emit even when empty so callers branch on `count`.
     if args.json {
@@ -604,17 +700,17 @@ async fn run_duplicates(
 }
 
 /// `similar` handler: require EXACTLY ONE of --code or (--path & --line), resolve min_score
-/// (flag > config.find_similar_min_score > default), run the shared nearest-neighbour
-/// resolution on the worker, and print `score  path:start-end  symbol`.
+/// (flag > config.find_similar_min_score > default), run the nearest-neighbour resolution via
+/// [`QueryService::find_similar`], and print `score  path:start-end  symbol`.
 // CLI-only renderer (never on the MCP path): all output is intentional neighbour DATA.
 #[cfg(any(feature = "duckdb", feature = "qdrant"))]
 #[allow(clippy::print_stdout)]
 async fn run_similar(
-    handle: &BackendHandle,
+    query: &QueryService,
     plan: &Plan,
     args: &crate::cli::SimilarArgs,
 ) -> Result<()> {
-    use crate::search::SimilarTarget;
+    use crate::domain::SimilarTarget;
 
     // Require exactly one of --code or (--path AND --line).
     let target = match (args.code.as_deref(), args.path.as_deref(), args.line) {
@@ -638,7 +734,7 @@ async fn run_similar(
         .min_score
         .unwrap_or_else(|| plan.find_similar_min_score());
 
-    let hits = handle.find_similar(target, args.limit, min_score).await?;
+    let hits = query.find_similar(target, args.limit, min_score).await?;
 
     println!("{} similar (min_score {min_score}):", hits.len());
     for h in &hits {
@@ -653,51 +749,40 @@ async fn run_similar(
 
 #[cfg(test)]
 mod tests {
-    //! Happy-path flow tests driving the REAL orchestration fns (`index_sources`,
-    //! `sync`, `run_query`, `flush`) against the in-memory [`MockBackend`] — routed
-    //! through a real worker thread, exactly like production. No network, no real
-    //! Qdrant/DuckDB: every call is recorded by the mock and asserted here. Source
-    //! trees are built under a `tempdir`.
+    //! Happy-path flow tests driving the REAL CLI orchestration fns (`index_sources`,
+    //! `sync`, `run_query`, `run_duplicates`) against the in-memory [`MockStore`] — the
+    //! same `Arc<dyn VectorStore>` path production uses, but in-process (NO worker thread,
+    //! NO network). Every store call is recorded by the underlying [`MockBackend`] and
+    //! asserted here. Source trees + git fixtures are built under a `tempdir`.
 
     use super::*;
-    use crate::config::Plan;
-    use crate::vectordbs::mock::{MockBackend, MockCalls};
+    use crate::config::test_support::e5_small_plan as test_plan;
+    use crate::domain::Plan;
+    use crate::repos::mock::MockStore;
+    use crate::vectordbs::mock::{MockBackend, MockCalls, MockRow};
     use globset::GlobSetBuilder;
     use std::fs;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
-    /// Spawn a worker around a fresh `MockBackend` for `plan`, returning the handle,
-    /// the thread (join it after dropping the handle), and the shared call recorder.
-    fn mock_worker(
-        plan: &Plan,
-    ) -> (
-        BackendHandle,
-        std::thread::JoinHandle<()>,
-        Arc<Mutex<MockCalls>>,
-    ) {
-        let mock = MockBackend::new();
-        let calls = mock.calls.clone();
-        let (handle, thread) =
-            worker::spawn(Backend::Mock(mock), plan.clone(), true).expect("spawn worker");
-        (handle, thread, calls)
+    /// Build the two services over a fresh `MockStore` for `plan`, returning them alongside
+    /// the shared call recorder (kept before the backend moves into the `Arc<dyn …>`). The
+    /// services share ONE store — exactly the `build_services` shape, minus the worker thread.
+    fn mock_services(plan: &Plan) -> (IndexingService, QueryService, Arc<Mutex<MockCalls>>) {
+        mock_services_from_backend(MockBackend::new(), plan)
     }
 
-    /// Build a minimal `Plan` rooted at `root` with `ext` = ts and no globs. Mirrors
-    /// `build_plan` defaults without reading any YAML. Starts from the shared
-    /// `minimal_plan` (mock/ort, no globs) and overrides only the E5/e5-small knobs
-    /// these flow tests rely on.
-    fn test_plan(root: &str) -> Plan {
-        Plan {
-            root: root.to_string(),
-            prefix_style: crate::vectordbs::PrefixStyle::E5,
-            max_chunk_chars: 1400,
-            collection: "test_coll".to_string(),
-            model: "intfloat/multilingual-e5-small".to_string(),
-            vector_dim: 384,
-            model_repo: "Xenova/multilingual-e5-small".to_string(),
-            ..crate::config::test_support::minimal_plan()
-        }
+    /// As [`mock_services`], but over a pre-seeded backend (rows-with-vectors for the read
+    /// side). Both services share the SAME `Arc<MockStore>`.
+    fn mock_services_from_backend(
+        backend: MockBackend,
+        plan: &Plan,
+    ) -> (IndexingService, QueryService, Arc<Mutex<MockCalls>>) {
+        let calls = backend.calls.clone();
+        let store: Arc<dyn crate::repos::VectorStore> = Arc::new(MockStore(backend));
+        let indexing = IndexingService::new(store.clone(), plan.clone());
+        let query = QueryService::new(store, plan.clone());
+        (indexing, query, calls)
     }
 
     /// A plan whose `exclude` globset drops `**/*.test.ts`.
@@ -731,12 +816,10 @@ mod tests {
         let expected = expected_chunks.len();
         assert!(expected > 0, "fixture must produce chunks");
 
-        let (handle, thread, calls) = mock_worker(&plan);
-        index_sources(&handle, &plan, &git::GitContext::default(), true)
+        let (indexing, _query, calls) = mock_services(&plan);
+        index_sources(&indexing, &plan, &git::GitContext::default(), true)
             .await
             .unwrap();
-        drop(handle);
-        thread.join().unwrap();
 
         let calls = calls.lock().unwrap();
         assert_eq!(calls.begin_bulk, 1, "exactly one begin_bulk");
@@ -774,10 +857,8 @@ mod tests {
             ],
         };
 
-        let (handle, thread, calls) = mock_worker(&plan);
-        sync(&handle, &sync_args).await.unwrap();
-        drop(handle);
-        thread.join().unwrap();
+        let (indexing, _query, calls) = mock_services(&plan);
+        sync(&indexing, &sync_args).await.unwrap();
 
         let calls = calls.lock().unwrap();
         // delete_by_path called once per changed path (3).
@@ -790,24 +871,22 @@ mod tests {
         assert!(calls.upserts[0].count > 0, "indexable file produced chunks");
     }
 
-    /// flush: orchestration invokes backend.flush() through the worker.
+    /// flush: the service invokes `store.flush()` exactly once.
     #[tokio::test]
     async fn flush_invokes_backend_flush() {
         let plan = crate::config::test_support::minimal_plan();
-        let (handle, thread, calls) = mock_worker(&plan);
-        handle.flush().await.unwrap();
-        drop(handle);
-        thread.join().unwrap();
+        let (indexing, _query, calls) = mock_services(&plan);
+        indexing.flush().await.unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(calls.flush, 1, "flush called exactly once");
     }
 
-    /// reindex_file (the shared helper the worker's `Refresh` batch applies per path,
-    /// for both CLI `sync` and the MCP `refresh` tool): an existing indexable file
-    /// deletes-then-upserts and reports its chunk count; a gone/excluded path
-    /// deletes-only and reports Removed.
+    /// refresh (the per-path reindex the CLI `sync` and MCP `refresh` share, now on
+    /// [`IndexingService`]): one begin/end_bulk window over a batch of an existing indexable
+    /// file (deletes-then-upserts, reported `Reindexed`) and a gone path (delete-only,
+    /// reported `Removed`).
     #[tokio::test]
-    async fn reindex_file_reindexes_existing_and_removes_gone() {
+    async fn refresh_reindexes_existing_and_removes_gone() {
         let dir = TempDir::new().unwrap();
         let root = dir.path().to_string_lossy().to_string();
         let good = dir.path().join("keep.ts");
@@ -815,32 +894,32 @@ mod tests {
         let gone = dir.path().join("gone.ts"); // never created
 
         let plan = test_plan(&root);
-        let backend = Backend::Mock(MockBackend::new());
+        let (indexing, _query, calls) = mock_services(&plan);
 
         let good_path = good.to_string_lossy().to_string();
-        match indexer::reindex_file(&backend, &plan, &good_path, &git::GitContext::default())
-            .await
-            .unwrap()
-        {
-            indexer::ReindexOutcome::Reindexed { chunks } => {
-                assert!(chunks > 0, "indexable file chunks")
-            }
-            indexer::ReindexOutcome::Removed { .. } => panic!("existing file must be reindexed"),
-        }
         let gone_path = gone.to_string_lossy().to_string();
-        match indexer::reindex_file(&backend, &plan, &gone_path, &git::GitContext::default())
+        let report = indexing
+            .refresh(&[good_path.clone(), gone_path.clone()])
             .await
-            .unwrap()
-        {
-            indexer::ReindexOutcome::Removed { .. } => {}
-            indexer::ReindexOutcome::Reindexed { .. } => panic!("gone file must be removed"),
+            .unwrap();
+
+        match &report.entries[0].1 {
+            crate::domain::ReindexOutcome::Reindexed { chunks } => {
+                assert!(*chunks > 0, "indexable file chunks")
+            }
+            crate::domain::ReindexOutcome::Removed { .. } => {
+                panic!("existing file must be reindexed")
+            }
+        }
+        match &report.entries[1].1 {
+            crate::domain::ReindexOutcome::Removed { .. } => {}
+            crate::domain::ReindexOutcome::Reindexed { .. } => panic!("gone file must be removed"),
         }
 
-        let calls = match &backend {
-            Backend::Mock(m) => m.calls.lock().unwrap(),
-            #[allow(unreachable_patterns)]
-            _ => unreachable!("test uses Backend::Mock"),
-        };
+        let calls = calls.lock().unwrap();
+        // one begin/end_bulk window wraps the batch.
+        assert_eq!(calls.begin_bulk, 1);
+        assert_eq!(calls.end_bulk, 1);
         // delete fired for BOTH paths; only the existing file produced an upsert.
         assert_eq!(calls.deletes.len(), 2, "delete fires per path");
         assert_eq!(calls.upserts.len(), 1, "only the existing file upserts");
@@ -858,22 +937,17 @@ mod tests {
         assert_eq!(plan.top_k(), 10);
     }
 
-    /// query: run_query issues the query through the worker and renders the canned hits.
+    /// query: run_query issues the query through the service and renders the canned hits.
     #[tokio::test]
     async fn query_runs_and_returns_canned_hits() {
         let dir = TempDir::new().unwrap();
         let plan = test_plan(&dir.path().to_string_lossy());
-        let (handle, thread, calls) = mock_worker(&plan);
+        let (_indexing, query, calls) = mock_services(&plan);
 
         // run_query renders to stdout; assert it completes and recorded the query.
-        run_query(&handle, &plan, "where is alpha").await.unwrap();
+        run_query(&query, &plan, "where is alpha").await.unwrap();
         // Independently confirm the canned result set is deterministic.
-        let hits = handle
-            .query("where is alpha".to_string(), plan.limit)
-            .await
-            .unwrap();
-        drop(handle);
-        thread.join().unwrap();
+        let hits = query.query("where is alpha", plan.limit).await.unwrap();
 
         let calls = calls.lock().unwrap();
         assert_eq!(calls.queries.len(), 2, "run_query + direct query");
@@ -881,5 +955,235 @@ mod tests {
         assert_eq!(hits.len(), 2, "canned hits returned");
         assert_eq!(hits[0].path, "src/alpha.ts");
         assert!(hits[0].score >= hits[1].score, "hits ordered by score");
+    }
+
+    /// Serialises the cwd-mutating GOLDEN test (process-global cwd) so it can't race other
+    /// tests that read `std::env::current_dir`.
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run `git` in `dir`, asserting success (test fixture helper).
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git runs")
+            .success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    /// The four seed rows: `new.ts` ~ `existing.ts` (a near-identical pair) + an untouched
+    /// `old_a.ts` ~ `old_b.ts` pair. Paths match what `git diff --name-only HEAD` emits.
+    fn dup_fixture_rows() -> Vec<MockRow> {
+        vec![
+            MockRow::new(1, "new.ts", 1, vec![1.0, 0.0, 0.0, 0.0]),
+            MockRow::new(2, "existing.ts", 1, vec![0.999, 0.01, 0.0, 0.0]),
+            MockRow::new(3, "old_a.ts", 1, vec![0.0, 0.0, 1.0, 0.0]),
+            MockRow::new(4, "old_b.ts", 1, vec![0.0, 0.0, 0.999, 0.01]),
+        ]
+    }
+
+    /// GOLDEN (B1 — the dedup gate's exact code path): `duplicates --since` over a git fixture
+    /// with a KNOWN near-identical pair (one file CHANGED since the baseline commit, the other
+    /// untouched) seeds correctly THROUGH the new CLI → service path. The shared
+    /// [`resolve_duplicate_clusters`] (which `run_duplicates` renders) derives `seed_paths`
+    /// from `git diff --name-only HEAD` and passes it to `QueryService::find_duplicates`; the
+    /// seeded pair's cluster surfaces, and an untouched-only pre-existing near-dup pair does
+    /// NOT seed (it only surfaces in a full, unseeded scan).
+    ///
+    /// A plain `#[test]` (not `#[tokio::test]`): it sets the PROCESS cwd into the fixture so
+    /// `git::changed_files` reads the right repo, serialised by [`CWD_LOCK`] and driven on a
+    /// scoped current-thread runtime so cwd stays stable for the whole flow. The MockStore
+    /// rows are keyed by the SAME relative paths git reports, so the seed restriction is
+    /// exercised end-to-end with NO network and NO real embedder.
+    #[test]
+    fn duplicates_since_seeds_through_cli_service_path() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // A baseline git repo: commit BOTH the "existing" duplicate target and the untouched
+        // pre-existing pair, then MODIFY `new.ts` so it shows up in `git diff HEAD`.
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        fs::write(root.join("new.ts"), "export const a = 1\n").unwrap();
+        fs::write(root.join("existing.ts"), "export const b = 1\n").unwrap();
+        fs::write(root.join("old_a.ts"), "export const c = 1\n").unwrap();
+        fs::write(root.join("old_b.ts"), "export const d = 1\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "baseline"]);
+        // The change since HEAD: edit new.ts (its path is what `--since HEAD` will report).
+        fs::write(root.join("new.ts"), "export const a = 2\n").unwrap();
+
+        let plan = test_plan(&root.to_string_lossy());
+        let dup_args = crate::cli::DuplicatesArgs {
+            min_score: Some(0.95),
+            min_cluster_size: Some(2),
+            top_k: Some(10),
+            path_glob: None,
+            max_clusters: Some(50),
+            since: Some("HEAD".to_string()),
+            staged: false,
+            files: Vec::new(),
+            json: false,
+        };
+        let unseeded_args = crate::cli::DuplicatesArgs {
+            since: None,
+            ..dup_args.clone()
+        };
+
+        // Set cwd into the fixture for the whole synchronous flow (git::changed_files reads
+        // it), serialised against other cwd-sensitive tests.
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().expect("cwd readable");
+        std::env::set_current_dir(root).expect("chdir into fixture");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+
+        let result = rt.block_on(async {
+            // Sanity: git reports the changed file the seeding keys off.
+            let changed = crate::git::changed_files(Some("HEAD"), false, &[]).unwrap();
+            assert!(
+                changed.iter().any(|p| p == "new.ts"),
+                "git diff HEAD reports the changed seed file, got {changed:?}"
+            );
+
+            // Seeded run via the SHARED resolve path: only new.ts seeds → its cluster with
+            // existing.ts surfaces; the untouched old_a/old_b pair does NOT seed.
+            let (_i, query, _c) =
+                mock_services_from_backend(MockBackend::with_rows(dup_fixture_rows()), &plan);
+            let (knobs, seeded_clusters) =
+                resolve_duplicate_clusters(&query, &plan, &dup_args, true)
+                    .await
+                    .unwrap()
+                    .expect("not aborted on dirty");
+            assert!(knobs.seeded, "--since derives a seed set");
+
+            // Control: a full UNSEEDED scan (no --since) reports BOTH pairs — proves the single
+            // seeded cluster is the SEED restriction, not a missing pair.
+            let (_i, query, _c) =
+                mock_services_from_backend(MockBackend::with_rows(dup_fixture_rows()), &plan);
+            let (_k, all) = resolve_duplicate_clusters(&query, &plan, &unseeded_args, true)
+                .await
+                .unwrap()
+                .expect("not aborted on dirty");
+            (seeded_clusters, all)
+        });
+
+        // Restore cwd before any assertion can unwind while the guard is held.
+        std::env::set_current_dir(&prev).expect("restore cwd");
+        drop(_guard);
+
+        let (seeded_clusters, all) = result;
+        assert_eq!(
+            seeded_clusters.len(),
+            1,
+            "exactly the seeded file's cluster surfaces, got {seeded_clusters:?}"
+        );
+        let paths: Vec<&str> = seeded_clusters[0]
+            .members
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+        assert!(paths.contains(&"new.ts"), "the changed seed is present");
+        assert!(
+            paths.contains(&"existing.ts"),
+            "the untouched code the seed duplicates is pulled in"
+        );
+        assert!(
+            !paths.contains(&"old_a.ts") && !paths.contains(&"old_b.ts"),
+            "the untouched-only pre-existing pair does NOT seed"
+        );
+        assert_eq!(all.len(), 2, "the full unseeded scan reports both pairs");
+    }
+
+    /// dedup-gate smoke (B1/G6): the `duplicates --json` OUTPUT ENVELOPE is unchanged. The
+    /// `dedup-gate.yml` consumer parses `{min_score, min_cluster_size, top_k, seeded, count,
+    /// clusters}` from the `--json` stdout. Run the duplicates path over a MockStore (NO git
+    /// seeding — a plain whole-DB scan), build the EXACT `serde_json::json!` envelope
+    /// `run_duplicates` emits from the resolved knobs + clusters, and assert every key is
+    /// present with the right type. Locks the gate's `--json` contract without a binary E2E.
+    #[tokio::test]
+    async fn duplicates_json_envelope_shape_over_mockstore() {
+        let plan = test_plan(".");
+        // No --since/--staged/--file → unseeded whole-DB scan (seeded == false).
+        let args = crate::cli::DuplicatesArgs {
+            min_score: Some(0.95),
+            min_cluster_size: Some(2),
+            top_k: Some(10),
+            path_glob: None,
+            max_clusters: Some(50),
+            since: None,
+            staged: false,
+            files: Vec::new(),
+            json: true,
+        };
+
+        let (_i, query, _c) =
+            mock_services_from_backend(MockBackend::with_rows(dup_fixture_rows()), &plan);
+        let (knobs, clusters) = resolve_duplicate_clusters(&query, &plan, &args, true)
+            .await
+            .unwrap()
+            .expect("not aborted on dirty");
+        let DupKnobs {
+            min_score,
+            min_cluster_size,
+            top_k,
+            seeded,
+        } = knobs;
+
+        // The IDENTICAL envelope `run_duplicates` serialises for `--json`.
+        let out = serde_json::json!({
+            "min_score": min_score,
+            "min_cluster_size": min_cluster_size,
+            "top_k": top_k,
+            "seeded": seeded,
+            "count": clusters.len(),
+            "clusters": clusters,
+        });
+
+        let obj = out.as_object().expect("envelope is a JSON object");
+        // Exactly the six keys the dedup-gate consumer parses — no more, no fewer.
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "clusters",
+                "count",
+                "min_cluster_size",
+                "min_score",
+                "seeded",
+                "top_k"
+            ],
+            "the duplicates --json envelope keys must stay stable for dedup-gate.yml"
+        );
+        // Type contract per field.
+        assert!(obj["min_score"].is_number(), "min_score is a number");
+        assert!(
+            obj["min_cluster_size"].is_u64(),
+            "min_cluster_size is an integer"
+        );
+        assert!(obj["top_k"].is_u64(), "top_k is an integer");
+        assert_eq!(obj["seeded"], serde_json::json!(false), "unseeded scan");
+        assert!(obj["count"].is_u64(), "count is an integer");
+        let arr = obj["clusters"].as_array().expect("clusters is an array");
+        assert_eq!(
+            arr.len() as u64,
+            obj["count"].as_u64().unwrap(),
+            "count equals clusters.len()"
+        );
+        // The whole-DB scan over the fixture surfaces both near-identical pairs, and each
+        // cluster member carries the path the gate triages on.
+        assert_eq!(obj["count"], serde_json::json!(2), "both fixture pairs");
+        assert!(
+            arr.iter().all(|c| c["members"]
+                .as_array()
+                .is_some_and(|m| m.iter().all(|mem| mem["path"].is_string()))),
+            "every cluster member exposes a string path"
+        );
     }
 }

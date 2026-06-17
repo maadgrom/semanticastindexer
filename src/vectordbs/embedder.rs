@@ -10,9 +10,9 @@
 //! inside the async fn — acceptable for a CLI.
 
 #[cfg(any(feature = "ort", feature = "ollama"))]
-use crate::config::Plan;
+use crate::domain::Plan;
 #[cfg(any(feature = "ort", feature = "ollama"))]
-use crate::vectordbs::{PrefixStyle, format_passage, format_query};
+use crate::domain::{PrefixStyle, format_passage, format_query};
 
 /// Build the ort embedder from a resolved plan (model repo + cache dir + prefix policy).
 #[cfg(feature = "ort")]
