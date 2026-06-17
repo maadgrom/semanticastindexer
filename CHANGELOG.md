@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-17
+
 ### Added
 
 - **Structured tracing-based logging facade** — All diagnostics now flow through `tracing`
