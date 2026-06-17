@@ -104,15 +104,25 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --features all 2>&1 | tee test-output.log
-      # Windows runs single-threaded: the DuckDB tests each INSTALL the vss
-      # extension on first use, and concurrent installs race on the extension
-      # file (rename-over-existing fails on Windows; fine on POSIX). The suite
-      # takes ~2s, so serializing costs nothing.
+      # Windows: the signal we want from this OS is that bundled DuckDB COMPILES under
+      # MSVC/VS2022 (the amalgamation) — `cargo test` builds every test, including the
+      # skipped ones, so that coverage is intact. We do NOT *run* the duckdb-backend tests
+      # here: each opens a real DuckDB connection that INSTALLs the vss extension over the
+      # network, and on the Windows runner that serializes into the 60-min job timeout.
+      # Those behaviors are exercised on ubuntu + macOS (where the install is fast). The
+      # remaining (mock-based) suite stays single-threaded — cheap, and avoids any shared
+      # temp/cache contention — and `timeout-minutes` caps a future hang at minutes, not an
+      # hour. The three skips cover every test that opens a DuckDB backend:
+      #   vectordbs::duckdb (validation + no_duplicate tests), repos::duckdb (store mailbox),
+      #   mcp_stdio_tests (the MCP handshake whose ensure_ready opens the store).
       - if: runner.os == 'Windows'
+        timeout-minutes: 30
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked --features all -- --test-threads=1 2>&1 | tee test-output.log
+          cargo test --locked --features all -- --test-threads=1 \
+            --skip vectordbs::duckdb --skip repos::duckdb --skip mcp_stdio_tests \
+            2>&1 | tee test-output.log
       # Surface the failing tests as check-run annotations so the failure is
       # diagnosable from the PR checks UI (and the public API) without opening logs.
       # NOTE: strip ANSI color first (CARGO_TERM_COLOR=always) or nothing matches,

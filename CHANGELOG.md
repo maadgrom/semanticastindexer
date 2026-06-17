@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **DuckDB VSS load no longer re-downloads on the hot path** — `load_vss` now escalates to the
+  network-heavy `FORCE INSTALL` *only* when an install fails with the origin-pin conflict, instead
+  of trying it unconditionally in the fallback chain. A plain `INSTALL` is a cheap no-op when the
+  extension is already present, so the common per-connection path no longer hits the network. This
+  removes a severe Windows slowdown (every connection re-downloading VSS, serialized) that pushed
+  the Windows CI test job into its 60-minute timeout.
+
+### CI
+
+- The Windows test job skips the DuckDB-backend tests (`vectordbs::duckdb`, `repos::duckdb`,
+  `mcp_stdio_tests`) — they each open a real DuckDB connection that installs the VSS extension over
+  the network, which serializes badly on the Windows runner. Bundled-DuckDB **compilation** (the
+  reason this OS is in the matrix) and the full mock-based suite still run; the backend behaviors are
+  covered on ubuntu + macOS. Added a 30-minute step timeout as a hang backstop.
+
 ## [0.1.6] - 2026-06-17
 
 ### Added

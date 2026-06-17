@@ -704,57 +704,61 @@ impl DuckDbBackend {
 
 /// Load the VSS extension, required for HNSW vector search and `array_cosine_distance`.
 ///
-/// Ordered, best-effort fallbacks — each ends in `LOAD`, and we stop at the first that
-/// succeeds. The sequence is shaped by two realities:
-///
-/// 1. **Concurrency.** DuckDB's extension cache is per-machine, shared across every
-///    connection AND across parallel test threads / sibling processes. A peer may install
-///    VSS between our attempts, so we re-try a pure `LOAD` after the first INSTALL.
-/// 2. **Origin pinning.** Once VSS is installed from one repository, a plain
-///    `INSTALL vss FROM community` against an extension already installed from the default
-///    repo (`extensions.duckdb.org`) is a HARD error ("already installed but the origin is
-///    different"). `FORCE INSTALL` overrides that, and — crucially — `FORCE INSTALL vss`
-///    (no `FROM`) re-downloads from the SAME default repo, fixing a stale/version-mismatched
-///    install without ever provoking the origin conflict.
-///
-/// A bare `LOAD` is the read-only/MCP fast path: it succeeds whenever any prior writable
-/// run already installed VSS, so the server needs no write access to the extension dir.
+/// Hot path: a pure `LOAD` (no lock) — all an already-installed extension needs, and the
+/// read-only/MCP fast path that requires no write access. On failure we acquire a
+/// process-wide install lock and try, in order, the default repo then the community repo.
+/// A plain `INSTALL` is a cheap no-op when VSS is already present, so it must NOT
+/// re-download; the network-heavy `FORCE INSTALL` runs ONLY on the origin-pin conflict
+/// (see [`is_origin_conflict`]). Doing it unconditionally re-downloaded the extension on
+/// every connection, which serialized into the 60-minute Windows-CI blow-up.
 fn load_vss(conn: &Connection) -> Result<()> {
-    // Fast path, taken without the install lock: a pure LOAD is a cheap idempotent read and
-    // is all a read-only / MCP connection needs once VSS was installed by any prior run.
+    // Fast path: a pure LOAD is a cheap idempotent read, and all a read-only / MCP
+    // connection needs once any prior writable run installed VSS.
     if conn.execute_batch("LOAD vss;").is_ok() {
         return Ok(());
     }
 
     // Serialize the INSTALL attempts PROCESS-WIDE. DuckDB's extension cache is shared across
-    // every connection in the process (and our parallel test threads each open their own),
-    // so concurrent INSTALLs race: one thread installs from the default repo while another is
-    // mid-`INSTALL vss FROM community`, which then hard-fails on the origin mismatch. One
+    // every connection in the process (parallel test threads each open their own), and the
+    // installer is not concurrency-safe (rename-over-existing races, esp. on Windows). One
     // installer at a time makes the outcome deterministic. (Poison is recovered: a prior
     // panic holding the lock must not wedge every later connection.)
     static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    // INSTALL variants need network + write access to the extension cache. The
-    // `FORCE INSTALL vss` step (default repo, no `FROM`) is what resolves the cross-origin /
-    // version-mismatch failure on shared CI runners without provoking the origin conflict.
-    const ATTEMPTS: &[&str] = &[
-        "LOAD vss;",                    // a peer installed it while we waited on the lock
-        "INSTALL vss; LOAD vss;",       // default repo (no-op if already present)
-        "FORCE INSTALL vss; LOAD vss;", // re-download from the DEFAULT repo: fixes a stale / wrong-version / different-origin install with no origin conflict
-        "INSTALL vss FROM community; LOAD vss;", // DuckDB builds where VSS lives only in the community repo
-        "FORCE INSTALL vss FROM community; LOAD vss;", // last resort: override any remaining origin pin
-    ];
-
-    let mut last_err = None;
-    for sql in ATTEMPTS {
-        match conn.execute_batch(sql) {
-            Ok(()) => return Ok(()),
-            Err(e) => last_err = Some(e),
-        }
+    // A peer may have installed it while we waited on the lock.
+    if conn.execute_batch("LOAD vss;").is_ok() {
+        return Ok(());
     }
 
-    Err(last_err.expect("ATTEMPTS is non-empty")).context(
+    // Default repo. `INSTALL vss` is a no-op (no download) when VSS is already present, so
+    // this is the cheap hot path on platforms where LOAD doesn't auto-find the extension.
+    // Escalate to FORCE (a full re-download) ONLY on the origin-pin conflict — i.e. VSS is
+    // already installed from the community repo and `INSTALL vss` (default) refuses.
+    if let Err(e) = conn.execute_batch("INSTALL vss; LOAD vss;") {
+        if is_origin_conflict(&e) && conn.execute_batch("FORCE INSTALL vss; LOAD vss;").is_ok() {
+            return Ok(());
+        }
+    } else {
+        return Ok(());
+    }
+
+    // Older DuckDB builds ship VSS only in the community repo. Same escalation rule: FORCE
+    // only when the failure is the origin conflict (VSS already installed from the default
+    // repo) — the exact case the unconditional `FORCE INSTALL ... FROM community` masked.
+    let community_err = match conn.execute_batch("INSTALL vss FROM community; LOAD vss;") {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    if is_origin_conflict(&community_err)
+        && conn
+            .execute_batch("FORCE INSTALL vss FROM community; LOAD vss;")
+            .is_ok()
+    {
+        return Ok(());
+    }
+
+    Err(community_err).context(
         "failed to load the DuckDB VSS extension (required for HNSW vector search and array_cosine_distance).\n\
          \n\
          Common causes & fixes:\n\
@@ -764,6 +768,16 @@ fn load_vss(conn: &Connection) -> Result<()> {
          \n\
          See the DuckDB VSS extension docs for manual installation steps.",
     )
+}
+
+/// True when a DuckDB `INSTALL` failed because the extension is already installed from a
+/// *different* repository (the origin-pin conflict). DuckDB's message states the origin
+/// differs and advises rerunning "with `FORCE INSTALL`"; we match either phrase
+/// case-insensitively. This gates the network-heavy `FORCE INSTALL` so it runs only when it
+/// can actually help, never on the cheap already-present path.
+fn is_origin_conflict(e: &duckdb::Error) -> bool {
+    let msg = e.to_string().to_ascii_lowercase();
+    msg.contains("origin is different") || msg.contains("force install")
 }
 
 /// Convert a DuckDB `FLOAT[N]` column value into a `Vec<f32>`. The VSS array type comes
